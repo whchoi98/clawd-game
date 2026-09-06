@@ -5,7 +5,9 @@
   "type": "module",
   "description": "CLAWD JUMP: ECHO TOWER — a precision platformer with a verified-replay backend on CloudFront → ALB → ECS Fargate",
   "license": "MIT",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "node tools/dev.mjs",
     "build": "node tools/build.mjs",
@@ -35,6 +37,7 @@
     "aws-cdk-lib": "^2.170.0",
     "constructs": "^10.4.0",
     "esbuild": "^0.24.0",
+    "happy-dom": "^15.11.7",
     "playwright": "^1.49.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
