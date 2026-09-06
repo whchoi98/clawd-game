@@ -255,6 +255,12 @@ async function playProfile(browser: Browser, profile: Profile, rows: Row[], issu
       check(insideViewport(hintBox, vp), `hint ${fmtBox(hintBox)} leaves the viewport`);
       await page.screenshot({ path: join(OUT_DIR, `mobile-${profile.id}-play.png`) });
       check(clashes.length === 0, `hint ${fmtBox(hintBox)} overlaps ${clashes.join(', ')}`);
+      // Touch devices must never be told about Space / Shift / arrow keys.
+      const hintText = (await hint.textContent()) ?? '';
+      if (source === 'zone hint') {
+        check(!/Shift|Space|←|→|A\s*\/\s*D/.test(hintText), `touch hint shows keyboard glyphs: "${hintText}"`);
+        check(/JUMP|스틱|DASH/.test(hintText), `touch hint lacks touch glyphs: "${hintText}"`);
+      }
       const bottom = hintBox.y + hintBox.height;
       const limit = vp.height * HINT_MAX_BOTTOM_FRAC;
       if (profile.id === 'iphone14-landscape') {

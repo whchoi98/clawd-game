@@ -136,6 +136,13 @@ export class Input implements InputPort {
     this.getGamepads = opts.getGamepads ?? null;
 
     const hasWindow = typeof window !== 'undefined';
+    // A finger-first device reads as 'touch' before any input arrives, so the
+    // very first hint already shows stick/button glyphs instead of key names.
+    if (hasWindow && typeof window.matchMedia === 'function') {
+      try {
+        if (window.matchMedia('(hover: none) and (pointer: coarse)').matches) this._lastDevice = 'touch';
+      } catch { /* headless DOMs without media queries */ }
+    }
     this.target = opts.target === undefined ? (hasWindow ? window : null) : opts.target;
     this.doc = hasWindow && this.target === window && typeof document !== 'undefined' ? document : null;
 

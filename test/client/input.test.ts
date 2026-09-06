@@ -590,3 +590,25 @@ describe('binds', () => {
     expect(input.keyLabel('KeyZ')).toBe('Z');
   });
 });
+
+describe('initial device on finger-first hardware', () => {
+  it("starts as 'touch' when the coarse-pointer media query matches, so the first hint uses touch glyphs", () => {
+    const orig = window.matchMedia;
+    (window as unknown as { matchMedia: unknown }).matchMedia = (q: string) => ({ matches: q.includes('coarse'), media: q, addEventListener() {}, removeEventListener() {} });
+    try {
+      const input = new Input({ target: null });
+      expect(input.lastDevice).toBe('touch');
+    } finally {
+      (window as unknown as { matchMedia: unknown }).matchMedia = orig;
+    }
+  });
+  it("starts as 'keyboard' on a fine-pointer machine", () => {
+    const orig = window.matchMedia;
+    (window as unknown as { matchMedia: unknown }).matchMedia = (q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} });
+    try {
+      expect(new Input({ target: null }).lastDevice).toBe('keyboard');
+    } finally {
+      (window as unknown as { matchMedia: unknown }).matchMedia = orig;
+    }
+  });
+});
