@@ -6,7 +6,7 @@
  * day at boot and turned into the coarse buckets the boot event carries.
  */
 import { describe, expect, it } from 'vitest';
-import { SIM_VERSION } from '../../src/sim/types.js';
+import { GEN_VERSION, SIM_VERSION } from '../../src/sim/types.js';
 import type { Progress } from '../../src/client/contracts.js';
 import type { LevelDef } from '../../src/sim/types.js';
 import {
@@ -208,11 +208,14 @@ describe('unlockedZones', () => {
 
 // ---------------------------------------------------------------- P2-2 / P2-6 repair of the new fields
 describe('repairProgress · endless best replay, daily rank, session deaths', () => {
-  it('keeps the best endless replay only with the current SIM_VERSION and a seed', () => {
-    const ok = stored({ v: 1, endless: { bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION } });
-    expect(ok.progress.endless).toEqual({ bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION });
-    const stale = stored({ v: 1, endless: { bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION - 1 } });
+  it('keeps the best endless replay only with the current SIM_VERSION, GEN_VERSION and a seed', () => {
+    const ok = stored({ v: 1, endless: { bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION, bestGen: GEN_VERSION } });
+    expect(ok.progress.endless).toEqual({ bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION, bestGen: GEN_VERSION });
+    const stale = stored({ v: 1, endless: { bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION - 1, bestGen: GEN_VERSION } });
     expect(stale.progress.endless).toEqual({ bestHeight: 40, bestShards: 3, runs: 2 });
+    // A different tower generator makes the replay meaningless: dropped too.
+    const staleGen = stored({ v: 1, endless: { bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION, bestGen: GEN_VERSION - 1 } });
+    expect(staleGen.progress.endless).toEqual({ bestHeight: 40, bestShards: 3, runs: 2 });
     const noSeed = stored({ v: 1, endless: { bestHeight: 40, bestMasks: 'AAEA', bestSim: SIM_VERSION } });
     expect(noSeed.progress.endless.bestMasks).toBeUndefined();
   });
