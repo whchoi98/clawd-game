@@ -27,7 +27,7 @@ export const SKINS: Record<string, Skin> = {
     glow: '#FFB088',
   },
   azure: {
-    id: 'azure', name: 'AZURE', kr: '애저',
+    id: 'azure', name: 'AMAZONI', kr: '아마조니',
     shell: '#5BB8FF', shellHi: '#C4EAFF', shellLo: '#245E9A',
     belly: '#E4F6FF', limb: '#2F6FAF', eye: '#FFFFFF', pupil: '#0A1830',
     glow: '#8FE6FF',

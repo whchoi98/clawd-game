@@ -245,7 +245,7 @@
 ### P3-6 — 구역 메달(노데스·파 이내·전 파편·유물)·랭크·최고 콤보 저장·스킨 해금·카드 세계 순위 (GF-06 + zone-medals-skin-unlocks 통합)
 
 - 영역: ui · 공수: 2.5일 · 의존: P2-8
-- 내용: contracts.ts LevelRecord에 deathless/underPar/allShards/bestRank/bestCombo(save.ts repairLevelRecord 기본값). recordProgress 갱신, 새 메달 시 결과 화면 팝+sound('unlock'). 카드에 메달 4칸·최고 등급·'세계 N위'(선택 화면 진입 시 보드 top 조회 캐시). 헤더 '별 N/36 · 메달 N/48'. src/client/unlocks.ts 순수 함수: 애저=별 6, 엠버=2층 진입, 보이드=첫 S; 기존 선택 스킨은 그랜드파더링. 콤보 8+ HUD 칩 색·sfx 피치 상승.
+- 내용: contracts.ts LevelRecord에 deathless/underPar/allShards/bestRank/bestCombo(save.ts repairLevelRecord 기본값). recordProgress 갱신, 새 메달 시 결과 화면 팝+sound('unlock'). 카드에 메달 4칸·최고 등급·'세계 N위'(선택 화면 진입 시 보드 top 조회 캐시). 헤더 '별 N/36 · 메달 N/48'. src/client/unlocks.ts 순수 함수: 아마조니(azure 스킨)=별 6, 엠버=2층 진입, 보이드=첫 S; 기존 선택 스킨은 그랜드파더링. 콤보 8+ HUD 칩 색·sfx 피치 상승.
 - 완료 기준:
   - test/client/save.test.ts: 구 세이브 복구 시 새 필드 기본값; deaths 0 클리어 → deathless=true 이후 유지
   - test/client/unlocks.test.ts: 규칙 표 경계값(별 5/6), 잠긴 스킨 설정은 보유 시 유지·미보유 시 clawd 폴백
