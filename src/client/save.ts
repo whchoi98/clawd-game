@@ -10,7 +10,7 @@
 import type { Binds, LevelRecord, Progress, Settings } from './contracts.js';
 import type { DailyResponse } from '../shared/protocol.js';
 import type { LevelDef } from '../sim/types.js';
-import { SIM_VERSION } from '../sim/types.js';
+import { SIM_VERSION, GEN_VERSION } from '../sim/types.js';
 import { BIND_ACTIONS, DEFAULT_BINDS, cloneBinds } from './input/binds.js';
 
 export const SETTINGS_KEY = 'clawd-echo.settings.v1';
@@ -388,8 +388,8 @@ export function repairProgress(raw: unknown, defaults: Progress): Progress {
   if (typeof p.lastPlayDay !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(p.lastPlayDay)) delete p.lastPlayDay;
   // The best endless run's replay (self echo on 같은 탑 다시) survives only with the SIM_VERSION that recorded it.
   const e = (isObj(p.endless) ? p.endless : {}) as Record<string, unknown>;
-  const bestMasks = typeof e.bestMasks === 'string' && e.bestMasks && e.bestSim === SIM_VERSION && typeof e.bestSeed === 'number'
-    ? { bestMasks: e.bestMasks, bestSeed: int(e.bestSeed) >>> 0, bestSim: SIM_VERSION }
+  const bestMasks = typeof e.bestMasks === 'string' && e.bestMasks && e.bestSim === SIM_VERSION && e.bestGen === GEN_VERSION && typeof e.bestSeed === 'number'
+    ? { bestMasks: e.bestMasks, bestSeed: int(e.bestSeed) >>> 0, bestSim: SIM_VERSION, bestGen: GEN_VERSION }
     : {};
   p.endless = {
     bestHeight: num(e.bestHeight, 0, 1e6, 0), bestShards: int(e.bestShards), runs: int(e.runs),

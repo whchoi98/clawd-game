@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Added (Phase 2 C)
+- P2-4 라이벌 메아리·체크포인트 스플릿·사망 마커·구간 PB·라이벌 대비 결과 행, 설정 '세계 메아리 = 라이벌/1위'.
+- P2-9 데일리 저작 청크 14개(`levels/chunks/`), 생성기 삽입과 격자 계약 검사, 청크 골든 리플레이, `GEN_VERSION` 2.
+
 ### Added
 - `SIM_VERSION = 2`, `GEN_VERSION = 1`: 리플레이(`Replay.v`)와 제출(`RunSubmit.sim` / `gen`)이 sim 버전을 싣는다. 서버는 불일치를 마스크 디코딩 전에 `422 sim-version`으로 거절하고, `/api/health`(`simVersion`, `genVersion`)와 `/api/daily`(`sim`, `gen`)가 검증 버전을 알린다.
 - `POST /api/events`: 익명 텔레메트리(EventBatch ≤ 4 KB, ≤ 20건, IP당 30/분). 이벤트당 pino 한 줄(`evt`, `at`, `s`, `build`, `sim`, …), `js_error` / `submit_result` / `fps_sample`은 CloudWatch EMF 메트릭 줄을 추가로 남긴다. IP·플레이어 id·이름은 기록하지 않는다.

@@ -1297,8 +1297,8 @@ export class Scenes {
       e.bestShards = Math.max(e.bestShards, s.shards);
       // The best climb's replay rides along with its seed: 같은 탑 다시 runs it as the self echo.
       if (pb) {
-        if (encoded && encoded.length <= MAX_MASKS_B64) { e.bestMasks = encoded; e.bestSeed = run.seed; e.bestSim = SIM_VERSION; }
-        else { delete e.bestMasks; delete e.bestSeed; delete e.bestSim; }
+        if (encoded && encoded.length <= MAX_MASKS_B64) { e.bestMasks = encoded; e.bestSeed = run.seed; e.bestSim = SIM_VERSION; e.bestGen = GEN_VERSION; }
+        else { delete e.bestMasks; delete e.bestSeed; delete e.bestSim; delete e.bestGen; }
       }
     }
     prog.totals.shards += s.shards;
@@ -1496,7 +1496,7 @@ export class Scenes {
       const e = prog.endless;
       const rec = run.mode === 'story' ? prog.levels[run.def.id]
         : run.mode === 'daily' && run.daily ? prog.daily[run.daily.date]
-          : e.bestSeed === run.seed ? { masks: e.bestMasks, sim: e.bestSim } : undefined;
+          : e.bestSeed === run.seed && (e.bestGen ?? 0) === GEN_VERSION ? { masks: e.bestMasks, sim: e.bestSim } : undefined;
       // Only a replay recorded by this SIM_VERSION reproduces on this sim (older masks are dropped).
       const masks = echoMasks(rec);
       if (masks) {

@@ -9,8 +9,8 @@
 [![play](https://img.shields.io/badge/▶_PLAY-clawd--game.whchoi.net-E8825C?style=for-the-badge&labelColor=07060B)](https://clawd-game.whchoi.net/)
 
 [![sim](https://img.shields.io/badge/simulation-isomorphic_·_120Hz-5BD8E0?labelColor=15121F)](#결정론적-시뮬레이션이-백엔드를-정당화한다)
-[![tests](https://img.shields.io/badge/tests-786_passing-8BE86A?labelColor=15121F)](#테스트)
-[![payload](https://img.shields.io/badge/client-348_KB_·_108_KB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
+[![tests](https://img.shields.io/badge/tests-848_passing-8BE86A?labelColor=15121F)](#테스트)
+[![payload](https://img.shields.io/badge/client-364_KB_·_112_KB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
 [![pwa](https://img.shields.io/badge/PWA-installable_·_offline-8B7BF0?labelColor=15121F)](#pwa-설치와-오프라인)
 [![infra](https://img.shields.io/badge/edge-CloudFront_→_ALB_→_Fargate-FF9900?labelColor=15121F)](#아키텍처)
 [![license](https://img.shields.io/badge/license-MIT-8B7BF0?labelColor=15121F)](LICENSE)
@@ -110,6 +110,9 @@ DynamoDB 단일 테이블(`pk`/`sk`): `LB#<mode>#<board>` / `<score 12자리>#<9
 - **데일리 스트릭·어제의 탑** — 데일리 화면의 '내 기록' 한 칸이 **최근 7일 스트립**(미도전 / 도전 / 클리어, 순위를 알면 숫자)과 **N일 연속** 배지로 바뀌었습니다. 스트릭은 서버 날짜(`DailyResponse.date`) 기준 연속 UTC 일수이며, 탑을 시작한 것만으로 '도전'으로 칩니다(`save.ts streakFor`). `GET /api/daily`가 `yesterday: {date, seed}`를 함께 주고, 부팅 시(하루 1회, 비차단) 어제 보드를 조회해 '어제의 탑 · 세계 N위 / M명'을 보여 주며 날짜가 이틀 이상 지나면 '확정' 배지가 붙습니다. **어제의 탑 재도전**은 어제 시드를 어제 날짜로 제출하고(서버는 오늘·어제만 접수), 타이틀의 '데일리 타워' 소제목은 '오늘 미도전 · 3일 연속' / '오늘 클리어 · 세계 12위'처럼 바뀝니다.
 - **게임 오버 컴백 루프** — 조류에 잠긴 뒤 **같은 탑 다시**(같은 시드, 내 최고 등반의 메아리와 함께)와 **새 탑**(끝없는 등반의 새 시드)이 갈라지고, 최고 높이까지의 진행 바('신기록까지 N칸' / '신기록!')와 데일리의 '내 최고 높이 · 세계 최고' 행이 붙습니다. 최고 등반의 리플레이는 `progress.endless.bestMasks/bestSeed/bestSim`에 남습니다.
 - **이름 온보딩·막힘 감지** — 첫 유효 기록은 결과 화면 안에서 이름을 먼저 묻고(건너뛰면 `클로드 #xxxx`), 한 구역에서 20번 쓰러지면 보조 모드로 다시 시작할지 한 번 묻습니다. 구역 N을 클리어하면 같은 층의 N+1·N+2가 열립니다(층 경계는 직전 구역 클리어 필수).
+
+- **라이벌 메아리·스플릿** (P2-4) — 세계 메아리는 기본적으로 내 바로 위 순위의 '라이벌'을 따라가고(설정에서 1위로 전환), 체크포인트마다 `+0.84s / −1.20s` 스플릿 칩이 뜹니다. 최근 사망 위치는 X 마커로 남고, 일시정지 화면에 구간별 사망 수와 구간 PB, 결과 화면에 '라이벌보다 N초 빠름/느림'이 표시됩니다.
+- **데일리 저작 청크** (P2-9, `GEN_VERSION` 2) — 14개 손으로 만든 청크(`levels/chunks/`, 태그 dash·wall·crystal·switch)가 50행 밴드마다 1~2개 타워에 삽입되어 데일리가 매일 다른 기술 시험이 됩니다. 청크마다 솔로 룸 골든 리플레이로 완주를 증명하고(`npx tsx tools/solve.ts --chunks`), 서버는 같은 생성기로 검증합니다.
 
 ## 조작
 
@@ -250,8 +253,8 @@ npm run destroy              # 전부 삭제 (테이블·로그·시크릿 포�
 
 | | |
 |---|---|
-| 테스트 | 786개 |
-| 플레이어가 내려받는 것 | JS 348 KB (gz 108 KB) · CSS 40 KB · HTML 15 KB · SW 2 KB · 폰트 외 외부 요청 0 |
+| 테스트 | 848개 |
+| 플레이어가 내려받는 것 | JS 364 KB (gz 112 KB) · CSS 41 KB · HTML 15 KB · SW 2 KB · 폰트 외 외부 요청 0 |
 | 콘텐츠 | 9구역 · 3바이옴 · 데일리 타워 · 끝없는 등반 · 적 6종 · 오브젝트 11종 |
 
 ## 크레딧 · 라이선스
