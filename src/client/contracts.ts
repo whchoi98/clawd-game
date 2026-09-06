@@ -32,6 +32,8 @@ export interface Settings {
   echoWorldMode?: 'top' | 'rival';
   /** Vibration / gamepad rumble on impacts (default on for coarse pointers, off under prefers-reduced-motion). */
   haptics?: boolean;
+  /** Touch control layout: size and opacity scale, per-side offsets (CSS px), floating stick (appears where the thumb lands). */
+  touch?: { scale: number; opacity: number; leftX: number; leftY: number; rightX: number; rightY: number; floating: boolean };
   binds: Binds;
 }
 
@@ -241,7 +243,9 @@ export type UIAction =
   | { type: 'assistDecline'; never: boolean }
   /** Settings → 데이터: move progress to another device (creates a one-time code) / restore from a code. */
   | { type: 'transferExport' }
-  | { type: 'transferImport'; code: string };
+  | { type: 'transferImport'; code: string }
+  /** Result screen: share a race link to my echo (Web Share API / clipboard). */
+  | { type: 'shareEcho' };
 
 export interface HudState {
   hp: number; maxHp: number;
