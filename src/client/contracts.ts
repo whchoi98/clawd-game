@@ -76,6 +76,8 @@ export interface Progress {
   seen: Record<string, boolean>;
   lastLevel: string | null;
   player: { id: string; name: string };
+  /** Times the install card on the result screen was dismissed (hidden for good after 3). */
+  installCardDismissed?: number;
   /** First boot (ms epoch) and distinct UTC days played — the only inputs of the anonymous retention buckets. */
   firstSeen?: number;
   playDays?: number;
@@ -245,7 +247,11 @@ export type UIAction =
   | { type: 'transferExport' }
   | { type: 'transferImport'; code: string }
   /** Result screen: share a race link to my echo (Web Share API / clipboard). */
-  | { type: 'shareEcho' };
+  | { type: 'shareEcho' }
+  /** Result / game-over screens: share a procedurally drawn result card image (falls back to the race link). */
+  | { type: 'shareCard' }
+  /** Install card on the result screen: dismissed (counts toward hiding it) or accepted (install prompt). */
+  | { type: 'installCardDismiss' };
 
 export interface HudState {
   hp: number; maxHp: number;
