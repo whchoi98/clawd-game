@@ -1,17 +1,22 @@
 /**
  * POST /api/runs — submit a replay. Body ≤ 96 KB (64 KB of base64 masks plus
- * metadata). 400 on schema failure, 429 when the IP or the player is over
- * budget, 422 with a RejectReason when the run is not eligible or does not
- * verify.
+ * metadata). 400 on schema failure or a blocklisted display name
+ * ({ error: 'bad-name' }), 429 when the IP or the player is over budget, 422
+ * with a RejectReason when the run is not eligible, does not verify or is a
+ * copy of another player's replay ('duplicate').
  *
  * Verification is the most expensive thing this server does, so the route has
  * its own per-IP budget (RUNS_PER_IP_PER_MINUTE) on top of the global one, and
- * the player budget is keyed by `ip:playerId`.
+ * the player budget is keyed by `ip:playerId`. The service's structured lines
+ * (VerifyMs metric, hx heuristics) go to the instance logger unless a sink is
+ * injected.
  */
 import type { FastifyInstance } from 'fastify';
 import { RunSubmit } from '../../shared/protocol.js';
+import { isBadName } from '../../shared/names.js';
 import { clientIp } from '../ip.js';
-import { playerTag } from '../players.js';
+import type { LogSink } from '../metrics.js';
+import { playerTag, tagSecretFor } from '../players.js';
 import { PlayerLimiter, submitRun } from '../runs.js';
 import type { AppDeps } from '../types.js';
 import { badRequest } from './parse.js';
@@ -21,7 +26,13 @@ export const RUN_BODY_LIMIT = 96 * 1024;
 export const RUNS_PER_IP_PER_MINUTE = 12;
 const WINDOW_MS = 60_000;
 
-export function runsRoute(app: FastifyInstance, deps: AppDeps, limiter: PlayerLimiter): void {
+export interface RunsRouteOptions {
+  /** Overrides the default sink (instance logger, info) for metric / hx lines. */
+  sink?: LogSink;
+}
+
+export function runsRoute(app: FastifyInstance, deps: AppDeps, limiter: PlayerLimiter, opts: RunsRouteOptions = {}): void {
+  const sink: LogSink = opts.sink ?? ((record, msg) => { app.log.info(record, msg); });
   app.post('/runs', {
     bodyLimit: RUN_BODY_LIMIT,
     config: {
@@ -40,6 +51,7 @@ export function runsRoute(app: FastifyInstance, deps: AppDeps, limiter: PlayerLi
     const parsed = RunSubmit.safeParse(req.body);
     if (!parsed.success) return badRequest(reply, parsed.error.issues);
     const { player } = parsed.data;
+    if (isBadName(player.name)) return reply.code(400).send({ error: 'bad-name' });
 
     const budget = limiter.hit(`${clientIp(req)}:${player.id}`);
     if (!budget.ok) {
@@ -49,10 +61,10 @@ export function runsRoute(app: FastifyInstance, deps: AppDeps, limiter: PlayerLi
         .send({ error: 'rate-limited', detail: { scope: 'player', retryAfter: budget.retryAfterSec } });
     }
 
-    const out = await submitRun(deps, parsed.data);
+    const out = await submitRun({ ...deps, log: sink }, parsed.data);
     if (out.status !== 200) {
       req.log.info({
-        playerTag: playerTag(player.id, deps.dailySecret),
+        playerTag: playerTag(player.id, tagSecretFor(deps.dailySecret)),
         mode: parsed.data.mode,
         levelId: parsed.data.levelId,
         reason: out.body.accepted ? undefined : out.body.reason,

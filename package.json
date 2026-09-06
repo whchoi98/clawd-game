@@ -27,6 +27,7 @@
     "release": "node tools/release.mjs",
     "release:dry": "node tools/release.mjs --dry-run",
     "stats": "node tools/stats.mjs",
+    "admin": "tsx tools/admin.mjs",
     "icons": "node tools/icons.mjs",
     "qa:mobile": "tsx tools/qa/mobile.ts",
     "qa:readability": "tsx tools/qa/readability.ts",

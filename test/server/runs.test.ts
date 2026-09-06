@@ -7,7 +7,9 @@ import { encodeMasks, verifyReplayChunked } from '../../src/sim/replay.js';
 import { GEN_VERSION, MAX_TICKS, SIM_VERSION, TICK_HZ } from '../../src/sim/types.js';
 import { DYING_T, INTRO_T, RESPAWN_INTRO_T } from '../../src/sim/sim.js';
 import { DynamoRepo, KEY } from '../../src/server/repo/dynamo.js';
+import { REPLACED_RUN_TTL_SECONDS } from '../../src/server/repo/ttl.js';
 import { RUNS_PER_IP_PER_MINUTE } from '../../src/server/routes/runs.js';
+import { replayHash } from '../../src/server/hash.js';
 import {
   DEATH_TICKS, INTRO_TICKS, MASK_SLACK, PlayerLimiter, RESPAWN_INTRO_TICKS, asyncVerifier, maxMasksFor, phaseTicks, submitRun,
   toRejectReason, versionMismatch,
@@ -45,19 +47,22 @@ describe('POST /api/runs', () => {
     expect(calls[0].replay).toMatchObject({ v: SIM_VERSION, levelId: 't1', seed: FIX_T1.seed, assist: false });
     expect(Array.from(calls[0].replay.masks)).toEqual(Array.from(MASKS));
     expect(calls[0].claim).toEqual({ ticks: 720, shards: 3, deaths: 0, cleared: true, height: 0 });
-    // persisted
+    // persisted, with the replay hash and the heuristics
     const stored = await repo.getRun(body.runId);
     expect(stored).not.toBeNull();
     expect(stored!.masks).toBe(submitBody().masks);
     expect(stored!.ttl).toBeUndefined();
     expect(stored!.board).toBe('t1');
     expect(stored!.createdAt).toBe('2026-09-06T12:00:00.000Z');
+    expect(stored!.hash).toBe(replayHash(MASKS, 't1', FIX_T1.seed));
+    expect(stored!.hx).toMatchObject({ ticks: 720, edges: 2 });
+    expect(stored!.flagged).toBeUndefined();
   });
 
-  it('a better second run replaces the first on the board (one entry per player)', async () => {
+  it('a better second run replaces the first on the board (one entry per player); the old story RUN gets a 90-day ttl', async () => {
     const { app, repo } = await up();
     const first = (await postRun(app, submitBody({ claim: { ticks: 720 } }))).json();
-    const res = await postRun(app, submitBody({ claim: { ticks: 600 } }));
+    const res = await postRun(app, submitBody({ claim: { ticks: 600 }, masks: encodeMasks(MASKS.subarray(0, 700)) }));
     const body = res.json();
     expect(res.statusCode).toBe(200);
     expect(body.personalBest).toBe(true);
@@ -70,6 +75,8 @@ describe('POST /api/runs', () => {
     expect(top[0].ticks).toBe(600);
     // the old run is no longer the player's best
     expect((await repo.getPlayerBest('player-0001', 'story', 't1'))!.runId).toBe(body.runId);
+    expect((await repo.getRun(first.runId))!.ttl).toBe(Math.floor(FIXED_NOW.getTime() / 1000) + REPLACED_RUN_TTL_SECONDS);
+    expect((await repo.getRun(body.runId))!.ttl).toBeUndefined();
   });
 
   it('a slower run is accepted but not a personal best and does not replace the board entry', async () => {
@@ -96,12 +103,87 @@ describe('POST /api/runs', () => {
 
   it('ranks against other players', async () => {
     const { app } = await up();
-    // the fixture log is 720 masks, so claims must stay within maxMasksFor: ≥ 425 ticks
-    expect((await postRun(app, submitBody({ player: { id: 'fast-player-1', name: '빠름' }, claim: { ticks: 500 } }))).statusCode).toBe(200);
-    expect((await postRun(app, submitBody({ player: { id: 'fast-player-2', name: '더빠름' }, claim: { ticks: 450 } }))).statusCode).toBe(200);
+    // the fixture log is 720 masks, so claims must stay within maxMasksFor: ≥ 425 ticks.
+    // Every player needs their own log: the same masks would be a duplicate.
+    expect((await postRun(app, submitBody({ player: { id: 'fast-player-1', name: '빠름' }, claim: { ticks: 500 }, masks: encodeMasks(MASKS.subarray(0, 700)) }))).statusCode).toBe(200);
+    expect((await postRun(app, submitBody({ player: { id: 'fast-player-2', name: '더빠름' }, claim: { ticks: 450 }, masks: encodeMasks(MASKS.subarray(0, 680)) }))).statusCode).toBe(200);
     const body = (await postRun(app, submitBody({ claim: { ticks: 700 } }))).json();
     expect(body.rank).toBe(3);
     expect(body.total).toBe(3);
+  });
+
+  describe('duplicate replays (P3-1)', () => {
+    it("B submitting A's exact masks → 422 duplicate (summary included), B is not on the board", async () => {
+      const { app, repo } = await up();
+      const a = (await postRun(app, submitBody())).json();
+      expect(a.accepted).toBe(true);
+      const res = await postRun(app, submitBody({ player: { id: 'player-0002', name: '도둑' } }));
+      expect(res.statusCode).toBe(422);
+      const body = RunResponse.parse(res.json());
+      expect(body.accepted).toBe(false);
+      if (body.accepted) return;
+      expect(body.reason).toBe('duplicate');
+      expect(body.summary?.levelId).toBe('t1');
+      const top = await repo.topRuns('story', 't1', 10);
+      expect(top.map((r) => r.playerId)).toEqual(['player-0001']);
+      expect(await repo.getPlayerBest('player-0002', 'story', 't1')).toBeNull();
+      expect(await repo.rankOf('story', 't1', 0)).toEqual({ better: 0, total: 1 });
+    });
+
+    it('a re-encoded copy padded with trailing idle ticks is the same replay', async () => {
+      const { app } = await up();
+      expect((await postRun(app, submitBody())).statusCode).toBe(200);
+      const padded = new Uint8Array(MASKS.length + 30);
+      padded.set(MASKS);
+      const res = await postRun(app, submitBody({ player: { id: 'player-0003', name: '복사' }, masks: encodeMasks(padded) }));
+      expect(res.statusCode).toBe(422);
+      expect(res.json().reason).toBe('duplicate');
+    });
+
+    it('the same player re-submitting their identical replay is a no-op: 200 personalBest:false, same runId, one entry', async () => {
+      const { app, repo } = await up();
+      const first = (await postRun(app, submitBody())).json();
+      const again = await postRun(app, submitBody());
+      expect(again.statusCode).toBe(200);
+      expect(again.json()).toMatchObject({ accepted: true, personalBest: false, runId: first.runId, rank: 1, total: 1 });
+      expect(await repo.topRuns('story', 't1', 10)).toHaveLength(1);
+    });
+
+    it('after a delist the owner re-sending the same replay is still not a duplicate (personalBest:false, the old run id), a stranger is', async () => {
+      const { app, repo } = await up();
+      const first = (await postRun(app, submitBody())).json();
+      expect(await repo.delistRun(first.runId)).toBe(true);
+      expect(await repo.getPlayerBest('player-0001', 'story', 't1')).toBeNull();
+      const owner = await postRun(app, submitBody());
+      expect(owner.statusCode).toBe(200);
+      expect(owner.json()).toMatchObject({ accepted: true, personalBest: false, runId: first.runId });
+      expect(await repo.topRuns('story', 't1', 10)).toHaveLength(0);
+      const stranger = await postRun(app, submitBody({ player: { id: 'player-0004', name: '남' } }));
+      expect(stranger.statusCode).toBe(422);
+      expect(stranger.json().reason).toBe('duplicate');
+    });
+
+    it('a different log from another player is accepted; the same log on another board is another replay', async () => {
+      const { app } = await up();
+      expect((await postRun(app, submitBody())).statusCode).toBe(200);
+      const other = new Uint8Array(MASKS);
+      other[300] = 0;
+      expect((await postRun(app, submitBody({ player: { id: 'player-0005', name: '남남' }, masks: encodeMasks(other) }))).statusCode).toBe(200);
+      const seed = dailySeed(TODAY, SECRET).seed;
+      expect((await postRun(app, dailyBody(seed, { player: { id: 'player-0006', name: '데일리' }, claim: { cleared: false, height: 10, ticks: 700 } }))).statusCode).toBe(200);
+    });
+
+    it('a blocklisted display name is refused with 400 { error: bad-name } before the verifier runs', async () => {
+      const calls: VerifyCall[] = [];
+      const { app, repo } = await up({ verify: echoVerify(calls) });
+      for (const name of ['씨발이', 'sh!t', 'F U C K']) {
+        const res = await postRun(app, submitBody({ player: { id: 'player-0007', name } }));
+        expect(res.statusCode, name).toBe(400);
+        expect(res.json()).toEqual({ error: 'bad-name' });
+      }
+      expect(calls).toHaveLength(0);
+      expect(await repo.topRuns('story', 't1', 10)).toHaveLength(0);
+    });
   });
 
   it('rejects a claim the replay does not reproduce with 422 claim-mismatch (summary included)', async () => {
@@ -224,8 +306,8 @@ describe('POST /api/runs', () => {
 
   it('gives tied scores the same competition rank and skips the next rank', async () => {
     const { app } = await up();
-    expect((await postRun(app, submitBody({ player: { id: 'tied-player-a', name: '가' }, claim: { ticks: 500 } }))).json().rank).toBe(1);
-    expect((await postRun(app, submitBody({ player: { id: 'tied-player-b', name: '나' }, claim: { ticks: 500 } }))).json().rank).toBe(1);
+    expect((await postRun(app, submitBody({ player: { id: 'tied-player-a', name: '가' }, claim: { ticks: 500 }, masks: encodeMasks(MASKS.subarray(0, 700)) }))).json().rank).toBe(1);
+    expect((await postRun(app, submitBody({ player: { id: 'tied-player-b', name: '나' }, claim: { ticks: 500 }, masks: encodeMasks(MASKS.subarray(0, 690)) }))).json().rank).toBe(1);
     const third = (await postRun(app, submitBody({ claim: { ticks: 700 } }))).json();
     expect(third.rank).toBe(3);
     expect(third.total).toBe(3);
@@ -272,6 +354,7 @@ describe('POST /api/runs', () => {
       expect(stored.board).toBe(TODAY);
       expect(stored.mode).toBe('daily');
       expect(stored.ttl).toBe(Math.floor(Date.parse('2026-09-06T12:00:00.000Z') / 1000) + 30 * 86400);
+      expect(stored.hash).toBe(replayHash(MASKS, 'daily', seed));
     });
 
     it("accepts yesterday's date with yesterday's seed", async () => {
@@ -317,7 +400,7 @@ describe('POST /api/runs', () => {
 
     it('a tide-over daily run sorts after every clear', async () => {
       const { app } = await up();
-      await postRun(app, dailyBody(seed, { player: { id: 'drowned-player', name: '침수' }, claim: { cleared: false, height: 500, ticks: 5000 } }));
+      await postRun(app, dailyBody(seed, { player: { id: 'drowned-player', name: '침수' }, claim: { cleared: false, height: 500, ticks: 5000 }, masks: encodeMasks(MASKS.subarray(0, 700)) }));
       const body = (await postRun(app, dailyBody(seed, { claim: { cleared: true, ticks: 9000 } }))).json();
       expect(body.rank).toBe(1);
       expect(body.total).toBe(2);
@@ -334,7 +417,7 @@ describe('POST /api/runs', () => {
       expect(third.json().error).toBe('rate-limited');
       expect(third.headers['retry-after']).toBeDefined();
       // another player is unaffected
-      expect((await postRun(app, submitBody({ player: { id: 'someone-else', name: '다른이' } }))).statusCode).toBe(200);
+      expect((await postRun(app, submitBody({ player: { id: 'someone-else', name: '다른이' }, masks: encodeMasks(MASKS.subarray(0, 700)) }))).statusCode).toBe(200);
     });
 
     it('keys the player budget by ip:playerId so a stranger cannot exhaust another player from elsewhere', async () => {
@@ -369,7 +452,7 @@ describe('POST /api/runs', () => {
       const { app } = await up({ rateLimit: { perIp: 1000, perPlayer: 1000 } });
       const ip = { 'x-forwarded-for': '203.0.113.42' };
       for (let i = 0; i < RUNS_PER_IP_PER_MINUTE; i++) {
-        expect((await postRun(app, submitBody({ player: { id: `runner-${i}-xx`, name: '주자' } }), ip)).statusCode).toBe(200);
+        expect((await postRun(app, submitBody({ player: { id: `runner-${i}-xx`, name: '주자' }, masks: encodeMasks(MASKS.subarray(0, 700 - i)) }), ip)).statusCode).toBe(200);
       }
       const blocked = await postRun(app, submitBody({ player: { id: 'runner-late-x', name: '늦음' } }), ip);
       expect(blocked.statusCode).toBe(429);
@@ -466,7 +549,10 @@ describe('POST /api/runs', () => {
 
   describe('concurrent submissions of one player (DynamoRepo conditional write)', () => {
     const TABLE = 'clawd-table';
-    const cancelled = () => new TransactionCanceledException({ message: 'Transaction cancelled, please refer cancellation reasons for specific reasons', $metadata: {} });
+    const cancelled = (reasons?: string[]) => new TransactionCanceledException({
+      message: 'Transaction cancelled, please refer cancellation reasons for specific reasons', $metadata: {},
+      ...(reasons ? { CancellationReasons: reasons.map((Code) => ({ Code })) } : {}),
+    });
     const deps = (client: FakeClient) => ({
       repo: new DynamoRepo(client, TABLE), now: () => FIXED_NOW, dailySecret: SECRET, verify: echoVerify(), resolve: fakeResolveLevel,
     });
@@ -474,6 +560,7 @@ describe('POST /api/runs', () => {
       pk: 'PLAYER#player-0001', sk: 'BEST#story#t1#s2r0', runId: 'run-other', mode: 'story', board: 't1', levelId: 't1', seed: FIX_T1.seed, assist: false,
       playerId: 'player-0001', name: '클로드', score, ticks: score, shards: 2, deaths: 0, cleared: true, height: 0, createdAt: '2026-09-06T11:59:59.000Z',
     } });
+    type Tx = Array<Record<string, Record<string, unknown>>>;
 
     it('answers personalBest:false with the winner when the run that landed first is at least as good', async () => {
       const client = new FakeClient();
@@ -487,11 +574,15 @@ describe('POST /api/runs', () => {
       expect(out.status).toBe(200);
       expect(out.body).toMatchObject({ accepted: true, personalBest: false, runId: 'run-other', rank: 1, total: 1, score: 700 });
       expect(client.sent.map((c) => c.name)).toEqual(['GetCommand', 'TransactWriteCommand', 'GetCommand', 'QueryCommand', 'QueryCommand']);
-      const player = (client.sent[1].input.TransactItems as Array<{ Put?: Record<string, unknown> }>)[2].Put!;
-      expect(player.ConditionExpression).toBe('attribute_not_exists(runId)');
+      const items = client.sent[1].input.TransactItems as Tx;
+      expect(items).toHaveLength(4);
+      expect(items[2].Put.ConditionExpression).toBe('attribute_not_exists(runId)');
+      // the replay hash rides in the same transaction, guarded by attribute_not_exists
+      expect(items[3].Put.ConditionExpression).toBe('attribute_not_exists(pk)');
+      expect(items[3].Put.Item).toMatchObject({ pk: `HASH#story#t1#s2r0#${replayHash(MASKS, 't1', FIX_T1.seed)}`, sk: 'META', playerId: 'player-0001' });
     });
 
-    it('retries once against the re-read best when this run still beats it', async () => {
+    it('retries once against the re-read best when this run still beats it (and gives the replaced story RUN its ttl)', async () => {
       const client = new FakeClient();
       client.responses.push(
         {},                 // getPlayerBest → none
@@ -508,11 +599,17 @@ describe('POST /api/runs', () => {
       expect(client.sent.map((c) => c.name)).toEqual([
         'GetCommand', 'TransactWriteCommand', 'GetCommand', 'GetCommand', 'TransactWriteCommand', 'QueryCommand', 'QueryCommand',
       ]);
-      const items = client.sent[4].input.TransactItems as Array<Record<string, Record<string, unknown>>>;
-      expect(items).toHaveLength(4);
+      const items = client.sent[4].input.TransactItems as Tx;
+      expect(items).toHaveLength(6);
       expect(items[2].Put.ConditionExpression).toBe('runId = :prev');
       expect(items[2].Put.ExpressionAttributeValues).toEqual({ ':prev': 'run-other' });
-      expect(items[3].Delete.Key).toEqual({ pk: 'LB#story#t1#s2r0', sk: KEY.lbSk(900, 2, 'run-other') });
+      expect(items[3].Put.Item).toMatchObject({ sk: 'META', runId: (out.body as { runId: string }).runId });
+      expect(items[4].Delete.Key).toEqual({ pk: 'LB#story#t1#s2r0', sk: KEY.lbSk(900, 2, 'run-other') });
+      expect(items[5].Update).toMatchObject({
+        Key: { pk: 'RUN#run-other', sk: 'META' },
+        UpdateExpression: 'SET #ttl = :ttl',
+        ExpressionAttributeValues: { ':ttl': Math.floor(FIXED_NOW.getTime() / 1000) + REPLACED_RUN_TTL_SECONDS },
+      });
     });
 
     it('gives up after the second refusal so the caller sees a 500 rather than a fabricated best', async () => {
@@ -526,6 +623,33 @@ describe('POST /api/runs', () => {
       client.responses.push({}, new Error('ProvisionedThroughputExceededException'));
       await expect(submitRun(deps(client), submitBody())).rejects.toThrow('ProvisionedThroughputExceededException');
     });
+
+    it("a cancelled HASH condition → the owner is read → another player's replay is 422 duplicate", async () => {
+      const client = new FakeClient();
+      client.responses.push(
+        {},                                                            // getPlayerBest → none
+        cancelled(['None', 'None', 'None', 'ConditionalCheckFailed']), // the HASH item exists
+        { Item: { pk: 'HASH#x', sk: 'META', runId: 'run-a', playerId: 'player-9999' } },
+      );
+      const out = await submitRun(deps(client), submitBody());
+      expect(out.status).toBe(422);
+      expect(out.body).toMatchObject({ accepted: false, reason: 'duplicate' });
+      expect(client.sent.map((c) => c.name)).toEqual(['GetCommand', 'TransactWriteCommand', 'GetCommand']);
+      expect(client.sent[2].input.Key).toEqual({ pk: `HASH#story#t1#s2r0#${replayHash(MASKS, 't1', FIX_T1.seed)}`, sk: 'META' });
+    });
+
+    it("a cancelled HASH condition owned by the same player is that player's existing run (200, personalBest:false)", async () => {
+      const client = new FakeClient();
+      client.responses.push(
+        {},
+        cancelled(['None', 'None', 'None', 'ConditionalCheckFailed']),
+        { Item: { runId: 'run-a', playerId: 'player-0001' } },
+        { Count: 0 }, { Count: 1 },
+      );
+      const out = await submitRun(deps(client), submitBody());
+      expect(out.status).toBe(200);
+      expect(out.body).toMatchObject({ accepted: true, personalBest: false, runId: 'run-a' });
+    });
   });
 
   describe('toRejectReason', () => {
@@ -534,6 +658,7 @@ describe('POST /api/runs', () => {
       expect(toRejectReason('bad-rle')).toBe('bad-masks');
       expect(toRejectReason('too-long')).toBe('too-long');
       expect(toRejectReason('not-finished')).toBe('not-finished');
+      expect(toRejectReason('duplicate')).toBe('duplicate');
       expect(toRejectReason('garbage')).toBe('claim-mismatch');
       expect(toRejectReason(undefined, 'bad-masks')).toBe('bad-masks');
     });

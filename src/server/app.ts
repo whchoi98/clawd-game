@@ -6,9 +6,10 @@
  * Layout:
  *   /healthz          root context — no rate limit, no request log
  *   /api/*            encapsulated context with @fastify/rate-limit (per IP;
- *                     POST /runs and POST /events carry their own budgets), @fastify/compress
- *                     (br/gzip over 1 KB — CloudFront does not compress under
- *                     CachingDisabled), Cache-Control: no-store on every response
+ *                     POST /runs, POST /events, GET /ghost and /transfer carry
+ *                     their own budgets), @fastify/compress (br/gzip over 1 KB —
+ *                     CloudFront does not compress under CachingDisabled),
+ *                     Cache-Control: no-store on every response
  *   /* (static)       root context, only when deps.staticDir is set
  *
  * Before returning, every empty story board is seeded with the developer's
@@ -28,6 +29,7 @@ import { RUN_BODY_LIMIT, runsRoute } from './routes/runs.js';
 import { leaderboardRoute } from './routes/leaderboard.js';
 import { ghostRoute } from './routes/ghost.js';
 import { eventsRoute } from './routes/events.js';
+import { transferRoute } from './routes/transfer.js';
 import { seedBoards, seedingEnabled } from './seed.js';
 
 export { clientIp } from './ip.js';
@@ -97,6 +99,7 @@ export const buildApp: BuildApp = async (deps: AppDeps): Promise<FastifyInstance
     leaderboardRoute(api, deps);
     ghostRoute(api, deps);
     eventsRoute(api, deps);
+    transferRoute(api, deps);
   }, { prefix: API_PREFIX });
 
   if (deps.staticDir) await registerStatic(app, deps.staticDir);

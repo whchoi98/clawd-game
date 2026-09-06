@@ -4,6 +4,8 @@
  * see boards.ts) receives the developer's goal run from GOAL_ECHOES — the same
  * replay the client shows as the '목표' echo. The run is replayed here before
  * it is written: a solution the shipped sim does not reproduce is skipped.
+ * The seeded run carries its replay hash like any submission, so the goal
+ * echo — which ships in the client bundle — cannot be submitted as a player's own.
  *
  * Idempotent and race-safe through `Repo.putIfBoardEmpty`; a repo without it
  * (or SEED_BOARDS=0 in the environment) seeds nothing. Zones without a goal
@@ -17,6 +19,8 @@ import { boardScore } from '../sim/config.js';
 import { SIM_VERSION } from '../sim/types.js';
 import type { LevelDef } from '../sim/types.js';
 import { storyBoardSuffix } from './boards.js';
+import { replayHash } from './hash.js';
+import { replayHeuristics } from './heuristics.js';
 import type { Repo, StoredRun } from './repo/types.js';
 
 /** The seeded entries' author. The id matches PlayerRef and never belongs to a real browser. */
@@ -80,6 +84,8 @@ export function seedRunFor(def: LevelDef, echo: GoalEcho | undefined, now: Date)
       cleared: s.cleared,
       height: s.height,
       createdAt: now.toISOString(),
+      hash: replayHash(masks, def.id, def.seed),
+      hx: { ...replayHeuristics(masks) },
     },
   };
 }

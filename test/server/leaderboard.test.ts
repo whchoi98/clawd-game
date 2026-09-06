@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { LeaderboardResponse } from '../../src/shared/protocol.js';
 import { playerTag } from '../../src/server/players.js';
 import { competitionRanks } from '../../src/server/routes/leaderboard.js';
-import { SECRET, makeApp, postRun, submitBody } from './fixtures.js';
+import { SECRET, makeApp, postRun, submitBody, uniqueMasks } from './fixtures.js';
 
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
 
@@ -12,7 +12,7 @@ describe('GET /api/leaderboard', () => {
   beforeAll(async () => {
     ctx = await makeApp();
     for (const [id, ticks] of players) {
-      const res = await postRun(ctx.app, submitBody({ player: { id, name: id.slice(2, 7) }, claim: { ticks } }));
+      const res = await postRun(ctx.app, submitBody({ player: { id, name: id.slice(2, 7) }, claim: { ticks }, masks: uniqueMasks() }));
       expect(res.statusCode).toBe(200);
     }
   });
@@ -106,7 +106,7 @@ describe('ties', () => {
       ['tie-alpha-00', 500, 3], ['tie-bravo-00', 500, 7], ['tie-charlie', 500, 3], ['tie-delta-00', 700, 9], ['tie-echo-000', 700, 1],
     ] as const;
     for (const [id, ticks, shards] of runs) {
-      expect((await postRun(ctx.app, submitBody({ player: { id, name: id.slice(4, 9) }, claim: { ticks, shards } }))).statusCode).toBe(200);
+      expect((await postRun(ctx.app, submitBody({ player: { id, name: id.slice(4, 9) }, claim: { ticks, shards }, masks: uniqueMasks() }))).statusCode).toBe(200);
     }
   });
   afterAll(async () => { await ctx.app.close(); });
