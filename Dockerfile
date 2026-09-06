@@ -14,7 +14,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm run build
+# Minified, hashed client bundle; the server bundle is unaffected by the mode.
+RUN NODE_ENV=production npm run build
 
 # --- runtime -----------------------------------------------------------------
 FROM node:22-alpine
