@@ -128,6 +128,19 @@ export const LeaderboardResponse = z.object({
 });
 export type LeaderboardResponse = z.infer<typeof LeaderboardResponse>;
 
+
+// ---------------------------------------------------------------- personal rows (never edge-cached)
+/** GET /api/me?mode&board&playerId — the caller's own board row; /api/leaderboard is public and cacheable at the edge. */
+export const MeResponse = z.object({
+  mode: Mode,
+  board: z.string(),
+  yours: LeaderboardEntry.optional(),
+  total: z.number().int(),
+  /** True when the rank was computed against a capped scan (very large boards). */
+  rankCapped: z.boolean().optional(),
+});
+export type MeResponse = z.infer<typeof MeResponse>;
+
 export const GhostResponse = z.object({
   runId: z.string(),
   mode: Mode,

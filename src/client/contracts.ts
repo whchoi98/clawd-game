@@ -55,6 +55,8 @@ export interface LevelRecord {
   sessionDeaths?: number;
   /** Best time per checkpoint segment (ticks, cumulative), echo-safe story runs only. */
   segBest?: number[];
+  /** Zone medals earned: 'nodeath' | 'par' | 'shards' | 'relic' (unordered, no duplicates). */
+  medals?: string[];
 }
 
 export interface Progress {
@@ -78,6 +80,12 @@ export interface Progress {
   player: { id: string; name: string };
   /** Times the install card on the result screen was dismissed (hidden for good after 3). */
   installCardDismissed?: number;
+  /** Skins unlocked by medals / tier completion (ids from the renderer's skin table). 'clawd' is always available. */
+  unlockedSkins?: string[];
+  /** Tiers whose every zone is cleared, for the one-time tier-break ceremony. */
+  tiersBroken?: string[];
+  /** The ending was shown once (after the last zone). */
+  endingSeen?: boolean;
   /** First boot (ms epoch) and distinct UTC days played — the only inputs of the anonymous retention buckets. */
   firstSeen?: number;
   playDays?: number;
@@ -326,6 +334,8 @@ export interface ApiPort {
   leaderboard(q: import('../shared/protocol.js').LeaderboardQuery): Promise<LeaderboardResponse>;
   ghost(runId: string): Promise<import('../shared/protocol.js').GhostResponse>;
   health(): Promise<import('../shared/protocol.js').HealthResponse>;
+  /** Personal board row (no-store); the public leaderboard call no longer carries `yours` when edge-cached. */
+  me?(q: import('../shared/protocol.js').LeaderboardQuery): Promise<import('../shared/protocol.js').MeResponse>;
   transferCreate?(body: import('../shared/protocol.js').TransferCreateRequest): Promise<import('../shared/protocol.js').TransferCreateResponse>;
   transferGet?(code: string): Promise<import('../shared/protocol.js').TransferGetResponse>;
 }
