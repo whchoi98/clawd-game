@@ -6,10 +6,17 @@
  *
  * The visual band rotates every DAILY_BAND_ROWS rows; `def.biome` is the
  * biome of the bottom band and `bandBiome(def, ty)` gives the band for any row.
+ *
+ * Since GEN_VERSION 2 every band also carries one or two authored chunks
+ * (src/sim/chunks.generated.ts, spliced by buildTower) — the skill ceiling of
+ * the daily board. The server regenerates the tower from the seed with this
+ * very function before verifying a run, so the chunk list and the splice code
+ * are part of the generator's contract: change either, bump GEN_VERSION.
  */
 import type { BiomeId, LevelDef } from '../types.js';
 import { makeRng } from '../rng.js';
 import { buildTower } from './endless.js';
+import { CHUNKS } from '../chunks.generated.js';
 
 export const DAILY_ROWS = 160;
 export const DAILY_BAND_ROWS = 50;
@@ -27,6 +34,7 @@ export function makeDailyLevel(seed: number): LevelDef {
     par: 200,
     rows: DAILY_ROWS,
     crystals: true,
+    chunks: CHUNKS,
   });
   // the bottom band's biome is drawn from the seed; the other bands follow the tier order
   const pick = makeRng((seed >>> 0) ^ 0x9e3779b9);

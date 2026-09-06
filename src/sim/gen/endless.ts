@@ -12,11 +12,24 @@
  * landing), and the generator only keeps decorations that respect it.
  *
  * Danger density and foe variety scale with height (`depth` 0 → 1).
+ *
+ * Authored chunks (GEN_VERSION 2): with `chunks`, every full band of
+ * CHUNK_BAND_ROWS rows gets one or two hand-made skill tests (levels/chunks,
+ * see gen/chunks.ts). A chunk is spliced across the whole interior width; its
+ * entry ledge is reached from the platform below under the ordinary contract
+ * (the generator steers one or two "approach" platforms under it first) and
+ * its exit ledge is where the sweep continues. INSIDE a chunk the contract —
+ * and the "wall-jumping is never required" rule — is relaxed on purpose: that
+ * is the skill ceiling. `towerChunks` reports where they landed so tests can
+ * hold the contract on every step pair that is not a chunk interior.
  */
 import type { LevelDef } from '../types.js';
 import { SOLID_CH } from '../legend.js';
 import { makeRng } from '../rng.js';
 import type { Rng } from '../rng.js';
+import { CHUNK_X0, spliceChunk } from './chunks.js';
+import type { ChunkDef, ChunkTag } from './chunks.js';
+import { CHUNKS as CHUNKS_DATA } from '../chunks.generated.js';
 
 export const TOWER_W = 44;
 export const ENDLESS_ROWS = 560;
@@ -30,6 +43,17 @@ export const MAX_STUB_RISE = 4;
 /** Minimum rise from the final platform to the summit deck: two open rows between them, so the deck never buries it. */
 const DECK_CLEARANCE = 3;
 const DECK_W = 8;
+/** Rows per chunk band: each full band of the climb receives 1–2 authored chunks. */
+export const CHUNK_BAND_ROWS = 50;
+/** Chance a band gets a second chunk. */
+const SECOND_CHUNK_P = 0.4;
+/** Heights inside a band (rows above its start) at which its first / second chunk is called for. */
+const FIRST_SLOT = [3, 12] as const;
+const SECOND_SLOT = [26, 32] as const;
+/** A chunk's exit ledge must sit at least this far under the summit deck so the sweep can still finish normally. */
+const MIN_EXIT_ROW = SUMMIT_ROW + 6;
+/** Approach platforms the generator steers toward a pending chunk before giving it up. */
+const MAX_APPROACH = 8;
 
 /** One platform of the climb (tile coordinates, inclusive columns). */
 export interface TowerStep { y: number; x0: number; x1: number }
@@ -43,13 +67,38 @@ export interface TowerOptions {
   rows: number;
   /** Sprinkle dash crystals over wide gaps. */
   crystals: boolean;
+  /** Authored chunks to splice in, one or two per CHUNK_BAND_ROWS band (none when empty or omitted). */
+  chunks?: readonly ChunkDef[];
+}
+
+/** Where an authored chunk landed in a generated tower (tile coordinates). */
+export interface ChunkPlacement {
+  id: string;
+  tags: readonly ChunkTag[];
+  /** Top and bottom rows of the chunk. */
+  y0: number;
+  y1: number;
+  /** Its ledges as steps of the climb (also present in `towerSteps`, consecutively). */
+  entry: TowerStep;
+  exit: TowerStep;
 }
 
 const STEPS = new WeakMap<LevelDef, TowerStep[]>();
+const PLACED = new WeakMap<LevelDef, ChunkPlacement[]>();
 
-/** The platforms a generated tower was built from (empty for hand-made levels). */
+/** The platforms a generated tower was built from (empty for hand-made levels). Chunk entry and exit ledges are steps too. */
 export function towerSteps(def: LevelDef): TowerStep[] {
   return STEPS.get(def) ?? [];
+}
+
+/** The authored chunks a generated tower contains, bottom first (empty for hand-made levels or towers built without chunks). */
+export function towerChunks(def: LevelDef): ChunkPlacement[] {
+  return PLACED.get(def) ?? [];
+}
+
+/** Band index (0 = bottom) of tile row `ty` in a tower whose base row is `baseY` — the band scheme chunks are scheduled in. */
+export function chunkBand(baseY: number, ty: number): number {
+  return Math.floor((baseY - 1 - ty) / CHUNK_BAND_ROWS);
 }
 
 const clampInt = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
@@ -156,7 +205,7 @@ export function buildTower(seed: number, opts: TowerOptions): LevelDef {
   for (let y = baseY; y < H; y++) plat(0, W - 1, y);
   set(W >> 1, baseY - 1, 'P');
 
-  // side walls the whole way up — something to wall-jump against, never required
+  // side walls the whole way up — something to wall-jump against, never required (outside chunks)
   for (let y = 0; y < H; y++) { set(0, y, '#'); set(1, y, '#'); set(W - 2, y, '#'); set(W - 1, y, '#'); }
 
   const within = (a: TowerStep, b: TowerStep): boolean => effectiveClimb(g, a, b) <= MAX_STEP_RISE;
@@ -187,6 +236,36 @@ export function buildTower(seed: number, opts: TowerOptions): LevelDef {
     }
   };
 
+  // ---- authored chunks: one or two slots per full band, drawn up front so the schedule is part of the seed ----
+  const chunks = opts.chunks ?? [];
+  /** Heights (rows above the base) at which a chunk is called for, ascending. */
+  const slots: number[] = [];
+  if (chunks.length) {
+    const fullBands = Math.floor((baseY - SUMMIT_ROW) / CHUNK_BAND_ROWS);
+    for (let k = 0; k < fullBands; k++) {
+      const start = k * CHUNK_BAND_ROWS;
+      slots.push(start + rng.int(FIRST_SLOT[0], FIRST_SLOT[1]));
+      if (rng.chance(SECOND_CHUNK_P)) slots.push(start + rng.int(SECOND_SLOT[0], SECOND_SLOT[1]));
+    }
+  }
+  const placements: ChunkPlacement[] = [];
+  const used = new Set<string>();
+  const heightOf = (row: number): number => baseY - 1 - row;
+  const ledgeStep = (span: { x0: number; x1: number }, row: number): TowerStep => ({ y: row, x0: CHUNK_X0 + span.x0, x1: CHUNK_X0 + span.x1 });
+  /** Exit row of chunk `c` when its entry lands `rise` rows above the platform at `row`. */
+  const exitRowFor = (c: ChunkDef, row: number, rise: number): number => row - rise - (c.rows.length - 1);
+  /** A chunk that still fits under the summit from here; unused ones first, repeats only once every chunk has been placed. */
+  const pickChunk = (row: number, rise: number): ChunkDef | null => {
+    const fitting = chunks.filter((c) => exitRowFor(c, row, rise) >= MIN_EXIT_ROW);
+    if (!fitting.length) return null;
+    let fresh = fitting.filter((c) => !used.has(c.id));
+    if (!fresh.length) { used.clear(); fresh = fitting; }
+    return rng.pick(fresh);
+  };
+  let pending: ChunkDef | null = null;
+  let approach = 0;
+  let slotIdx = 0;
+
   const steps: TowerStep[] = [{ y: baseY, x0: 2, x1: W - 3 }];
   let prev = steps[0];
   let ax = W >> 1;
@@ -204,10 +283,50 @@ export function buildTower(seed: number, opts: TowerOptions): LevelDef {
     // so a rise that would land one row short of that band is swapped for the other.
     const landsWell = (r: number): boolean => y - r >= SUMMIT_ROW + DECK_CLEARANCE && y - r !== SUMMIT_ROW + MAX_STEP_RISE + 1;
     if (!landsWell(rise)) rise = 7 - rise;
+
+    // ---- chunk placement: called for at the slot height, spliced once the platform below sits under its entry ----
+    if (!pending && slotIdx < slots.length && heightOf(y) >= slots[slotIdx]) {
+      slotIdx++;
+      pending = pickChunk(y, rise);
+      approach = 0;
+    }
+    if (pending && exitRowFor(pending, y, rise) < MIN_EXIT_ROW) pending = pickChunk(y, rise);   // climbed too high for it: a shorter one, or none
+    if (pending) {
+      const entry = ledgeStep(pending.entry, y - rise);
+      const gap = Math.max(0, entry.x0 - prev.x1 - 1, prev.x0 - entry.x1 - 1);
+      if (gap <= MAX_STEP_GAP) {
+        const exitRow = exitRowFor(pending, y, rise);
+        const saved = g.slice(exitRow, entry.y + 1).map((r) => r.slice());
+        spliceChunk(g, pending, exitRow);
+        if (within(prev, entry)) {
+          const exit = ledgeStep(pending.exit, exitRow);
+          placements.push({ id: pending.id, tags: pending.tags, y0: exitRow, y1: entry.y, entry, exit });
+          used.add(pending.id);
+          steps.push(entry, exit);
+          // no stub on the platform below (it would poke into the chunk) and none on the exit ledge
+          stubWanted = false;
+          prev = exit;
+          y = exitRow;
+          ax = exit.x0;
+          pending = null;
+          continue;
+        }
+        // something below (a stub of an earlier platform) spoils the approach: another approach platform re-seats it
+        for (let i = 0; i < saved.length; i++) g[exitRow + i] = saved[i];
+      }
+      if (++approach > MAX_APPROACH) pending = null;
+    }
+
+    // ---- ordinary platform (steered under the pending chunk's entry when there is one) ----
     y -= rise;
     const width = Math.max(2, rng.int(6, 9) - Math.floor(depth * 3));
     const spread = Math.min(9, 4 + Math.floor(depth * 5));
-    ax = clampInt(ax + rng.int(-spread, spread), 3, W - 4 - width);
+    if (pending) {
+      const mid = CHUNK_X0 + (pending.entry.x0 + pending.entry.x1) / 2;
+      ax = Math.round(mid - width / 2);
+    } else {
+      ax = clampInt(ax + rng.int(-spread, spread), 3, W - 4 - width);
+    }
     // reachability: the empty gap to the previous platform stays within MAX_STEP_GAP
     if (ax > prev.x1 + MAX_STEP_GAP + 1) ax = prev.x1 + MAX_STEP_GAP + 1;
     if (ax + width < prev.x0 - MAX_STEP_GAP - 1) ax = prev.x0 - MAX_STEP_GAP - 1 - width;
@@ -251,7 +370,8 @@ export function buildTower(seed: number, opts: TowerOptions): LevelDef {
     const cur: TowerStep = { y, x0: ax, x1: ax + width };
     // wall-jump chimneys: the previous platform's stub, now that both its neighbours are known
     if (stubWanted) placeStub(prev, steps.length >= 2 ? steps[steps.length - 2] : null, cur);
-    stubWanted = rng.chance(0.14);
+    // none while a chunk is pending: a stub beside an approach platform could reach into its landing yard
+    stubWanted = rng.chance(0.14) && !pending;
 
     prev = cur;
     steps.push(prev);
@@ -292,10 +412,11 @@ export function buildTower(seed: number, opts: TowerOptions): LevelDef {
     baseY,
   };
   STEPS.set(def, steps);
+  PLACED.set(def, placements);
   return def;
 }
 
-/** Endless Ascent: a 560-row tower, local seed, rising tide, personal best only. */
+/** Endless Ascent: a 560-row tower, local seed, rising tide, personal best only. Authored chunks in every band. */
 export function makeEndlessLevel(seed: number): LevelDef {
   return buildTower(seed, {
     id: 'endless',
@@ -305,5 +426,6 @@ export function makeEndlessLevel(seed: number): LevelDef {
     par: 999,
     rows: ENDLESS_ROWS,
     crystals: true,
+    chunks: CHUNKS_DATA,
   });
 }
