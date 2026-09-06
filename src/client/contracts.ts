@@ -57,7 +57,11 @@ export interface Progress {
     /** Replay of the best endless run (encoded masks, SIM_VERSION) and its seed — for the self echo on "같은 탑 다시". */
     bestMasks?: string; bestSeed?: number; bestSim?: number;
   };
-  daily: Record<string, { bestTicks: number; cleared: boolean; height: number; runId?: string; masks?: string; sim?: number; seed: number }>;
+  daily: Record<string, {
+    bestTicks: number; cleared: boolean; height: number; runId?: string; masks?: string; sim?: number; seed: number;
+    /** Last known world rank of the best (accepted submission / a board that flagged our row) — the 7-day strip's number. */
+    rank?: number;
+  }>;
   totals: { deaths: number; shards: number };
   seen: Record<string, boolean>;
   lastLevel: string | null;
@@ -192,7 +196,10 @@ export interface AudioPort {
 }
 
 // ---------------------------------------------------------------- ui
-export type Screen = 'boot' | 'title' | 'select' | 'daily' | 'settings' | 'credits' | 'data' | 'play' | 'pause' | 'result' | 'over' | 'name';
+export type Screen =
+  | 'boot' | 'title' | 'select' | 'daily' | 'settings' | 'credits' | 'data' | 'play' | 'pause' | 'result' | 'over' | 'name'
+  /** Stuck-detector offer (a modal over play; answered with assistAccept / assistDecline). */
+  | 'assist';
 
 export type UIAction =
   | { type: 'start'; levelId: string }

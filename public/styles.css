@@ -283,6 +283,27 @@ h1,h2,h3,p,dl,dd{margin:0}
 .daily__stats dt{font-size:.62rem;font-weight:700;letter-spacing:.14em;color:var(--muted-2);text-transform:uppercase}
 .daily__stats dd{font-size:1.02rem;font-weight:600;color:var(--paper);margin-top:.15rem;letter-spacing:.02em;overflow-wrap:anywhere}
 .daily__lead{font-size:.8rem;line-height:1.6;color:var(--muted)}
+/* 7-day strip + streak badge + yesterday's tower */
+.daily__streak{display:flex;flex-direction:column;gap:.45rem}
+.daily__streak-head{display:flex;justify-content:space-between;align-items:center;gap:.6rem;font-size:.74rem;color:var(--muted);
+  font-family:var(--f-kr);font-variant-numeric:tabular-nums}
+.daily__badge{font-size:.6rem;font-weight:800;letter-spacing:.14em;padding:.2rem .55rem;border-radius:99px;white-space:nowrap;
+  color:var(--teal-hi);background:rgba(127,227,214,.12);border:1px solid rgba(127,227,214,.35)}
+.daily__badge--final{color:var(--gold-hi);background:rgba(244,201,93,.12);border-color:rgba(244,201,93,.4)}
+.daily__week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:.3rem}
+.daily__day{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.1rem;min-height:2.9rem;padding:.3rem .1rem;
+  border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-2);font-variant-numeric:tabular-nums;overflow:hidden}
+.daily__day small{font-size:.58rem;font-weight:700;letter-spacing:.04em;color:var(--muted-2)}
+.daily__day b{font-size:.78rem;font-weight:700;color:var(--muted-2);font-family:var(--f-num);white-space:nowrap}
+.daily__day.is-tried{border-color:rgba(143,230,255,.35);background:rgba(143,230,255,.08)}
+.daily__day.is-tried b{color:var(--tide)}
+.daily__day.is-cleared{border-color:rgba(127,227,214,.45);background:rgba(127,227,214,.12)}
+.daily__day.is-cleared b{color:var(--teal-hi)}
+.daily__day.is-today{box-shadow:0 0 0 2px rgba(242,180,138,.6)}
+.daily__day.is-today small{color:var(--dawn)}
+.daily__yday{display:flex;align-items:center;flex-wrap:wrap;gap:.4rem;font-size:.76rem;color:var(--muted);font-family:var(--f-kr);
+  font-variant-numeric:tabular-nums}
+.daily__yday b{color:var(--paper);font-weight:700}
 .daily__board{display:flex;flex-direction:column;gap:.6rem;min-height:0;min-width:0}
 .board__head{display:flex;align-items:center;gap:.7rem}
 .board__head h3{font-size:.7rem;font-weight:800;letter-spacing:.3em;color:var(--coral)}
@@ -450,6 +471,24 @@ th.lb__shards::before{display:none}
 .res__stars .star:nth-child(2).on{animation-delay:.12s}
 .res__stars .star:nth-child(3).on{animation-delay:.24s}
 @keyframes starPop{from{opacity:0;transform:scale(.2) rotate(-40deg)}to{opacity:1;transform:none}}
+
+/* game over: progress toward the personal best (--pct set by the UI, 0..1) */
+.over__bar{margin:-.5rem 0 1rem;font-size:.74rem;color:var(--muted);font-family:var(--f-kr);font-variant-numeric:tabular-nums}
+.over__bar i{display:block;position:relative;height:.45rem;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden;margin-bottom:.4rem}
+.over__bar i::after{content:"";position:absolute;inset:0;width:calc(var(--pct,0) * 100%);border-radius:99px;
+  background:linear-gradient(90deg,var(--tide),var(--teal));transition:width .9s .2s var(--e-out)}
+.over__bar.is-best{color:var(--gold-hi)}
+.over__bar.is-best i::after{background:linear-gradient(90deg,var(--gold),var(--gold-hi));box-shadow:0 0 12px rgba(244,201,93,.6)}
+
+/* inline name prompt (result / game-over, before the first eligible submission) */
+.name-inline{margin:0 0 .8rem;padding:.8rem .9rem;border-radius:12px;background:rgba(127,227,214,.06);border:1px solid rgba(127,227,214,.28);
+  animation:fadeUp .4s var(--e-out) both}
+.name-inline__lead{font-size:.78rem;line-height:1.55;color:var(--muted);font-family:var(--f-kr);margin-bottom:.55rem}
+.name-inline__lead b{color:var(--paper);font-weight:600}
+.name-inline .name{margin-bottom:.45rem}
+.name-inline .name__input{font-size:1rem;padding:.55rem .8rem}
+.name-inline__btns{display:flex;gap:.5rem;flex-wrap:wrap}
+.chip--primary{color:var(--teal-hi);border-color:rgba(127,227,214,.5);background:rgba(127,227,214,.14)}
 
 /* submission state */
 .submit{display:flex;align-items:center;gap:.6rem;margin:0 0 .7rem;padding:.55rem .8rem;border-radius:10px;font-size:.8rem;

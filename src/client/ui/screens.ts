@@ -15,9 +15,9 @@
 import type { InputPort, MenuAction, Screen } from '../contracts.js';
 
 export const SCREENS: readonly Screen[] = [
-  'boot', 'title', 'select', 'daily', 'settings', 'credits', 'play', 'pause', 'result', 'over', 'name',
+  'boot', 'title', 'select', 'daily', 'settings', 'credits', 'play', 'pause', 'result', 'over', 'name', 'assist',
 ];
-export const MODAL_SCREENS: ReadonlySet<Screen> = new Set<Screen>(['pause', 'result', 'over', 'settings', 'credits', 'name']);
+export const MODAL_SCREENS: ReadonlySet<Screen> = new Set<Screen>(['pause', 'result', 'over', 'settings', 'credits', 'name', 'assist']);
 /** How long the leaving animation keeps a screen in the layout. */
 export const LEAVE_MS = 280;
 

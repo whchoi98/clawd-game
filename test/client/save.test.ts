@@ -8,9 +8,10 @@
 import { describe, expect, it } from 'vitest';
 import { SIM_VERSION } from '../../src/sim/types.js';
 import type { Progress } from '../../src/client/contracts.js';
+import type { LevelDef } from '../../src/sim/types.js';
 import {
-  PROGRESS_KEY, Save, daysBucket, defaultProgress, echoMasks, markEcho, repairProgress, retentionBuckets, touchPlayDay,
-  type StorageLike,
+  DEFAULT_NAME, PROGRESS_KEY, Save, daysBucket, defaultProgress, echoMasks, fallbackName, isValidName, markEcho, repairProgress,
+  retentionBuckets, streakFor, touchPlayDay, unlockedZones, type StorageLike,
 } from '../../src/client/save.js';
 
 class MemStorage implements StorageLike {
@@ -134,5 +135,100 @@ describe('retention fields (firstSeen · playDays · lastPlayDay)', () => {
     expect(ok.firstSeen).toBe(T0);
     expect(ok.playDays).toBe(3);
     expect(ok.lastPlayDay).toBe('2026-09-06');
+  });
+});
+
+// ---------------------------------------------------------------- P2-3 daily streak
+describe('streakFor (daily streak)', () => {
+  const rec = (date: string, cleared = false) => [date, { bestTicks: cleared ? 4000 : 0, cleared, height: 12, seed: 1 }] as const;
+  const daily = (...dates: readonly (readonly [string, unknown])[]) => Object.fromEntries(dates);
+
+  it('counts consecutive UTC days ending today (any attempt is a 도전)', () => {
+    expect(streakFor(daily(rec('2026-09-04'), rec('2026-09-05', true), rec('2026-09-06')), '2026-09-06')).toBe(3);
+    expect(streakFor(daily(rec('2026-09-06')), '2026-09-06')).toBe(1);
+  });
+
+  it('a streak ending yesterday still counts (today is not over); a gap breaks it', () => {
+    expect(streakFor(daily(rec('2026-09-03'), rec('2026-09-04'), rec('2026-09-05')), '2026-09-06')).toBe(3);
+    // today and two days ago, nothing yesterday → only today counts
+    expect(streakFor(daily(rec('2026-09-04'), rec('2026-09-06')), '2026-09-06')).toBe(1);
+    // the last attempt was two days ago: the streak is over
+    expect(streakFor(daily(rec('2026-09-03'), rec('2026-09-04')), '2026-09-06')).toBe(0);
+  });
+
+  it('ignores dates after the server date, junk keys and empty saves', () => {
+    expect(streakFor(daily(rec('2026-09-07'), rec('2026-09-08')), '2026-09-06')).toBe(0);
+    expect(streakFor(daily(rec('2026-09-06'), rec('2026-09-07'), rec('2026-09-09')), '2026-09-06')).toBe(1);
+    expect(streakFor({}, '2026-09-06')).toBe(0);
+    expect(streakFor(daily(rec('2026-09-06')), 'not-a-date')).toBe(0);
+    // month and year boundaries are plain UTC arithmetic
+    expect(streakFor(daily(rec('2026-12-31'), rec('2027-01-01')), '2027-01-01')).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------- P2-5 fallback name
+describe('fallbackName', () => {
+  it('is the default name plus four hex digits, stable per id, distinct across ids and a valid board name', () => {
+    const a = fallbackName('abcdefgh-1234');
+    expect(a).toMatch(/^클로드 #[0-9a-f]{4}$/);
+    expect(a.startsWith(`${DEFAULT_NAME} #`)).toBe(true);
+    expect(fallbackName('abcdefgh-1234')).toBe(a);
+    expect(fallbackName('abcdefgh-1235')).not.toBe(a);
+    expect([...a].length).toBeLessThanOrEqual(12);
+    expect(isValidName(a)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------- P2-6 two-zone unlock
+describe('unlockedZones', () => {
+  const zones: Pick<LevelDef, 'id' | 'biome'>[] = [
+    { id: 't1', biome: 'tidepool' }, { id: 't2', biome: 'tidepool' }, { id: 't3', biome: 'tidepool' },
+    { id: 's1', biome: 'stormspire' }, { id: 's2', biome: 'stormspire' }, { id: 's3', biome: 'stormspire' },
+    { id: 'v1', biome: 'voidreef' }, { id: 'v2', biome: 'voidreef' }, { id: 'v3', biome: 'voidreef' },
+  ];
+  const withDone = (...ids: string[]) => {
+    const p = defaultProgress('abcdefghij');
+    for (const id of ids) p.levels[id] = { done: true, bestTicks: 100, bestShards: 0, stars: 1, relics: 0, deaths: 0 };
+    return p;
+  };
+
+  it('a fresh save opens the first zone only', () => {
+    expect([...unlockedZones(zones, withDone())]).toEqual(['t1']);
+  });
+
+  it('clearing zone N opens N+1 and N+2 within the tier; the next tier waits for the previous zone', () => {
+    expect([...unlockedZones(zones, withDone('t1'))].sort()).toEqual(['t1', 't2', 't3']);
+    // t2 alone: t3 opens, but s1 (a tier's first zone) still needs t3 itself
+    expect([...unlockedZones(zones, withDone('t2'))].sort()).toEqual(['t1', 't2', 't3']);
+    expect([...unlockedZones(zones, withDone('t3'))].sort()).toEqual(['s1', 's2', 't1', 't3']);
+    expect([...unlockedZones(zones, withDone('t1', 't2', 't3', 's3'))].sort()).toEqual(['s1', 's2', 's3', 't1', 't2', 't3', 'v1', 'v2']);
+  });
+});
+
+// ---------------------------------------------------------------- P2-2 / P2-6 repair of the new fields
+describe('repairProgress · endless best replay, daily rank, session deaths', () => {
+  it('keeps the best endless replay only with the current SIM_VERSION and a seed', () => {
+    const ok = stored({ v: 1, endless: { bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION } });
+    expect(ok.progress.endless).toEqual({ bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION });
+    const stale = stored({ v: 1, endless: { bestHeight: 40, bestShards: 3, runs: 2, bestMasks: 'AAEA', bestSeed: 777, bestSim: SIM_VERSION - 1 } });
+    expect(stale.progress.endless).toEqual({ bestHeight: 40, bestShards: 3, runs: 2 });
+    const noSeed = stored({ v: 1, endless: { bestHeight: 40, bestMasks: 'AAEA', bestSim: SIM_VERSION } });
+    expect(noSeed.progress.endless.bestMasks).toBeUndefined();
+  });
+
+  it('keeps a positive daily rank and positive session deaths, drops junk', () => {
+    const save = stored({
+      v: 1,
+      levels: { t1: { done: false, deaths: 30, sessionDeaths: 21 }, t2: { done: false, sessionDeaths: -4 }, t3: { sessionDeaths: 'many' } },
+      daily: {
+        '2026-09-05': { bestTicks: 7000, cleared: true, height: 0, seed: 7, rank: 12 },
+        '2026-09-04': { bestTicks: 0, cleared: false, height: 3, seed: 6, rank: 0 },
+      },
+    });
+    expect(save.progress.levels.t1.sessionDeaths).toBe(21);
+    expect(save.progress.levels.t2.sessionDeaths).toBeUndefined();
+    expect(save.progress.levels.t3.sessionDeaths).toBeUndefined();
+    expect(save.progress.daily['2026-09-05'].rank).toBe(12);
+    expect(save.progress.daily['2026-09-04'].rank).toBeUndefined();
   });
 });

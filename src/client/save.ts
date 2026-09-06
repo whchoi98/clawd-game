@@ -9,6 +9,7 @@
  */
 import type { Binds, LevelRecord, Progress, Settings } from './contracts.js';
 import type { DailyResponse } from '../shared/protocol.js';
+import type { LevelDef } from '../sim/types.js';
 import { SIM_VERSION } from '../sim/types.js';
 import { BIND_ACTIONS, DEFAULT_BINDS, cloneBinds } from './input/binds.js';
 
@@ -25,7 +26,60 @@ export function utcDateStr(ms: number): string {
 }
 export const DEFAULT_NAME = '클로드';
 export const SAVE_DEBOUNCE_MS = 250;
-const MS_PER_DAY = 86_400_000;
+export const MS_PER_DAY = 86_400_000;
+
+// ---------------------------------------------------------------- names
+/**
+ * The name a player who skips the inline prompt submits under: the default
+ * name plus four hex digits of a stable local hash of the player id (FNV-1a),
+ * so two anonymous players stop reading as the same '클로드' on a board. Nine
+ * code points, inside the 12-char name rule; the id itself never leaves the
+ * device this way (four hex digits are not reversible).
+ */
+export function fallbackName(playerId: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < playerId.length; i++) {
+    h ^= playerId.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${DEFAULT_NAME} #${h.toString(16).padStart(8, '0').slice(0, 4)}`;
+}
+
+// ---------------------------------------------------------------- daily streak
+/**
+ * Consecutive UTC days, ending today or yesterday, that carry a daily record
+ * (any attempt counts as a 도전). `serverDate` is the DailyResponse date so a
+ * wrong device clock cannot break a streak; dates after it are ignored. Pure.
+ */
+export function streakFor(daily: Readonly<Record<string, unknown>>, serverDate: string): number {
+  const today = Date.parse(`${serverDate}T00:00:00.000Z`);
+  if (!Number.isFinite(today)) return 0;
+  const has = (ms: number): boolean => Object.prototype.hasOwnProperty.call(daily, utcDateStr(ms)) && isObj(daily[utcDateStr(ms)]);
+  let cursor = has(today) ? today : has(today - MS_PER_DAY) ? today - MS_PER_DAY : NaN;
+  if (Number.isNaN(cursor)) return 0;
+  let n = 0;
+  while (has(cursor)) { n++; cursor -= MS_PER_DAY; }
+  return n;
+}
+
+// ---------------------------------------------------------------- zone unlocking
+/**
+ * Story zones open for `progress`: the first zone, every zone whose
+ * predecessor is done, and — clearing zone N opens N+1 and N+2 — every zone two
+ * steps past a cleared one, unless it is the first zone of a tier (t3→s1 and
+ * s3→v1 still need the previous zone cleared). Shared by the select screen
+ * and the shell's unlock bookkeeping so the two never disagree.
+ */
+export function unlockedZones(levels: readonly Pick<LevelDef, 'id' | 'biome'>[], progress: Pick<Progress, 'levels'>): Set<string> {
+  const open = new Set<string>();
+  const done = (i: number): boolean => i >= 0 && !!progress.levels[levels[i].id]?.done;
+  levels.forEach((lv, i) => {
+    const tierFirst = i > 0 && levels[i - 1].biome !== lv.biome;
+    // A cleared zone is always open again, whatever the save says about its predecessors.
+    if (i === 0 || done(i) || done(i - 1) || (!tierFirst && done(i - 2))) open.add(lv.id);
+  });
+  return open;
+}
 
 // ---------------------------------------------------------------- echo versioning
 /**
@@ -242,6 +296,9 @@ function repairLevelRecord(raw: unknown): LevelRecord {
   // Echo masks survive only with the SIM_VERSION that recorded them (see markEcho).
   const v = r as LevelRecord & EchoVersioned;
   if (typeof v.masks !== 'string' || v.sim !== SIM_VERSION) { delete v.masks; delete v.sim; }
+  // Stuck-detector input: deaths in this zone on this install (absent until the first one).
+  const sd = int(r.sessionDeaths);
+  if (sd > 0) r.sessionDeaths = sd; else delete r.sessionDeaths;
   return r;
 }
 
@@ -256,10 +313,12 @@ export function repairProgress(raw: unknown, defaults: Progress): Progress {
     for (const [date, rec] of Object.entries(p.daily)) {
       if (!isObj(rec) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       const d = rec as Record<string, unknown>;
+      const rank = int(d.rank);
       daily[date] = {
         bestTicks: int(d.bestTicks), cleared: bool(d.cleared, false), height: num(d.height, 0, 1e6, 0), seed: int(d.seed) >>> 0,
         ...(typeof d.runId === 'string' ? { runId: d.runId } : {}),
         ...(typeof d.masks === 'string' && d.sim === SIM_VERSION ? { masks: d.masks, sim: SIM_VERSION } : {}),
+        ...(rank > 0 ? { rank } : {}),
       };
     }
   }
@@ -268,8 +327,14 @@ export function repairProgress(raw: unknown, defaults: Progress): Progress {
   if (typeof p.firstSeen !== 'number' || !Number.isFinite(p.firstSeen) || p.firstSeen <= 0) delete p.firstSeen;
   p.playDays = int(p.playDays);
   if (typeof p.lastPlayDay !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(p.lastPlayDay)) delete p.lastPlayDay;
+  // The best endless run's replay (self echo on 같은 탑 다시) survives only with the SIM_VERSION that recorded it.
+  const e = (isObj(p.endless) ? p.endless : {}) as Record<string, unknown>;
+  const bestMasks = typeof e.bestMasks === 'string' && e.bestMasks && e.bestSim === SIM_VERSION && typeof e.bestSeed === 'number'
+    ? { bestMasks: e.bestMasks, bestSeed: int(e.bestSeed) >>> 0, bestSim: SIM_VERSION }
+    : {};
   p.endless = {
-    bestHeight: num(p.endless?.bestHeight, 0, 1e6, 0), bestShards: int(p.endless?.bestShards), runs: int(p.endless?.runs),
+    bestHeight: num(e.bestHeight, 0, 1e6, 0), bestShards: int(e.bestShards), runs: int(e.runs),
+    ...bestMasks,
   };
   p.totals = { deaths: int(p.totals?.deaths), shards: int(p.totals?.shards) };
   if (!isObj(p.seen)) p.seen = {};

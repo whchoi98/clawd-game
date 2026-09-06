@@ -30,7 +30,9 @@ import type {
 import { MAX_FRAME_DT, TickScheduler } from './loop.js';
 import { FxBus } from './fx.js';
 import { Camera } from './camera.js';
-import { Save, echoMasks, markEcho, retentionBuckets, utcDateStr } from './save.js';
+import {
+  DEFAULT_NAME, MS_PER_DAY, Save, echoMasks, fallbackName, isValidName, markEcho, retentionBuckets, unlockedZones, utcDateStr,
+} from './save.js';
 import { cloneBinds } from './input/binds.js';
 import { ApiError } from './net/api.js';
 import type { FlushEvent, FlushResult, QueuedRun, SubmitQueue } from './net/queue.js';
@@ -41,8 +43,21 @@ import { REHINT_HAZARD, REHINT_PIT } from './ui/hints.js';
 
 export type RunMode = 'story' | 'daily' | 'endless';
 
+/**
+ * Yesterday's tower as the daily screen shows it: the date, the seed when the
+ * server sent one (null = cannot be climbed), and its board with our row when
+ * it was fetched (null = not yet / offline).
+ */
+export interface YesterdayInfo {
+  date: string;
+  seed: number | null;
+  lb: LeaderboardResponse | null;
+}
+
 /** UIPort plus the optional extras the concrete UI offers. */
 export interface ShellUI extends UIPort {
+  /** Daily screen: yesterday's tower row ("어제의 탑 · 세계 N위 / M명") and the 재도전 entry. */
+  setYesterday?(info: YesterdayInfo | null): void;
   /** `justUnlocked` names the zones this refresh opens (card animation + unlock sound). */
   refreshSelect(progress: Progress, levels: LevelDef[], justUnlocked?: ReadonlySet<string>): void;
   banner?(text: string): void;
@@ -109,6 +124,12 @@ export const TIDE_TOAST_DELAY = 1.7;
 export const TITLE_ROTATE = 14;
 /** Foes closer than this raise the music intensity. */
 const THREAT_RANGE = 150;
+/** Deaths in one story zone (on this install) before the assist offer; it comes back every further multiple unless declined for good. */
+export const ASSIST_OFFER_DEATHS = 20;
+/** progress.seen flag: the inline name prompt was shown once (asked once per install). */
+export const NAME_ASKED_KEY = 'name:asked';
+/** progress.seen flag per zone: 다시 묻지 않기 on the assist offer. */
+export const assistSeenKey = (levelId: string): string => `assist:${levelId}`;
 
 /** Growable per-tick mask recording, capped at MAX_TICKS. */
 export class MaskLog {
@@ -165,6 +186,8 @@ export interface Run {
   echoSafe: boolean;
   /** Encoded mask log of the finished run (echoSafe only); matches queued / stored records. */
   encoded: string | null;
+  /** An eligible run whose submission waits for the inline name prompt on the result screen. */
+  pendingSubmit: string | null;
   summary: RunSummary | null;
   view: ResultView | null;
   resultKind: 'clear' | 'over' | null;
@@ -210,6 +233,8 @@ export class Scenes {
   run: Run | null = null;
   daily: DailyResponse | null = null;
   dailyLb: LeaderboardResponse | null = null;
+  /** Yesterday's tower (date / seed / board), fetched once per day at boot and when the daily screen opens. */
+  yesterday: YesterdayInfo | null = null;
 
   private readonly renderer: RendererPort;
   private readonly audio: ShellAudio;
@@ -301,6 +326,8 @@ export class Scenes {
     this.showTitle();
     // Runs finished while offline last time go out now (never awaited: boot must not wait on the network).
     void this.flushQueue();
+    // Yesterday's tower (our rank on its board) for the daily screen and the title subtitle: once per day, in the background.
+    void this.track(this.loadYesterday());
   }
 
   /** Count today as a play day and report the anonymous boot event (device facts + retention buckets). */
@@ -366,6 +393,12 @@ export class Scenes {
       case 'quit': this.quitToMenu(); break;
       case 'next': this.nextLevel(); break;
       case 'retry': this.trackRun('retry', { kind: 'retry' }); this.retryRun(); break;
+      // Game-over comeback: the same tower (same seed → the self echo of the best climb) or a fresh one.
+      case 'sameTower': this.trackRun('retry', { kind: 'sameTower' }); this.sameTower(); break;
+      case 'newTower': this.trackRun('retry', { kind: 'newTower' }); this.newTower(); break;
+      case 'retryYesterday': this.startYesterday(); break;
+      case 'assistAccept': this.acceptAssist(); break;
+      case 'assistDecline': this.declineAssist(a.never); break;
       case 'openSelect': this.ui.refreshSelect(this.save.progress, this.levels); break;
       case 'openDaily': void this.track(this.openDaily()); break;
       case 'openSettings':
@@ -413,10 +446,30 @@ export class Scenes {
     return true;
   }
 
-  startDaily(daily: DailyResponse, opts: { restart?: boolean; offline?: boolean } = {}): void {
+  /**
+   * Start a daily tower. `past` marks yesterday's tower: it is climbed and
+   * submitted under its own date but never becomes `this.daily` (today's).
+   * Starting counts as a 도전 for the streak, whether or not the run finishes.
+   */
+  startDaily(daily: DailyResponse, opts: { restart?: boolean; offline?: boolean; past?: boolean } = {}): void {
     const def = this.makeDaily(daily.seed);
-    this.daily = daily;
+    if (!opts.past) this.daily = daily;
+    this.save.dailyRecord(daily.date, daily.seed);
+    this.save.saveProgress();
     this.beginRun(def, 'daily', daily.seed, { date: daily.date, seed: daily.seed }, !!opts.restart, !!opts.offline);
+  }
+
+  /** 어제의 탑 재도전: yesterday's seed under yesterday's date — the server still accepts it until the end of today. */
+  private startYesterday(): void {
+    const y = this.yesterday;
+    if (!y || y.seed === null) { this.ui.toast('어제의 탑 시드를 아직 받지 못했다'); return; }
+    if (this.daily && !dailyVersionOk(this.daily)) {
+      this.ui.toast('새 버전이 나왔다. 새로고침 후 오늘의 탑을 오를 수 있다');
+      this.serverNewer(this.daily.sim ?? null);
+      return;
+    }
+    const expiresAt = new Date(Date.parse(`${y.date}T00:00:00.000Z`) + 2 * MS_PER_DAY).toISOString();
+    this.startDaily({ date: y.date, seed: y.seed, levelId: 'daily', expiresAt }, { past: true });
   }
 
   startEndless(seed?: number): void {
@@ -463,6 +516,7 @@ export class Scenes {
       eligible: echoSafe && mode !== 'endless' && !offline,
       echoSafe,
       encoded: null,
+      pendingSubmit: null,
       summary: null, view: null, resultKind: null, resultTimer: -1, resultShown: false,
       // Stored heights are whole tiles; floor defensively for saves written before that rule.
       prevBestHeight: Math.floor(mode === 'daily' && daily ? (this.save.progress.daily[daily.date]?.height ?? 0)
@@ -501,13 +555,9 @@ export class Scenes {
     void this.track(this.loadEchoes(run));
   }
 
-  /** Story zones open right now: the first one plus every zone whose predecessor is done (mirrors the select screen). */
+  /** Story zones open right now (the select screen applies the same rule: clearing N opens N+1 and N+2 within the tier). */
   private unlockedZones(progress: Progress = this.save.progress): Set<string> {
-    const open = new Set<string>();
-    this.levels.forEach((lv, i) => {
-      if (i === 0 || progress.levels[this.levels[i - 1].id]?.done) open.add(lv.id);
-    });
-    return open;
+    return unlockedZones(this.levels, progress);
   }
 
   private resume(): void {
@@ -522,16 +572,74 @@ export class Scenes {
     const run = this.run;
     if (!run) return;
     if (run.mode === 'story') this.startLevel(run.def.id, { restart: true });
-    else if (run.mode === 'daily' && run.daily) this.startDaily(this.dailyFor(run), { restart: true, offline: run.offline });
+    else if (run.mode === 'daily' && run.daily) this.startDaily(this.dailyFor(run), { restart: true, offline: run.offline, past: this.isPast(run) });
     else this.startEndless(run.seed);
+  }
+
+  // ================================================================ stuck detector (assist offer)
+  /**
+   * Every death in a story zone counts on this install (LevelRecord.sessionDeaths).
+   * At every ASSIST_OFFER_DEATHS-th death, with assist off and the zone not
+   * marked 다시 묻지 않기, the UI offers to restart the zone in assist mode.
+   */
+  private countDeath(run: Run): void {
+    if (run.mode !== 'story') return;
+    const rec = this.save.levelRecord(run.def.id);
+    rec.sessionDeaths = (rec.sessionDeaths ?? 0) + 1;
+    this.save.saveProgress();
+    if (rec.sessionDeaths % ASSIST_OFFER_DEATHS !== 0) return;
+    if (this.save.settings.assist || run.sim.assist || this.save.progress.seen[assistSeenKey(run.def.id)]) return;
+    this.ui.offerAssist?.(run.def.name);
+  }
+
+  /** 다시 시작: assist on (the Sim takes it in its constructor, so the zone restarts) — the run is no longer board-eligible. */
+  private acceptAssist(): void {
+    const run = this.run;
+    this.save.settings.assist = true;
+    this.save.saveSettings();
+    this.applySettings();
+    if (!run) return;
+    if (run.mode === 'story') this.startLevel(run.def.id, { restart: true });
+    else this.restartRun();
+  }
+
+  /** 이번엔 괜찮다 / 다시 묻지 않기: back to the run; `never` marks the zone so the offer is not repeated. */
+  private declineAssist(never: boolean): void {
+    const run = this.run;
+    if (never && run) {
+      this.save.progress.seen[assistSeenKey(run.def.id)] = true;
+      this.save.saveProgress();
+    }
+    if (run && !run.summary) this.resume();
   }
 
   private retryRun(): void {
     const run = this.run;
     if (!run) return;
     if (run.mode === 'story') this.startLevel(run.def.id, { restart: true });
-    else if (run.mode === 'daily' && run.daily) this.startDaily(this.dailyFor(run), { restart: true, offline: run.offline });
+    else if (run.mode === 'daily' && run.daily) this.startDaily(this.dailyFor(run), { restart: true, offline: run.offline, past: this.isPast(run) });
     else this.startEndless();
+  }
+
+  /** 같은 탑 다시: the same seed — endless keeps its seed, a daily is the same daily anyway. */
+  private sameTower(): void {
+    const run = this.run;
+    if (!run) return;
+    if (run.mode === 'endless') this.startEndless(run.seed);
+    else this.retryRun();
+  }
+
+  /** 새 탑: a fresh endless seed; for anything else the plain retry. */
+  private newTower(): void {
+    const run = this.run;
+    if (!run) return;
+    if (run.mode === 'endless') this.startEndless();
+    else this.retryRun();
+  }
+
+  /** A daily run for a date other than today's (yesterday's tower). */
+  private isPast(run: Run): boolean {
+    return run.mode === 'daily' && !!run.daily && !!this.daily && run.daily.date !== this.daily.date;
   }
 
   private nextLevel(): void {
@@ -861,6 +969,7 @@ export class Scenes {
         const line = deathLine(ev.cause);
         if (line && run.mode === 'story') this.ui.toast(line);
         this.rehint(run, ev.cause);
+        this.countDeath(run);
         run.deathAt = run.t;
         // Tile coordinates only: the death heat-map needs nothing finer.
         this.telemetry?.track('death', {
@@ -927,7 +1036,39 @@ export class Scenes {
       ...(nextLevelId && justUnlocked.has(nextLevelId) ? { unlocked: { levelId: nextLevelId, name: this.levelById[nextLevelId].name } } : {}),
     };
     this.ui.refreshSelect(this.save.progress, this.levels, justUnlocked);
-    if (run.eligible && encoded) void this.track(this.submit(run, encoded));
+    if (run.eligible && encoded) {
+      // The first eligible record of an install still carrying the default name
+      // waits for the inline name prompt on the result screen (see showResult).
+      if (this.needsNamePrompt()) run.pendingSubmit = encoded;
+      else void this.track(this.submit(run, encoded));
+    }
+  }
+
+  /** The default name would go on a board: ask once per install, before the first eligible submission. */
+  private needsNamePrompt(): boolean {
+    const p = this.save.progress;
+    return p.player.name === DEFAULT_NAME && !p.seen[NAME_ASKED_KEY];
+  }
+
+  /**
+   * Inline name onboarding: after the rank animation the result screen asks
+   * for a name; a confirmed one is saved and used in the body, 건너뛰기 stores
+   * the default plus four hex digits of the player id's hash. Then the run is
+   * submitted as usual. A UI without the prompt is a skip.
+   */
+  private async promptNameThenSubmit(run: Run, encoded: string): Promise<void> {
+    const p = this.save.progress;
+    p.seen[NAME_ASKED_KEY] = true;
+    this.save.saveProgress();
+    let name: string | null = null;
+    try {
+      name = this.ui.askNameInline ? await this.ui.askNameInline() : null;
+    } catch { name = null; }
+    const trimmed = typeof name === 'string' ? name.trim() : '';
+    p.player.name = isValidName(trimmed) && trimmed !== DEFAULT_NAME ? trimmed : fallbackName(p.player.id);
+    // The title chip picks the name up on the next refreshSelect (every way back to the menus passes one).
+    this.save.saveProgress();
+    await this.submit(run, encoded);
   }
 
   /** Update progress from a finished run; returns whether it was a personal best. */
@@ -971,6 +1112,11 @@ export class Scenes {
       pb = h > Math.floor(e.bestHeight);
       e.bestHeight = Math.max(Math.floor(e.bestHeight), h);
       e.bestShards = Math.max(e.bestShards, s.shards);
+      // The best climb's replay rides along with its seed: 같은 탑 다시 runs it as the self echo.
+      if (pb) {
+        if (encoded && encoded.length <= MAX_MASKS_B64) { e.bestMasks = encoded; e.bestSeed = run.seed; e.bestSim = SIM_VERSION; }
+        else { delete e.bestMasks; delete e.bestSeed; delete e.bestSim; }
+      }
     }
     prog.totals.shards += s.shards;
     prog.totals.deaths += s.deaths;
@@ -985,11 +1131,30 @@ export class Scenes {
     if (run.resultKind === 'clear') {
       this.ui.showResult(run.view);
     } else {
-      this.ui.showOver(run.summary, run.prevBestHeight);
+      this.ui.showOver(run.summary, run.prevBestHeight, {
+        sameTowerAvailable: run.mode === 'endless',
+        ...(run.mode === 'daily' ? { worldBest: this.worldBestFor(run) } : {}),
+      });
       if (run.view.submit.state !== 'idle') this.ui.updateResult(run.view);
     }
     this.telemetry?.track('result_shown', { levelId: run.def.id, kind: run.resultKind ?? 'clear', mode: run.mode });
+    const pending = run.pendingSubmit;
+    if (pending) {
+      run.pendingSubmit = null;
+      void this.track(this.promptNameThenSubmit(run, pending));
+    }
     this.settleRunEnd(run);
+  }
+
+  /** The top of the daily board this run was climbed on, in whole tiles — the "세계 최고" of the game-over screen. */
+  private worldBestFor(run: Run): number | undefined {
+    const board = run.daily?.date;
+    if (!board) return undefined;
+    const lb = this.dailyLb?.board === board ? this.dailyLb : this.yesterday?.date === board ? this.yesterday.lb : null;
+    let best = -1;
+    for (const e of lb?.entries ?? []) best = Math.max(best, Math.floor(e.height));
+    if (lb?.yours) best = Math.max(best, Math.floor(lb.yours.height));
+    return best >= 0 ? best : undefined;
   }
 
   private pushResult(run: Run): void {
@@ -1032,6 +1197,7 @@ export class Scenes {
       if (res.accepted) {
         view.submit = { state: 'accepted', rank: res.rank, total: res.total };
         this.storeRunId(run, res.runId, encoded);
+        if (mode === 'daily') this.storeDailyRank(board, res.rank);
         this.trackVerdict(run, { accepted: true });
       } else {
         view.submit = { state: 'rejected', reason: res.reason };
@@ -1053,9 +1219,36 @@ export class Scenes {
     if (!reachable) return;
     try {
       view.leaderboard = await this.api.leaderboard({ mode, board, limit: 20, playerId: player.id });
-      if (mode === 'daily') { this.dailyLb = view.leaderboard; }
+      if (mode === 'daily') this.adoptDailyBoard(board, view.leaderboard);
     } catch { /* the board is decoration */ }
     this.pushResult(run);
+  }
+
+  /**
+   * A daily board just arrived: it is today's (the daily screen's board),
+   * yesterday's (the 어제의 탑 row), and our rank on it is remembered on the
+   * record for the 7-day strip.
+   */
+  private adoptDailyBoard(board: string, lb: LeaderboardResponse): void {
+    if (this.daily?.date === board) {
+      this.dailyLb = lb;
+      this.ui.setDaily(this.daily, lb, 'ok');
+    }
+    if (this.yesterday?.date === board) {
+      this.yesterday = { ...this.yesterday, lb };
+      this.ui.setYesterday?.(this.yesterday);
+    }
+    if (lb.yours) this.storeDailyRank(board, lb.yours.rank);
+  }
+
+  /** Remember the world rank of our best on a daily board (the strip's number); the record must exist. */
+  private storeDailyRank(board: string, rank: number): void {
+    const rec = this.save.progress.daily[board];
+    if (!rec || !(rank >= 1)) return;
+    if (rec.rank === rank) return;
+    rec.rank = rank;
+    this.save.saveProgress();
+    this.ui.refreshSelect(this.save.progress, this.levels);
   }
 
   /** Remember the server id of the accepted run when it is still the local best. */
@@ -1111,7 +1304,11 @@ export class Scenes {
     const s = this.save.settings;
     const prog = this.save.progress;
     if (s.echoSelf) {
-      const rec = run.mode === 'story' ? prog.levels[run.def.id] : run.mode === 'daily' && run.daily ? prog.daily[run.daily.date] : undefined;
+      // Endless: the best climb's replay only fits the tower it was climbed on (같은 탑 다시).
+      const e = prog.endless;
+      const rec = run.mode === 'story' ? prog.levels[run.def.id]
+        : run.mode === 'daily' && run.daily ? prog.daily[run.daily.date]
+          : e.bestSeed === run.seed ? { masks: e.bestMasks, sim: e.bestSim } : undefined;
       // Only a replay recorded by this SIM_VERSION reproduces on this sim (older masks are dropped).
       const masks = echoMasks(rec);
       if (masks) {
@@ -1163,7 +1360,7 @@ export class Scenes {
       return;
     }
     this.ui.setDaily(this.daily, this.dailyLb, 'loading');
-    await this.refreshDailyBoard();
+    await Promise.all([this.refreshDailyBoard(), this.loadYesterday()]);
   }
 
   async refreshDailyBoard(): Promise<void> {
@@ -1174,9 +1371,40 @@ export class Scenes {
       if (this.daily !== d) return;
       this.dailyLb = lb;
       this.ui.setDaily(d, lb, 'ok');
+      if (lb.yours) this.storeDailyRank(d.date, lb.yours.rank);
     } catch {
       if (this.daily === d) this.ui.setDaily(d, this.dailyLb, 'error');
     }
+  }
+
+  /**
+   * Yesterday's tower: its date and seed from the DailyResponse (fetched here
+   * when the daily screen has not been opened yet), then its board with our
+   * row. Once per UTC day — a second call for the same date is a no-op, so
+   * boot and the daily screen may both ask.
+   */
+  async loadYesterday(): Promise<void> {
+    const now = this.now();
+    if (!this.daily || Date.parse(this.daily.expiresAt) < now) {
+      try {
+        this.daily = await this.api.daily();
+        this.save.cacheDaily(this.daily);
+      } catch { /* offline: yesterday's board cannot be read either */ }
+    }
+    const d = this.daily;
+    const date = d?.yesterday?.date ?? utcDateStr(now - MS_PER_DAY);
+    const prev = this.yesterday?.date === date ? this.yesterday : null;
+    const info: YesterdayInfo = { date, seed: d?.yesterday?.seed ?? prev?.seed ?? null, lb: prev?.lb ?? null };
+    this.yesterday = info;
+    this.ui.setYesterday?.(info);
+    if (info.lb) return;
+    try {
+      const lb = await this.api.leaderboard({ mode: 'daily', board: date, limit: 1, playerId: this.save.progress.player.id });
+      if (this.yesterday !== info) return;
+      this.yesterday = { ...info, lb };
+      this.ui.setYesterday?.(this.yesterday);
+      if (lb.yours) this.storeDailyRank(date, lb.yours.rank);
+    } catch { /* offline: the row stays at what the local record says */ }
   }
 }
 

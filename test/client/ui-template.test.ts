@@ -21,7 +21,7 @@ const html = readFileSync(resolve(here, '../../public/index.html'), 'utf8');
 const css = readFileSync(resolve(here, '../../public/styles.css'), 'utf8');
 const svg = readFileSync(resolve(here, '../../public/favicon.svg'), 'utf8');
 
-const SCREENS: Screen[] = ['boot', 'title', 'select', 'daily', 'settings', 'credits', 'data', 'play', 'pause', 'result', 'over', 'name'];
+const SCREENS: Screen[] = ['boot', 'title', 'select', 'daily', 'settings', 'credits', 'data', 'play', 'pause', 'result', 'over', 'name', 'assist'];
 
 describe('public/index.html', () => {
   it('has a section for every Screen id', () => {
@@ -216,6 +216,40 @@ describe('public/styles.css', () => {
     const block = css.slice(i, css.indexOf('\n}\n', i));
     expect(block).toMatch(/\.res__rank\.pop[^{]*\{animation:none\}/);
     expect(block).toMatch(/\.card\.is-unlocking/);
+  });
+
+  it('P2-3 · the daily card carries the 7-day strip, the streak badge, the yesterday row and a hidden 재도전 entry', () => {
+    const daily = html.slice(html.indexOf('id="scr-daily"'), html.indexOf('id="scr-play"'));
+    expect(daily).toMatch(/<div class="daily__week" id="daily-week" role="list"/);
+    expect(daily).toMatch(/<b class="daily__badge" id="daily-streak" hidden>/);
+    expect(daily).toMatch(/<p class="daily__yday" id="daily-yday" role="status" hidden>/);
+    expect(daily).toMatch(/<button class="menu__item" data-act="retryYesterday" hidden>어제의 탑 재도전/);
+    expect(daily).toContain('id="daily-mine"');
+    expect(daily).not.toContain('<dt>내 기록</dt>');
+    expect(html).toMatch(/data-act="openDaily">데일리 타워<small id="daily-note">/);
+    expect(css).toMatch(/\.daily__week\{[^}]*grid-template-columns:repeat\(7,/);
+    expect(css).toMatch(/\.daily__day\.is-today\{/);
+    expect(css).toMatch(/\.daily__badge--final\{/);
+  });
+
+  it('P2-2 · the game-over modal has the best-height bar (--pct) and the 같은 탑 다시 / 새 탑 entries next to 다시 도전', () => {
+    const over = html.slice(html.indexOf('id="scr-over"'), html.indexOf('id="scr-name"'));
+    expect(over).toMatch(/<div class="over__bar" id="over-bar" role="progressbar"[^>]*><i><\/i><span id="over-bar-text"><\/span><\/div>/);
+    expect(over).toMatch(/data-act="sameTower" hidden>같은 탑 다시/);
+    expect(over).toMatch(/data-act="newTower" hidden>새 탑/);
+    expect(over).toMatch(/data-act="retry">다시 도전/);
+    expect(css).toMatch(/\.over__bar i::after\{[^}]*width:calc\(var\(--pct,0\) \* 100%\)/);
+    expect(css).toMatch(/\.over__bar\.is-best\{/);
+    expect(css).toMatch(/\.name-inline\{/);
+  });
+
+  it('P2-6 · the assist offer modal speaks the exact line and answers with 다시 시작 / 이번엔 괜찮다 / 다시 묻지 않기', () => {
+    const assist = html.slice(html.indexOf('<!-- ASSIST OFFER'), html.indexOf('id="scr-settings"'));
+    expect(assist).toMatch(/<section class="screen screen--modal" id="scr-assist" aria-label="보조 모드 제안">/);
+    expect(assist).toContain('보조 모드로 이 구역을 다시 시작할까? 기록은 순위표에 오르지 않는다 · 설정에서 언제든 끈다');
+    expect(assist).toMatch(/data-act="assistAccept">다시 시작/);
+    expect(assist).toMatch(/data-act="assistDecline">이번엔 괜찮다/);
+    expect(assist).toMatch(/data-act="assistNever">다시 묻지 않기/);
   });
 
   it('has a compact landscape-phone title layout as a media query, not the inert @container rule', () => {
