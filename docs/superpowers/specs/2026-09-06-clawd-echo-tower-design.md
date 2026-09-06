@@ -79,9 +79,18 @@ exactly as in the reference. The only external fetch is the UI webfont.
 ### 2.3 Server (`src/server`)
 - Fastify 5. Routes: `GET /healthz` (ALB), `GET /api/health`, `GET /api/daily`,
   `POST /api/runs`, `GET /api/leaderboard`, `GET /api/ghost/:runId`.
-- `POST /api/runs` decodes the replay, runs `verifyReplay` with the same sim
-  code the client shipped, and **rejects (422)** any claim the replay does not
-  reproduce (ticks, shards, cleared). Caps: ≤ 10 minutes of ticks, ≤ 64 KB body.
+- `POST /api/runs` decodes the replay, runs `verifyReplayChunked` (the same
+  sim code the client shipped, yielding to the event loop every 2400 ticks so
+  `/healthz` stays responsive) and **rejects (422)** any claim the replay does
+  not reproduce (ticks, shards, deaths, cleared, height). Before replaying it
+  refuses logs longer than the claim can justify
+  (`ticks + intro + deaths × (dying + intro) + slack`), and the verifier stops
+  early once play ticks or deaths exceed the claim. Caps: ≤ 10 minutes of
+  ticks, ≤ 64 KB masks, 12 submissions per IP per minute, 10 per player.
+- Leaderboards never expose the player id (it is the player's only
+  credential): entries carry an HMAC `playerTag` and a server-computed `you`.
+  Ranks are competition ranks (ties share a rank); the DynamoDB sort key is
+  `score#(99999-shards)#runId` so the shard tiebreak holds in production.
 - Rate limit per IP (from `X-Forwarded-For`, first hop) and per player id.
 - Static files: `/assets/*` → `Cache-Control: public, max-age=31536000,
   immutable`; `/index.html` → `no-cache`.
@@ -111,9 +120,15 @@ Constructs: `Data`, `Service`, `Edge` (the VPC is imported in the stack).
   CFN dynamic reference, never plaintext in the template). Behaviours:
   `/assets/*` CACHING_OPTIMIZED; `/api/*` CACHING_DISABLED +
   ALL_VIEWER_EXCEPT_HOST_HEADER; default: custom policy honouring origin
-  `Cache-Control` (min TTL 0). Response headers policy: CSP (self + Google
-  Fonts, no wildcards), HSTS 1 y, nosniff, frame DENY, referrer strict.
-  HTTP/2+3, IPv6, PriceClass 200.
+  `Cache-Control` (min TTL 0). Error caching TTL 0 for 404/403 so a hashed
+  asset that misses an old task during a rolling deploy is never cached.
+  Response headers policy: CSP (`default-src 'self'`; styles only from self
+  and fonts.googleapis.com — no `'unsafe-inline'`; `worker-src 'self'` for
+  the service worker; `object-src 'none'`), HSTS 1 y, nosniff, frame DENY,
+  referrer strict. HTTP/2+3, IPv6, PriceClass 200. `/api/*` forwards
+  `CloudFront-Viewer-Address` (origin request policy
+  AllViewerAndCloudFrontHeaders-2022-06) so the server rate-limits on the real
+  viewer IP; API compression happens at the origin (`@fastify/compress`).
 - ECS: cluster with Container Insights; Fargate task 256 CPU / 512 MiB,
   `ARM64` (image built on this aarch64 host); desired 2, autoscale 2–6 on CPU
   60 % and ALB requests/target; deployment circuit breaker with rollback;
@@ -127,7 +142,14 @@ Constructs: `Data`, `Service`, `Edge` (the VPC is imported in the stack).
   `styles.<hash>.css`; `index.html` rewritten with hashed paths; server →
   `dist/server/index.js` (ESM bundle). `npm run build` does everything.
 - `Dockerfile` multi-stage on `node:22-alpine`, non-root user, `HEALTHCHECK`,
-  `CMD ["node","dist/server/index.js"]`.
+  `CMD ["node","--enable-source-maps","dist/server/index.js"]`. The server
+  bundle has no externals, so the runtime image carries no `node_modules`.
+- `dist/public/sw.js` (service worker, unhashed, no-cache) and
+  `manifest.webmanifest` + `/icons/*.png` make the game an installable PWA:
+  story and endless play fully offline from the precached bundle; the daily
+  seed is cached per UTC date; runs finished offline are queued in
+  localStorage and submitted when the connection returns (the server replays
+  them, so late submission is safe within the daily window).
 
 ## 3. Game design
 
