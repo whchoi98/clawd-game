@@ -15,7 +15,8 @@ import type {
 import type { LevelDef, RunSummary } from '../../src/sim/types.js';
 import { RejectReason } from '../../src/shared/protocol.js';
 import type { LeaderboardResponse } from '../../src/shared/protocol.js';
-import { NAG_DISMISSED_KEY, REASON_KR, UI, reasonKr } from '../../src/client/ui/ui.js';
+import { IOS_HINT_DISMISSED_KEY, NAG_DISMISSED_KEY, REASON_KR, UI, reasonKr } from '../../src/client/ui/ui.js';
+import { PHONE_MAX_SHORT_SIDE, isPhoneViewport, wantsRotatePrompt } from '../../src/client/ui/touch.js';
 import { renderLeaderboard } from '../../src/client/ui/leaderboard.js';
 import { findBindConflict } from '../../src/client/ui/settings.js';
 import { LIVE_INTERVAL, fmtTime } from '../../src/client/ui/hud.js';
@@ -812,6 +813,143 @@ describe('UI rotate prompt', () => {
     window.dispatchEvent(new Event('orientationchange'));
     vi.advanceTimersByTime(200);
     expect(nag.hidden).toBe(true);
+  });
+
+  it('leaves an upright tablet alone: only phones (short side under 600 px) are asked to rotate', () => {
+    // iPad Pro 11 portrait
+    (window as unknown as { innerWidth: number }).innerWidth = 834;
+    (window as unknown as { innerHeight: number }).innerHeight = 1194;
+    setup();
+    document.dispatchEvent(new Event('touchstart'));
+    expect($('#nag-rotate').hidden).toBe(true);
+    expect(isPhoneViewport(window)).toBe(false);
+    expect(wantsRotatePrompt(window)).toBe(false);
+    // iPhone 14 portrait
+    (window as unknown as { innerWidth: number }).innerWidth = 390;
+    (window as unknown as { innerHeight: number }).innerHeight = 664;
+    expect(isPhoneViewport(window)).toBe(true);
+    expect(wantsRotatePrompt(window)).toBe(true);
+    window.dispatchEvent(new Event('orientationchange'));
+    vi.advanceTimersByTime(200);
+    expect($('#nag-rotate').hidden).toBe(false);
+    // the same phone in landscape is fine
+    (window as unknown as { innerWidth: number }).innerWidth = 664;
+    (window as unknown as { innerHeight: number }).innerHeight = 390;
+    expect(wantsRotatePrompt(window)).toBe(false);
+    expect(PHONE_MAX_SHORT_SIDE).toBe(600);
+    expect(isPhoneViewport(null)).toBe(false);
+  });
+});
+
+describe('UI PWA surfaces', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    try { localStorage.clear(); } catch { /* no storage */ }
+  });
+
+  it('showUpdate reveals the bar on menus, hides it during play, and 새로고침 applies once', () => {
+    const { ui } = setup();
+    const bar = $('#upbar');
+    expect(bar.hidden).toBe(true);
+    let applied = 0;
+    ui.show('play');
+    ui.showUpdate(() => { applied++; });
+    expect(bar.hidden).toBe(true);           // never over a live run
+    ui.show('pause');
+    expect(bar.hidden).toBe(false);          // but the pause menu is fine
+    ui.show('play');
+    expect(bar.hidden).toBe(true);
+    ui.show('title');
+    expect(bar.hidden).toBe(false);
+    expect(bar.textContent).toContain('새 버전이 준비됐다');
+    // the bar's button is not part of the menu cursor
+    expect(document.querySelector('#upbar .is-cursor')).toBeNull();
+    expect(document.querySelector('#title-menu .is-cursor')).not.toBeNull();
+    $('#upbar [data-act="applyUpdate"]').click();
+    expect(applied).toBe(1);
+    expect(bar.hidden).toBe(true);
+    $('#upbar [data-act="applyUpdate"]').click();
+    expect(applied).toBe(1);
+  });
+
+  it('setInstallable toggles the title entry and the button calls the install callback', () => {
+    mountTemplate();
+    let prompts = 0;
+    const input = makeInput();
+    const ui = new UI({ document, input, defaultBinds: BINDS, onInstall: () => { prompts++; } });
+    ui.applySettings(makeSettings());
+    ui.refreshSelect(makeProgress(), LEVELS);
+    ui.show('title');
+    const btn = $<HTMLButtonElement>('#title-menu [data-act="install"]');
+    expect(btn.hidden).toBe(true);
+    expect(document.querySelectorAll('#title-menu .menu__item.is-cursor')).toHaveLength(1);
+    ui.setInstallable(true);
+    expect(btn.hidden).toBe(false);
+    expect(btn.textContent).toContain('홈 화면에 추가');
+    // the newly visible entry joined the cursor path: five downs from 탑 오르기 land on it
+    input.queue.push('down', 'down', 'down', 'down', 'down');
+    ui.frame(1 / 60, input);
+    expect(btn.classList.contains('is-cursor')).toBe(true);
+    btn.click();
+    expect(prompts).toBe(1);
+    ui.setInstallable(false);
+    expect(btn.hidden).toBe(true);
+    expect(btn.classList.contains('is-cursor')).toBe(false);
+  });
+
+  it('setIosHint shows the share-sheet hint until it is dismissed, and remembers the dismissal', () => {
+    const { ui } = setup();
+    const hint = $('#ios-hint');
+    expect(hint.hidden).toBe(true);
+    ui.setIosHint(true);
+    expect(hint.hidden).toBe(false);
+    expect(hint.textContent).toContain('공유 → 홈 화면에 추가');
+    $('#ios-hint [data-act="dismissIos"]').click();
+    expect(hint.hidden).toBe(true);
+    expect(localStorage.getItem(IOS_HINT_DISMISSED_KEY)).toBe('1');
+    ui.setIosHint(true);
+    expect(hint.hidden).toBe(true);
+    const again = new UI({ document, input: makeInput(), defaultBinds: BINDS });
+    again.setIosHint(true);
+    expect($('#ios-hint').hidden).toBe(true);
+    again.setIosHint(false);
+    expect($('#ios-hint').hidden).toBe(true);
+  });
+
+  it('setOffline shows the badge and flags the shell', () => {
+    const { ui } = setup();
+    const badge = $('#offline-badge');
+    expect(badge.hidden).toBe(true);
+    ui.setOffline(true);
+    expect(badge.hidden).toBe(false);
+    expect(badge.textContent).toBe('오프라인');
+    expect($('#ui').classList.contains('is-offline')).toBe(true);
+    ui.setOffline(false);
+    expect(badge.hidden).toBe(true);
+    expect($('#ui').classList.contains('is-offline')).toBe(false);
+  });
+
+  it('a queued submission reads as offline-and-pending on the result screen', () => {
+    const { ui } = setup();
+    ui.show('play');
+    ui.showResult({ summary: makeSummary(), levelName: '첫 물결', personalBest: true, stars: 2, submit: { state: 'queued' } });
+    const line = $('#res-submit');
+    expect(line.hidden).toBe(false);
+    expect(line.className).toContain('submit--queued');
+    expect(line.textContent).toBe('오프라인 · 온라인이 되면 보낸다');
+  });
+
+  it('the daily screen says the seed is missing when offline with nothing cached, or offline with a stored seed', () => {
+    const { ui } = setup();
+    ui.show('daily');
+    ui.setDaily(null, null, 'error');
+    expect($('#daily-date').textContent).toBe('오프라인 · 오늘의 시드를 아직 받지 못했다');
+    expect($('#daily-status').textContent).toBe('오프라인');
+    expect($<HTMLButtonElement>('#scr-daily [data-act="daily"]').disabled).toBe(true);
+    ui.setDaily({ date: '2026-09-06', seed: 1, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z' }, null, 'error');
+    expect($('#daily-date').textContent).toContain('2026년 9월 6일');
+    expect($('#daily-status').textContent).toContain('오프라인');
+    expect($<HTMLButtonElement>('#scr-daily [data-act="daily"]').disabled).toBe(false);
   });
 });
 

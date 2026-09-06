@@ -1,13 +1,20 @@
 /**
  * Playwright smoke test against a running server (default http://127.0.0.1:8099).
  *
- *   npx tsx tools/qa/smoke.ts [--no-shots]      BASE_URL=... to point elsewhere
+ *   npx tsx tools/qa/smoke.ts [--no-shots] [--register-sw]   BASE_URL=... to point elsewhere
  *
  * Checks, in order: the title screen appears with zero console/page errors and
  * the world canvas is actually painted; Enter opens zone select; Enter again
- * starts a zone (#scr-play); then every story zone is rendered through the
- * deterministic `?shot=` harness and screenshotted. Screenshots land in
- * tools/qa/out/. Exit code 1 on any console error, page error or failed step.
+ * starts a zone (#scr-play); the service worker has precached the shell and
+ * the title still renders after a reload with the network cut (offline); then
+ * every story zone is rendered through the deterministic `?shot=` harness and
+ * screenshotted. Screenshots land in tools/qa/out/. Exit code 1 on any console
+ * error, page error or failed step.
+ *
+ * The offline step needs a secure context (https, or http on localhost); on a
+ * plain-http remote BASE_URL it is skipped with a warning. --register-sw makes
+ * the script itself call navigator.serviceWorker.register('/sw.js') — only for
+ * proving the worker before the app registers it; never for release QA.
  */
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -16,6 +23,11 @@ import { chromium, type Browser, type Page } from 'playwright';
 
 const BASE_URL = (process.env.BASE_URL ?? 'http://127.0.0.1:8099').replace(/\/+$/, '');
 const NO_SHOTS = process.argv.includes('--no-shots');
+const REGISTER_SW = process.argv.includes('--register-sw');
+/** How long the worker gets to install and fill its precache. */
+const SW_READY_TIMEOUT_MS = 20_000;
+/** Screenshot of the title screen served entirely from the worker's cache. */
+const OFFLINE_SHOT = '04-offline.png';
 const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), 'out');
 const ZONES = ['t1', 't2', 't3', 's1', 's2', 's3', 'v1', 'v2', 'v3'] as const;
 const STEP_TIMEOUT_MS = 30_000;
@@ -66,6 +78,39 @@ function sameOrigin(url: string): boolean {
   }
 }
 
+/** Service workers only run in a secure context: https anywhere, or http on the loopback host. */
+function secureContext(baseUrl: string): boolean {
+  try {
+    const u = new URL(baseUrl);
+    if (u.protocol === 'https:') return true;
+    return u.protocol === 'http:' && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Console errors the browser emits for requests that fail while the network is cut. */
+const OFFLINE_NOISE = /net::ERR_(INTERNET_DISCONNECTED|FAILED|NAME_NOT_RESOLVED|CONNECTION_REFUSED)|Failed to fetch|Load failed/;
+
+type PrecacheState = { cache: string; entries: number } | { pending: string };
+
+/**
+ * Runs inside the page: is a worker active and has a "cet-*" cache got the shell?
+ * Returns a status object; `pending` means keep polling.
+ */
+async function precacheState(): Promise<PrecacheState> {
+  if (!('serviceWorker' in navigator)) return { pending: 'navigator.serviceWorker is unavailable' };
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) return { pending: 'no registration' };
+  if (!reg.active) return { pending: reg.installing ? 'installing' : reg.waiting ? 'waiting' : 'no active worker' };
+  for (const name of await caches.keys()) {
+    if (!name.startsWith('cet-')) continue;
+    const cache = await caches.open(name);
+    if (await cache.match('/index.html')) return { cache: name, entries: (await cache.keys()).length };
+  }
+  return { pending: 'shell not precached yet' };
+}
+
 /** Condense the JSON the `?shot=` harness stamps on <html data-shot> to one line. */
 function describeShot(raw: string): string {
   let parsed: unknown;
@@ -112,6 +157,10 @@ async function run(browser: Browser): Promise<number> {
     const url = msg.location().url;
     if (url && !sameOrigin(url)) {
       warnings.push(`[${current}] off-origin console error ignored: ${msg.text()} (${url})`);
+      return;
+    }
+    if (current === 'offline' && OFFLINE_NOISE.test(msg.text())) {
+      warnings.push(`[${current}] network error while offline ignored: ${msg.text()}`);
       return;
     }
     issues.push({ step: current, kind: 'console', text: msg.text() });
@@ -172,6 +221,39 @@ async function run(browser: Browser): Promise<number> {
     }
   }
 
+  if (titleOk) {
+    if (!secureContext(BASE_URL)) {
+      warnings.push('[offline] skipped: service workers need a secure context (https, or http on localhost) and BASE_URL is plain http on a remote host');
+    } else {
+      await step('offline', async () => {
+        // Back to a known state; the worker registered during boot keeps installing meanwhile.
+        await page.goto(`${BASE_URL}/`, { waitUntil: 'domcontentloaded' });
+        await page.locator('#scr-title').waitFor({ state: 'visible' });
+        if (REGISTER_SW) await page.evaluate(() => navigator.serviceWorker.register('/sw.js'));
+        let state: PrecacheState = { pending: 'not polled' };
+        const deadline = Date.now() + SW_READY_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+          state = await page.evaluate(precacheState);
+          if ('cache' in state) break;
+          await page.waitForTimeout(250);
+        }
+        if (!('cache' in state)) throw new Error(`service worker not ready after ${SW_READY_TIMEOUT_MS} ms: ${state.pending}`);
+        await context.setOffline(true);
+        try {
+          await page.reload({ waitUntil: 'domcontentloaded' });
+          await page.locator('#scr-title').waitFor({ state: 'visible' });
+          await page.waitForTimeout(500);
+          const sample = await page.evaluate(sampleCanvas);
+          assertPainted(sample);
+          await page.screenshot({ path: join(OUT_DIR, OFFLINE_SHOT) });
+          return `${state.cache} (${state.entries} entries), canvas ${sample.unique} colours`;
+        } finally {
+          await context.setOffline(false);
+        }
+      });
+    }
+  }
+
   if (!NO_SHOTS) {
     for (const id of ZONES) {
       await step(`shot:${id}`, async () => {
@@ -190,7 +272,8 @@ async function run(browser: Browser): Promise<number> {
 
   const failed = rows.filter((r) => !r.ok).length;
   const out: string[] = [];
-  out.push(`smoke ${BASE_URL}${NO_SHOTS ? ' (--no-shots)' : ''}`, '', table(rows), '');
+  const flags = [NO_SHOTS ? '--no-shots' : '', REGISTER_SW ? '--register-sw' : ''].filter(Boolean).join(' ');
+  out.push(`smoke ${BASE_URL}${flags ? ` (${flags})` : ''}`, '', table(rows), '');
   if (issues.length) {
     out.push(`issues (${issues.length}):`);
     for (const i of issues) out.push(`  [${i.step}] ${i.kind}: ${i.text}`);

@@ -11,6 +11,13 @@
 <meta property="og:title" content="CLAWD JUMP: ECHO TOWER — 메아리의 탑">
 <meta property="og:description" content="검증된 리플레이, 메아리 고스트, 매일 바뀌는 탑.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ECHO TOWER">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!-- The webfont stylesheet is injected by the app at boot (src/client/fonts.ts) so a stalled
@@ -62,14 +69,22 @@
       <button class="menu__item" data-act="endless">끝없는 등반<small>차오르는 조류 · 개인 기록</small></button>
       <button class="menu__item" data-act="openSettings">설정<small>조작 · 사운드 · 접근성</small></button>
       <button class="menu__item" data-act="openCredits">만든 것들<small>기술 노트</small></button>
+      <!-- Shown only when the browser offered a deferred install prompt (src/client/pwa.ts). -->
+      <button class="menu__item" data-act="install" hidden>홈 화면에 추가<small>전체 화면 · 오프라인 플레이</small></button>
     </nav>
     <div class="title__foot">
-      <span class="kbd">←→</span><span class="kbd">A/D</span> 이동
-      <span class="kbd">Space</span> 점프
-      <span class="kbd">Shift</span> 대시
-      <span class="kbd">↓</span> 스톰프
-      <span class="sep">·</span> 게임패드 · 터치 지원
+      <span class="title__legend">
+        <span class="kbd">←→</span><span class="kbd">A/D</span> 이동
+        <span class="kbd">Space</span> 점프
+        <span class="kbd">Shift</span> 대시
+        <span class="kbd">↓</span> 스톰프
+        <span class="sep">·</span> 게임패드 · 터치 지원
+      </span>
+      <span class="badge badge--offline" id="offline-badge" role="status" hidden>오프라인</span>
       <button class="chip chip--name" data-act="name" aria-label="이름 바꾸기">이름 · <b id="title-name">—</b></button>
+      <!-- iOS Safari has no install prompt: point at the share sheet once, dismissable. -->
+      <span class="title__ios" id="ios-hint" hidden>공유 → 홈 화면에 추가 하면 전체 화면으로 플레이할 수 있다
+        <button class="title__ios-x" type="button" data-act="dismissIos" data-nonav aria-label="안내 닫기">×</button></span>
     </div>
   </section>
 
@@ -251,6 +266,12 @@
       <nav class="menu menu--compact"><button class="menu__item" data-act="close">닫기</button></nav>
     </div>
   </section>
+
+  <!-- UPDATE BAR (a new service worker is installed and waiting; hidden during play) -->
+  <div class="upbar" id="upbar" role="status" hidden>
+    <span>새 버전이 준비됐다</span>
+    <button class="upbar__btn" type="button" data-act="applyUpdate" data-nonav>새로고침</button>
+  </div>
 
   <!-- ROTATE PROMPT (phones held upright) -->
   <div class="nag" id="nag-rotate" hidden role="dialog" aria-label="기기를 가로로 돌리자">

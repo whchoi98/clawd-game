@@ -30,9 +30,10 @@ import type {
 import { MAX_FRAME_DT, TickScheduler } from './loop.js';
 import { FxBus } from './fx.js';
 import { Camera } from './camera.js';
-import { Save } from './save.js';
+import { Save, utcDateStr } from './save.js';
 import { cloneBinds } from './input/binds.js';
 import { ApiError } from './net/api.js';
+import type { FlushEvent, FlushResult, QueuedRun, SubmitQueue } from './net/queue.js';
 import { Echo } from './echo/echo.js';
 
 export type RunMode = 'story' | 'daily' | 'endless';
@@ -41,6 +42,8 @@ export type RunMode = 'story' | 'daily' | 'endless';
 export interface ShellUI extends UIPort {
   banner?(text: string): void;
   boot?(k: number, label?: string): void;
+  /** navigator.onLine mirror (title badge). */
+  setOffline?(on: boolean): void;
 }
 /** AudioPort plus the pause-menu muffle the concrete engine offers. */
 export interface ShellAudio extends AudioPort {
@@ -54,6 +57,11 @@ export interface ScenesDeps {
   input: InputPort;
   api: ApiPort;
   save: Save;
+  /**
+   * Offline submission queue. Without one, an unreachable server leaves the
+   * result at 'offline'; with one the run is queued and sent on `flushQueue()`.
+   */
+  queue?: SubmitQueue;
   /** Story zones in progression order. */
   levels: LevelDef[];
   makeDaily?: (seed: number) => LevelDef;
@@ -118,6 +126,8 @@ export interface Run {
   eligible: boolean;
   /** The run can be kept as a self echo (no assist / invincible). */
   echoSafe: boolean;
+  /** Encoded mask log of the finished run (echoSafe only); matches queued / stored records. */
+  encoded: string | null;
   summary: RunSummary | null;
   view: ResultView | null;
   resultKind: 'clear' | 'over' | null;
@@ -169,6 +179,7 @@ export class Scenes {
   private readonly input: InputPort;
   private readonly api: ApiPort;
   private readonly save: Save;
+  private readonly queue: SubmitQueue | null;
   private readonly levels: LevelDef[];
   private readonly levelById: Record<string, LevelDef>;
   private readonly makeDaily: (seed: number) => LevelDef;
@@ -190,6 +201,7 @@ export class Scenes {
     this.input = deps.input;
     this.api = deps.api;
     this.save = deps.save;
+    this.queue = deps.queue ?? null;
     this.levels = deps.levels;
     this.levelById = Object.fromEntries(deps.levels.map((l) => [l.id, l]));
     this.makeDaily = deps.makeDaily ?? makeDailyLevel;
@@ -229,6 +241,8 @@ export class Scenes {
     ui.boot?.(1, '준비 완료');
     await hooks.wait(240);
     this.showTitle();
+    // Runs finished while offline last time go out now (never awaited: boot must not wait on the network).
+    void this.flushQueue();
   }
 
   private showTitle(): void {
@@ -351,6 +365,7 @@ export class Scenes {
       offline,
       eligible: echoSafe && mode !== 'endless' && !offline,
       echoSafe,
+      encoded: null,
       summary: null, view: null, resultKind: null, resultTimer: -1, resultShown: false,
       // Stored heights are whole tiles; floor defensively for saves written before that rule.
       prevBestHeight: Math.floor(mode === 'daily' && daily ? (this.save.progress.daily[daily.date]?.height ?? 0)
@@ -616,6 +631,7 @@ export class Scenes {
     run.resultTimer = kind === 'clear' ? RESULT_DELAY : OVER_DELAY;
     this.ui.hint(null);
     const encoded = run.echoSafe ? encodeMasks(run.masks.bytes()) : null;
+    run.encoded = encoded;
     if (encoded && encoded.length > MAX_MASKS_B64) run.eligible = false;
     const personalBest = this.recordProgress(run, summary, encoded);
     const i = this.levels.findIndex((l) => l.id === run.def.id);
@@ -724,7 +740,12 @@ export class Scenes {
     } catch (err) {
       const offline = !(err instanceof ApiError) || err.offline;
       reachable = !offline;
-      view.submit = offline ? { state: 'offline' } : { state: 'rejected', reason: (err as ApiError).reason };
+      if (!offline) view.submit = { state: 'rejected', reason: (err as ApiError).reason };
+      else if (this.queue) {
+        // Kept locally and sent on the next boot / `online`; the result line says so.
+        this.queue.enqueue(body, { mode, board, levelId: run.def.id });
+        view.submit = { state: 'queued' };
+      } else view.submit = { state: 'offline' };
     }
     this.pushResult(run);
     if (!reachable) return;
@@ -744,6 +765,40 @@ export class Scenes {
       const rec = this.save.dailyRecord(run.daily.date, run.daily.seed);
       if (rec.masks === encoded) rec.runId = runId;
     }
+    this.save.saveProgress();
+  }
+
+  // ================================================================ offline queue
+  /**
+   * Send every queued run (boot, and the window `online` event). Resolves with
+   * the pass summary, or null when there is no queue or nothing waiting.
+   */
+  flushQueue(): Promise<FlushResult | null> {
+    const q = this.queue;
+    if (!q || q.size() === 0) return Promise.resolve(null);
+    return this.track(q.flush(this.api, (ev) => this.onQueued(ev)));
+  }
+
+  private onQueued(ev: FlushEvent): void {
+    if (ev.kind !== 'sent') return;
+    const { item, response } = ev;
+    if (response.accepted) this.adoptRunId(item, response.runId);
+    // The result screen of the run that was just queued is still up: settle its line.
+    const run = this.run;
+    if (run?.view && run.view.submit.state === 'queued' && run.encoded === item.body.masks) {
+      run.view.submit = response.accepted
+        ? { state: 'accepted', rank: response.rank, total: response.total }
+        : { state: 'rejected', reason: response.reason };
+      this.pushResult(run);
+    }
+  }
+
+  /** A queued run was accepted later: attach its server id to the record it still is the best of. */
+  private adoptRunId(item: QueuedRun, runId: string): void {
+    const prog = this.save.progress;
+    const rec = item.mode === 'story' ? prog.levels[item.levelId] : prog.daily[item.board];
+    if (!rec || rec.masks !== item.body.masks) return;
+    rec.runId = runId;
     this.save.saveProgress();
   }
 
@@ -785,7 +840,17 @@ export class Scenes {
     this.ui.setDaily(this.daily, this.dailyLb, 'loading');
     try {
       this.daily = await this.api.daily();
+      this.save.cacheDaily(this.daily);
     } catch {
+      // Offline: today's seed seen earlier (this session or a cached one) still
+      // starts a real daily — the seed is the server's, so the run stays
+      // eligible and queues. Without one the screen says the seed is missing.
+      const now = this.now();
+      if (!this.daily || Date.parse(this.daily.expiresAt) < now) {
+        const cached = this.save.cachedDaily(utcDateStr(now));
+        this.daily = cached && Date.parse(cached.expiresAt) > now ? cached : null;
+        if (this.daily === null) this.dailyLb = null;
+      }
       this.ui.setDaily(this.daily, this.dailyLb, 'error');
       return;
     }

@@ -19,10 +19,12 @@ import { createAudio } from './audio/index.js';
 import { UI } from './ui/index.js';
 import { DEFAULT_BINDS, Input } from './input/index.js';
 import { Api } from './net/api.js';
+import { SubmitQueue } from './net/queue.js';
 import { Save } from './save.js';
 import { Scenes } from './scenes.js';
 import { parseShotQuery, runShot } from './shot.js';
 import { loadFonts } from './fonts.js';
+import { installPrompt, isIosSafariNotStandalone, registerServiceWorker } from './pwa.js';
 
 declare const __BUILD__: string | undefined;
 
@@ -75,8 +77,10 @@ function reducedMotion(): boolean {
 }
 
 async function start(): Promise<void> {
-  // First thing: kick off the webfont fetch without letting it block anything.
+  // First thing: kick off the webfont fetch without letting it block anything,
+  // and start listening for the browser's install offer (it can fire early).
   loadFonts(document);
+  const install = installPrompt();
   const canvas = document.getElementById('world') as HTMLCanvasElement | null;
   if (!canvas) throw new Error('canvas#world is missing');
 
@@ -84,11 +88,15 @@ async function start(): Promise<void> {
   const renderer = new Renderer(canvas);
   const audio = createAudio();
   const input = new Input({ binds: save.settings.binds });
-  const ui = new UI({ input, audio, skins: renderer.skins, defaultBinds: DEFAULT_BINDS, build: BUILD });
+  const ui = new UI({
+    input, audio, skins: renderer.skins, defaultBinds: DEFAULT_BINDS, build: BUILD,
+    onInstall: () => { void install.prompt(); },
+  });
   uiRef = ui;
   input.attachTouch(ui.touch);
   const api = new Api({ base: '' });
-  const scenes = new Scenes({ renderer, audio, ui, input, api, save, levels: LEVELS, build: BUILD });
+  const queue = new SubmitQueue();
+  const scenes = new Scenes({ renderer, audio, ui, input, api, save, queue, levels: LEVELS, build: BUILD });
   window.__clawd = scenes;
 
   // Any first gesture unlocks WebAudio.
@@ -111,6 +119,17 @@ async function start(): Promise<void> {
     runShot(spec, { scenes, renderer, ui, doc: document, audio, levels: LEVELS, build: BUILD });
     return;
   }
+
+  // PWA: install offer → title menu; iOS share-sheet hint; update bar when a new
+  // worker waits; connectivity badge; queued runs go out when the network returns.
+  ui.setInstallable(install.canInstall());
+  install.onChange((on) => ui.setInstallable(on));
+  ui.setIosHint(isIosSafariNotStandalone());
+  void registerServiceWorker({ onUpdateReady: (apply) => ui.showUpdate(apply) });
+  const syncOnline = (): void => ui.setOffline(typeof navigator.onLine === 'boolean' && !navigator.onLine);
+  syncOnline();
+  addEventListener('online', () => { syncOnline(); void scenes.flushQueue(); });
+  addEventListener('offline', syncOnline);
 
   const fonts = (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready;
   await scenes.boot({ raf: raf2, wait, fonts });

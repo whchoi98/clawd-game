@@ -3,8 +3,9 @@
  * Dev loop: `node tools/dev.mjs`
  *
  * Runs esbuild in watch mode for both bundles into DIST (default dist/), keeps
- * dist/public/index.html pointing at the current hashed assets, and runs the
- * server bundle on PORT (default 8099) with STATIC_DIR=dist/public. TABLE_NAME
+ * dist/public/index.html pointing at the current hashed assets, rebuilds
+ * dist/public/sw.js with the matching precache list after every publish, and
+ * runs the server bundle on PORT (default 8099) with STATIC_DIR=dist/public. TABLE_NAME
  * is stripped from the child's env so the server uses its in-memory repo. The
  * server child is restarted whenever its bundle changes; public/ edits
  * (styles.css, index.html, favicon) are republished on save.
@@ -12,9 +13,10 @@
 import { context } from 'esbuild';
 import { spawn } from 'node:child_process';
 import { existsSync, watch as fsWatch } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import {
-  clientOptions, findEntryOutput, publishPublic, resolvePaths, serverOptions, shortHash, writeBuildInfo,
+  clientOptions, findEntryOutput, publishPublic, publishServiceWorker, resolvePaths, serverOptions, shortHash,
+  writeBuildInfo,
 } from './lib.mjs';
 
 const PORT = process.env.PORT || '8099';
@@ -42,14 +44,32 @@ let restartPending = false;
 const clientReady = deferred();
 const serverReady = deferred();
 
+let publishing = null;
+let publishAgain = false;
+
+/** Publish index.html + public files, then rebuild sw.js against them. Serialised: the SW must see the final tree. */
 function publish() {
-  if (!appJs) return;
-  try {
-    const { appName, cssName } = publishPublic(paths, appJs);
-    log(`client  ${appName} + ${cssName} → ${paths.distPublic}`);
-  } catch (err) {
-    log(`publish failed: ${err instanceof Error ? err.message : String(err)}`);
+  if (!appJs) return Promise.resolve();
+  if (publishing) {
+    publishAgain = true;
+    return publishing;
   }
+  publishing = (async () => {
+    try {
+      const { appName, cssName } = publishPublic(paths, appJs);
+      const sw = await publishServiceWorker(paths, { prod: false, build });
+      log(`client  ${appName} + ${cssName} + sw.js (${sw.precache.length} precached) → ${paths.distPublic}`);
+    } catch (err) {
+      log(`publish failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      publishing = null;
+      if (publishAgain) {
+        publishAgain = false;
+        void publish();
+      }
+    }
+  })();
+  return publishing;
 }
 
 const clientCtx = await context({
@@ -61,8 +81,7 @@ const clientCtx = await context({
       b.onEnd((result) => {
         if (result.errors.length || !result.metafile) return;
         appJs = findEntryOutput(result.metafile, paths.root);
-        publish();
-        clientReady.resolve();
+        void publish().then(() => clientReady.resolve());
       });
     },
   }],
@@ -132,11 +151,16 @@ await Promise.all([clientReady.promise, serverReady.promise]);
 writeBuildInfo(paths, build);
 startServer();
 
-// public/ is flat; a non-recursive watch is enough and works on every platform.
-if (existsSync(paths.publicDir)) {
+// public/ top level plus icons/ — non-recursive watches work on every platform.
+// Edits to the worker source are picked up by the client watcher's onEnd only when
+// main.ts rebuilds, so sw.ts gets its own watch too.
+{
   let timer = null;
-  fsWatch(paths.publicDir, () => {
+  const schedule = (what) => {
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { timer = null; log('public/ changed'); publish(); }, 120);
-  });
+    timer = setTimeout(() => { timer = null; log(`${what} changed`); void publish(); }, 120);
+  };
+  for (const dir of [paths.publicDir, join(paths.publicDir, 'icons'), dirname(paths.srcSw)]) {
+    if (existsSync(dir)) fsWatch(dir, () => schedule(relative(paths.root, dir) || '.'));
+  }
 }

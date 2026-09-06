@@ -93,6 +93,57 @@ describe('public/index.html', () => {
       expect(html).toContain(`data-act="${act}"`);
     }
   });
+
+  it('declares the PWA head tags from the contract (manifest, mobile / apple meta, icons)', () => {
+    const head = html.slice(0, html.indexOf('</head>'));
+    expect(head).toContain('<link rel="manifest" href="/manifest.webmanifest">');
+    expect(head).toContain('<meta name="mobile-web-app-capable" content="yes">');
+    expect(head).toContain('<meta name="apple-mobile-web-app-capable" content="yes">');
+    expect(head).toContain('<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">');
+    expect(head).toContain('<meta name="apple-mobile-web-app-title" content="ECHO TOWER">');
+    expect(head).toContain('<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">');
+    expect(head).toContain('<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">');
+    expect(head).toMatch(/<meta name="theme-color" content="#050A12">/);
+    // every PWA resource is same-origin and unhashed (the worker precaches them by path)
+    for (const m of head.matchAll(/href="([^"]+)"/g)) {
+      const href = m[1];
+      if (href.startsWith('https://')) continue;
+      expect(href.startsWith('/'), href).toBe(true);
+      expect(href).not.toMatch(/\.[0-9a-f]{8}\./);
+    }
+  });
+
+  it('title menu has the hidden install entry, the footer the offline badge and the dismissable iOS hint', () => {
+    const title = html.slice(html.indexOf('id="scr-title"'), html.indexOf('id="scr-select"'));
+    const install = /<button class="menu__item" data-act="install" hidden>홈 화면에 추가<small>전체 화면 · 오프라인 플레이<\/small><\/button>/;
+    expect(title).toMatch(install);
+    // the install entry is the last menu item so the phone layout budget stays with the real menu
+    const menu = title.slice(title.indexOf('id="title-menu"'), title.indexOf('</nav>'));
+    const acts = [...menu.matchAll(/data-act="([^"]+)"/g)].map((m) => m[1]);
+    expect(acts.at(-1)).toBe('install');
+    expect(acts).toContain('openSelect');
+    expect(acts).toContain('openCredits');
+    const foot = title.slice(title.indexOf('class="title__foot"'));
+    expect(foot).toMatch(/<span class="badge badge--offline" id="offline-badge"[^>]*hidden>오프라인<\/span>/);
+    expect(foot).toMatch(/id="ios-hint"[^>]*hidden>공유 → 홈 화면에 추가 하면 전체 화면으로 플레이할 수 있다/);
+    expect(foot).toContain('data-act="dismissIos"');
+    expect(foot).toMatch(/data-act="dismissIos"[^>]*data-nonav/);
+  });
+
+  it('has a hidden update bar with the ready text and a refresh button outside every screen', () => {
+    const at = html.indexOf('id="upbar"');
+    expect(at).toBeGreaterThan(0);
+    const bar = html.slice(at, html.indexOf('</div>', html.indexOf('</div>', at) + 1));
+    expect(bar).toContain('새 버전이 준비됐다');
+    expect(bar).toMatch(/<button[^>]*data-act="applyUpdate"[^>]*>새로고침<\/button>/);
+    expect(bar).toMatch(/data-act="applyUpdate"[^>]*data-nonav/);
+    expect(html.slice(0, at)).toMatch(/hidden/);
+    expect(/<div class="upbar" id="upbar"[^>]*hidden>/.test(html)).toBe(true);
+    // not nested in a <section class="screen"> — it must be able to show over any menu
+    const lastSectionOpen = html.lastIndexOf('<section', at);
+    const lastSectionClose = html.lastIndexOf('</section>', at);
+    expect(lastSectionClose).toBeGreaterThan(lastSectionOpen);
+  });
 });
 
 describe('public/styles.css', () => {
@@ -116,6 +167,28 @@ describe('public/styles.css', () => {
     expect(css).toMatch(/\.nag__skip\b/);
     expect(css).toMatch(/\.tpad\b/);
     expect(css).toMatch(/touch-action\s*:\s*none/);
+  });
+
+  it('has a compact landscape-phone title layout as a media query, not the inert @container rule', () => {
+    expect(css).not.toMatch(/@container\s*\(/);
+    const i = css.indexOf('@media (max-height:430px)');
+    expect(i).toBeGreaterThan(0);
+    const block = css.slice(i, css.indexOf('\n}\n', i));
+    expect(block).toMatch(/\.title__kicker\{display:none\}/);
+    expect(block).toMatch(/\.title__logo\{font-size:clamp\([^)]*vh[^)]*\)\}/);
+    expect(block).toMatch(/\.screen--title\{[^}]*overflow-y:auto/);
+    expect(block).toMatch(/\.menu__item small\{display:none\}/);
+  });
+
+  it('lifts the HUD hint above the touch pads and styles the queued / PWA states', () => {
+    expect(css).toMatch(/#ui\.is-touch \.hud__hint\{[^}]*bottom:calc\(10rem \+ env\(safe-area-inset-bottom\)\)[^}]*max-width:56vw/);
+    expect(css).toMatch(/\.submit--queued\b/);
+    expect(css).toMatch(/\.upbar\b/);
+    expect(css).toMatch(/\.upbar__btn\b/);
+    expect(css).toMatch(/\.badge--offline\b/);
+    expect(css).toMatch(/\.title__ios\b/);
+    // the bar must be clickable inside the pointer-events:none shell
+    expect(css).toMatch(/\.upbar\{[^}]*pointer-events:auto/);
   });
 });
 

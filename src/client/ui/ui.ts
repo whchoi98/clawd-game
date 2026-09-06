@@ -28,7 +28,7 @@ import {
 } from './screens.js';
 import { Hud, fmtTicks, fmtTime } from './hud.js';
 import { SettingsPanel, type PortraitPainter } from './settings.js';
-import { TouchControls, isPortraitViewport } from './touch.js';
+import { TouchControls, wantsRotatePrompt } from './touch.js';
 import { renderLeaderboard, type LbStatus } from './leaderboard.js';
 
 export interface UIOptions {
@@ -46,6 +46,8 @@ export interface UIOptions {
   build?: string;
   /** Clock for the daily countdown (ms since epoch). */
   now?: () => number;
+  /** "홈 화면에 추가": show the browser's deferred install prompt (src/client/pwa.ts). */
+  onInstall?: () => void;
 }
 
 /**
@@ -84,6 +86,8 @@ export function reasonKr(reason: string | undefined): string {
 
 /** sessionStorage key: the player chose to keep playing in portrait. */
 export const NAG_DISMISSED_KEY = 'clawd-echo.nag-dismissed';
+/** localStorage key: the iOS "share → add to home screen" hint was closed. */
+export const IOS_HINT_DISMISSED_KEY = 'clawd-echo.ios-hint-dismissed';
 const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 const HOVER_SELECTOR = '.menu__item,.card,.tab,.chip,.echo,.bindbtn,.switch,.seg button,.icon-btn';
@@ -117,6 +121,7 @@ export class UI implements UIPort {
   private readonly skins: Record<string, { name: string; kr: string }>;
   private readonly defaultBinds: Binds;
   private readonly now: () => number;
+  private readonly onInstall: (() => void) | null;
   private readonly listeners: ((a: UIAction) => void)[] = [];
 
   private input: InputPort | null;
@@ -133,6 +138,10 @@ export class UI implements UIPort {
   private resetArmed = false;
   private playerName = '';
   private nagDismissed = false;
+  private iosHintWanted = false;
+  private iosHintDismissed = false;
+  /** Set by showUpdate(); the bar stays until the player applies the update. */
+  private updateApply: (() => void) | null = null;
 
   constructor(opts: UIOptions = {}) {
     this.doc = opts.document ?? document;
@@ -142,7 +151,9 @@ export class UI implements UIPort {
     this.skins = opts.skins ?? {};
     this.defaultBinds = opts.defaultBinds ?? DEFAULT_BINDS;
     this.now = opts.now ?? (() => Date.now());
+    this.onInstall = opts.onInstall ?? null;
     this.nagDismissed = this.readNagDismissed();
+    this.iosHintDismissed = this.readFlag(IOS_HINT_DISMISSED_KEY);
 
     this.screens = new ScreenStack(this.doc);
     this.hudCtl = new Hud(this.doc);
@@ -388,6 +399,69 @@ export class UI implements UIPort {
     if (this.settings) this.settingsPanel.build();
   }
 
+  // ================================================================ PWA surfaces
+  /**
+   * A new build is installed and waiting: show the "새 버전이 준비됐다 · 새로고침"
+   * bar on every screen but play (the reload would kill the run). `apply`
+   * switches workers; the page reloads on controllerchange.
+   */
+  showUpdate(apply: () => void): void {
+    this.updateApply = apply;
+    this.syncUpdateBar();
+  }
+
+  /** The browser offered a deferred install prompt: reveal "홈 화면에 추가" in the title menu. */
+  setInstallable(on: boolean): void {
+    const btn = this.doc.querySelector<HTMLElement>('#title-menu [data-act="install"]');
+    if (!btn || btn.hidden === !on) return;
+    btn.hidden = !on;
+    if (this.screens.top === 'title') this.nav.refresh(this.screens.el('title'), true);
+  }
+
+  /** iOS Safari in a tab: point at 공유 → 홈 화면에 추가 (until dismissed). */
+  setIosHint(on: boolean): void {
+    this.iosHintWanted = on;
+    const hint = this.doc.getElementById('ios-hint');
+    if (hint) hint.hidden = !(on && !this.iosHintDismissed);
+  }
+
+  /** navigator.onLine mirror: the title badge and an `is-offline` class on #ui for styling. */
+  setOffline(on: boolean): void {
+    const badge = this.doc.getElementById('offline-badge');
+    if (badge) badge.hidden = !on;
+    this.doc.getElementById('ui')?.classList.toggle('is-offline', on);
+  }
+
+  private syncUpdateBar(): void {
+    const bar = this.doc.getElementById('upbar');
+    if (!bar) return;
+    bar.hidden = !this.updateApply || this.screens.top === 'play';
+  }
+
+  private applyUpdate(): void {
+    const apply = this.updateApply;
+    if (!apply) return;
+    this.updateApply = null;
+    this.syncUpdateBar();
+    this.sound('confirm');
+    apply();
+  }
+
+  private dismissIosHint(): void {
+    this.iosHintDismissed = true;
+    this.writeFlag(IOS_HINT_DISMISSED_KEY);
+    this.sound('cancel');
+    this.setIosHint(this.iosHintWanted);
+  }
+
+  private readFlag(key: string): boolean {
+    try { return this.win?.localStorage?.getItem(key) === '1'; } catch { return false; }
+  }
+
+  private writeFlag(key: string): void {
+    try { this.win?.localStorage?.setItem(key, '1'); } catch { /* private mode / quota */ }
+  }
+
   // ================================================================ emit / sound
   private emit(a: UIAction): void {
     for (const cb of this.listeners) cb(a);
@@ -409,6 +483,7 @@ export class UI implements UIPort {
       default: break;
     }
     this.updateTouchVisibility();
+    this.syncUpdateBar();
     const root = top === 'play' || top === 'boot' ? null : this.screens.el(top);
     this.nav.refresh(root);
     if (top !== 'name' && this.doc.activeElement === this.nameInput()) this.nameInput()?.blur();
@@ -517,6 +592,12 @@ export class UI implements UIPort {
       }
       case 'resetProgress': this.resetProgress(btn); break;
       case 'dismissNag': this.dismissNag(); break;
+      case 'install':
+        this.sound('confirm');
+        try { this.onInstall?.(); } catch { /* the prompt is best-effort */ }
+        break;
+      case 'dismissIos': this.dismissIosHint(); break;
+      case 'applyUpdate': this.applyUpdate(); break;
       default: break;
     }
   }
@@ -574,12 +655,13 @@ export class UI implements UIPort {
 
   /**
    * Ask a phone held upright to turn: the world is 16:9 and the pad would cover
-   * it. Dismissable — "그래도 계속" hides it for the rest of the session.
+   * it. Tablets are left alone (an upright iPad plays letterboxed). Dismissable —
+   * "그래도 계속" hides it for the rest of the session.
    */
   private updateNag(): void {
     const nag = this.doc.getElementById('nag-rotate');
     if (!nag) return;
-    nag.hidden = this.nagDismissed || !(this.touchCtl.coarse && isPortraitViewport(this.win));
+    nag.hidden = this.nagDismissed || !(this.touchCtl.coarse && wantsRotatePrompt(this.win));
   }
 
   private dismissNag(): void {
@@ -701,6 +783,7 @@ export class UI implements UIPort {
         }
         case 'rejected': submit.append(`거절됨: ${reasonKr(sub.reason)}`); break;
         case 'offline': submit.append('오프라인 · 기록은 이 기기에만 남는다'); break;
+        case 'queued': submit.append('오프라인 · 온라인이 되면 보낸다'); break;
         default: break;
       }
       submit.hidden = sub.state === 'idle';
@@ -726,11 +809,12 @@ export class UI implements UIPort {
     const status = d.getElementById('daily-status');
     const daily = this.daily;
     if (date) {
-      date.textContent = daily ? fmtDateKr(daily.date) : this.dailyStatus === 'error' ? '오프라인 · 오늘의 탑을 받을 수 없다' : '오늘의 탑을 받는 중…';
+      // No seed at all: the daily cannot start. With a cached seed the date shows and the board reads offline.
+      date.textContent = daily ? fmtDateKr(daily.date) : this.dailyStatus === 'error' ? '오프라인 · 오늘의 시드를 아직 받지 못했다' : '오늘의 탑을 받는 중…';
     }
     if (seed) seed.textContent = daily ? daily.seed.toString(16).toUpperCase().padStart(8, '0') : '—';
     if (status) {
-      status.textContent = this.dailyStatus === 'loading' ? '불러오는 중…' : this.dailyStatus === 'error' ? '오프라인' : '';
+      status.textContent = this.dailyStatus === 'loading' ? '불러오는 중…' : this.dailyStatus === 'error' ? (daily ? '오프라인 · 저장된 시드' : '오프라인') : '';
     }
     const start = d.querySelector<HTMLButtonElement>('#scr-daily [data-act="daily"]');
     if (start) start.disabled = !daily;

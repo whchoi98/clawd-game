@@ -1,9 +1,11 @@
 /**
  * Helpers shared by tools/build.mjs and tools/dev.mjs: path resolution from
  * env, esbuild option factories, the hashed-asset publish step (styles.css,
- * favicon and other public files, index.html marker rewrite), and the size
- * table. Plain ESM, no TypeScript, no dependencies beyond esbuild.
+ * favicon and other public files, index.html marker rewrite), the service
+ * worker publish step (precache list + sw.js bundle), and the size table.
+ * Plain ESM, no TypeScript, no dependencies beyond esbuild.
  */
+import { build as esbuild } from 'esbuild';
 import { createHash } from 'node:crypto';
 import {
   copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
@@ -13,6 +15,8 @@ import { gzipSync } from 'node:zlib';
 
 export const CSS_MARKER = '<!--CSS-->';
 export const APP_MARKER = '<!--APP-->';
+/** The service worker is served unhashed from the site root (scope "/"). */
+export const SW_NAME = 'sw.js';
 
 /** First 8 hex chars of the sha256 of `data` (string or Buffer). */
 export function shortHash(data) {
@@ -23,6 +27,7 @@ export function shortHash(data) {
  * Resolve the build layout from the environment. Every relative path is taken
  * against ROOT (default: cwd).
  *   DIST=dist  SRC_CLIENT=src/client/main.ts  SRC_SERVER=src/server/index.ts  PUBLIC=public
+ *   SRC_SW=src/client/sw/sw.ts
  */
 export function resolvePaths(env = process.env) {
   const root = resolve(env.ROOT || process.cwd());
@@ -36,6 +41,7 @@ export function resolvePaths(env = process.env) {
     distServer: join(dist, 'server'),
     srcClient: at(env.SRC_CLIENT, 'src/client/main.ts'),
     srcServer: at(env.SRC_SERVER, 'src/server/index.ts'),
+    srcSw: at(env.SRC_SW, 'src/client/sw/sw.ts'),
     publicDir: at(env.PUBLIC, 'public'),
   };
 }
@@ -130,6 +136,74 @@ export function serverOptions(paths, { build }) {
     define: { __BUILD__: JSON.stringify(build) },
     logLevel: 'warning',
   };
+}
+
+/**
+ * esbuild options for the service worker → DIST/public/sw.js. Unhashed (the
+ * browser finds updates by byte-comparing the script at a fixed URL), classic
+ * script (iife), es2020. `precache` and `build` are inlined as
+ * `__PRECACHE__` / `__BUILD__`, so the worker changes whenever an asset does.
+ */
+export function swOptions(paths, { prod, build, precache }) {
+  return {
+    absWorkingDir: paths.root,
+    entryPoints: { sw: paths.srcSw },
+    outdir: paths.distPublic,
+    entryNames: '[name]',
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2020',
+    minify: prod,
+    sourcemap: 'external',
+    metafile: true,
+    charset: 'utf8',
+    legalComments: 'none',
+    define: {
+      __PRECACHE__: JSON.stringify(precache),
+      __BUILD__: JSON.stringify(build),
+    },
+    logLevel: 'warning',
+  };
+}
+
+/**
+ * Same-origin paths the worker precaches, read from the published DIST/public:
+ * "/", "/index.html", every /assets/* file except source maps, then
+ * /favicon.svg, /manifest.webmanifest and every /icons/* file that exists.
+ * Sorted within each group so identical builds give identical lists.
+ */
+export function precacheList(distPublic) {
+  const list = ['/', '/index.html'];
+  const assets = join(distPublic, 'assets');
+  if (existsSync(assets)) {
+    for (const name of readdirSync(assets).sort()) {
+      if (name.endsWith('.map') || !statSync(join(assets, name)).isFile()) continue;
+      list.push(`/assets/${name}`);
+    }
+  }
+  for (const name of ['favicon.svg', 'manifest.webmanifest']) {
+    if (existsSync(join(distPublic, name))) list.push(`/${name}`);
+  }
+  const icons = join(distPublic, 'icons');
+  if (existsSync(icons)) {
+    for (const file of walk(icons).sort()) {
+      list.push(`/${relative(distPublic, file).split(sep).join('/')}`);
+    }
+  }
+  return [...new Set(list)];
+}
+
+/**
+ * Bundle the service worker into DIST/public/sw.js with the precache list
+ * computed from what publishPublic() just wrote. Call it after publishPublic.
+ * Returns { swPath, precache, metafile }.
+ */
+export async function publishServiceWorker(paths, { prod, build }) {
+  if (!existsSync(paths.srcSw)) throw new Error(`missing service worker entry ${paths.srcSw}`);
+  const precache = precacheList(paths.distPublic);
+  const result = await esbuild(swOptions(paths, { prod, build, precache }));
+  return { swPath: join(paths.distPublic, SW_NAME), precache, metafile: result.metafile };
 }
 
 /** Absolute path of the JS file esbuild produced for an entry point, from a metafile. */

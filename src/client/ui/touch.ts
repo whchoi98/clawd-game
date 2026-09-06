@@ -32,6 +32,20 @@ export function isPortraitViewport(win: Window | null | undefined): boolean {
   return win.innerHeight > win.innerWidth * 1.05;
 }
 
+/** Shorter side below this many CSS px reads as a phone; a tablet is playable upright (letterboxed). */
+export const PHONE_MAX_SHORT_SIDE = 600;
+
+/** A phone-sized viewport (shorter side under PHONE_MAX_SHORT_SIDE). */
+export function isPhoneViewport(win: Window | null | undefined): boolean {
+  if (!win) return false;
+  return Math.min(win.innerWidth, win.innerHeight) < PHONE_MAX_SHORT_SIDE;
+}
+
+/** The rotate prompt targets phones held upright only; an iPad in portrait is left alone. */
+export function wantsRotatePrompt(win: Window | null | undefined): boolean {
+  return isPortraitViewport(win) && isPhoneViewport(win);
+}
+
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
 export class TouchControls {

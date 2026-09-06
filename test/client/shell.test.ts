@@ -25,9 +25,10 @@ import { MAX_STEPS_PER_FRAME, TickScheduler, planTicks } from '../../src/client/
 import { FxBus } from '../../src/client/fx.js';
 import { Camera } from '../../src/client/camera.js';
 import {
-  DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, deepMerge, newPlayerId, type StorageLike,
+  DAILY_CACHE_KEY, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, deepMerge, newPlayerId, utcDateStr, type StorageLike,
 } from '../../src/client/save.js';
 import { Api, ApiError } from '../../src/client/net/api.js';
+import { QUEUE_KEY, SubmitQueue } from '../../src/client/net/queue.js';
 import { ECHO_ALPHA, Echo } from '../../src/client/echo/echo.js';
 import { Scenes, RESULT_DELAY, type ShellUI } from '../../src/client/scenes.js';
 import { ShotScript, parseShotQuery } from '../../src/client/shot.js';
@@ -422,6 +423,23 @@ describe('Save', () => {
     expect(save.progress.player.id).toBe(id);
     expect(save.progress.player.name).toBe('테스터');
     expect(JSON.parse(storage.getItem(PROGRESS_KEY)!).levels).toEqual({});
+  });
+
+  it('caches the daily seed per UTC date, immediately, and only hands back today\'s', () => {
+    const { save, storage } = makeSave();
+    expect(save.cachedDaily('2026-09-06')).toBeNull();
+    save.cacheDaily({ date: '2026-09-06', seed: 12345, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z' });
+    expect(JSON.parse(storage.getItem(DAILY_CACHE_KEY)!)).toEqual({ date: '2026-09-06', seed: 12345, expiresAt: '2026-09-07T00:00:00.000Z' });
+    expect(save.cachedDaily('2026-09-06')).toEqual({ date: '2026-09-06', seed: 12345, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z' });
+    expect(save.cachedDaily('2026-09-07')).toBeNull();
+    // a fresh Save over the same storage sees it; garbage does not parse
+    expect(makeSave(storage).save.cachedDaily('2026-09-06')?.seed).toBe(12345);
+    storage.setItem(DAILY_CACHE_KEY, JSON.stringify({ date: '2026-09-06', seed: 'x', expiresAt: '2026-09-07T00:00:00.000Z' }));
+    expect(makeSave(storage).save.cachedDaily('2026-09-06')).toBeNull();
+    storage.setItem(DAILY_CACHE_KEY, '{');
+    expect(makeSave(storage).save.cachedDaily('2026-09-06')).toBeNull();
+    expect(utcDateStr(Date.parse('2026-09-06T23:59:59.000Z'))).toBe('2026-09-06');
+    expect(utcDateStr(Date.parse('2026-09-07T00:00:00.000Z'))).toBe('2026-09-07');
   });
 });
 
@@ -929,5 +947,232 @@ describe('Scenes', () => {
     expect(scenes.run).not.toBeNull();
     void input;
     void DT;
+  });
+});
+
+// ================================================================ offline queue + daily cache
+describe('Scenes offline queue', () => {
+  const NOW = Date.parse('2026-09-06T12:00:00.000Z');
+  const DAILY: DailyResponse = { date: '2026-09-06', seed: 12345, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z' };
+
+  function queuedScenes(levels: LevelDef[], opts: { storage?: MemStorage; daily?: boolean } = {}) {
+    const ui = fakeUI();
+    const input = fakeInput();
+    const api = fakeApi(levels);
+    const { save, timers, storage } = makeSave(opts.storage ?? new MemStorage());
+    save.settings.echoWorld = false;
+    const queue = new SubmitQueue({ storage, now: () => NOW });
+    const tide = tideRoom();
+    const scenes = new Scenes({
+      renderer: fakeRenderer(), audio: fakeAudio(), ui, input, api, save, queue, levels, build: 'test',
+      randomSeed: () => 777, random: () => 0.5, now: () => NOW,
+      ...(opts.daily ? { makeDaily: () => ({ ...tide, id: 'daily' }) } : {}),
+    });
+    if (opts.daily) api.levels.daily = { ...tide, id: 'daily' };
+    return { scenes, ui, input, api, save, timers, storage, queue };
+  }
+
+  it('queues a story submission the server could not receive; flushQueue() sends it later, adopts the run id and settles the result line', async () => {
+    const def = flatRoom();
+    const { scenes, ui, input, api, save, storage, queue } = queuedScenes([def]);
+    api.failWith = new TypeError('fetch failed');
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'flat' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.result!.submit.state).toBe('queued');
+    expect(api.submissions.length).toBe(0);
+    expect(queue.size()).toBe(1);
+    const stored = JSON.parse(storage.getItem(QUEUE_KEY)!) as { body: RunSubmit; mode: string; board: string; levelId: string; createdAt: number }[];
+    expect(stored[0]).toMatchObject({ mode: 'story', board: 'flat', levelId: 'flat', createdAt: NOW });
+    expect(stored[0].body.masks).toBe(save.progress.levels.flat.masks);
+    expect(stored[0].body.claim.cleared).toBe(true);
+    expect(save.progress.levels.flat.runId).toBeUndefined();
+
+    // still unreachable: nothing goes out, nothing is lost
+    expect(await scenes.flushQueue()).toEqual({ sent: 0, dropped: 0, kept: 1 });
+    expect(ui.result!.submit.state).toBe('queued');
+    expect(queue.size()).toBe(1);
+
+    // the network is back
+    api.failWith = null;
+    expect(await scenes.flushQueue()).toEqual({ sent: 1, dropped: 0, kept: 0 });
+    expect(api.submissions.length).toBe(1);
+    expect(api.submissions[0].levelId).toBe('flat');
+    expect(save.progress.levels.flat.runId).toBe('run-1');
+    expect(ui.result!.submit.state).toBe('accepted');
+    expect(ui.result!.submit.rank).toBe(1);
+    expect(storage.getItem(QUEUE_KEY)).toBeNull();
+    expect(await scenes.flushQueue()).toBeNull();
+  });
+
+  it('a daily run queued offline stays eligible and lands on the daily record when sent', async () => {
+    const { scenes, ui, input, api, save, queue } = queuedScenes([flatRoom()], { daily: true });
+    api.failWith = new ApiError('HTTP 503', 503, 'server-error');
+    scenes.bootSync();
+    scenes.startDaily(DAILY);
+    expect(scenes.run!.offline).toBe(false);
+    expect(scenes.run!.eligible).toBe(true);
+    // climb a little so the run is a height record (its masks become the stored best), then let the tide come
+    runFrames(scenes, () => scenes.run!.sim.state.phase === 'play');
+    input.latchedMask = IN.JUMP;
+    input.heldMask = IN.JUMP;
+    let n = 0;
+    runFrames(scenes, () => ++n > 12, 13);
+    input.heldMask = 0;
+    runFrames(scenes, () => ui.screen === 'over', 6000);
+    await scenes.settle();
+    expect(ui.result!.submit.state).toBe('queued');
+    const item = queue.list()[0];
+    expect(item).toMatchObject({ mode: 'daily', board: '2026-09-06', levelId: 'daily' });
+    expect(item.body.seed).toBe(12345);
+    expect(save.progress.daily['2026-09-06'].masks).toBe(item.body.masks);
+    api.failWith = null;
+    await scenes.flushQueue();
+    expect(api.submissions.length).toBe(1);
+    expect(api.submissions[0].mode).toBe('daily');
+    expect(save.progress.daily['2026-09-06'].runId).toBe('run-1');
+    expect(ui.result!.submit.state).toBe('accepted');
+  });
+
+  it('a queued run the server rejects is dropped without touching the record; a stale one never tags a newer best', async () => {
+    const def = flatRoom();
+    const { scenes, api, save, queue } = queuedScenes([def]);
+    scenes.bootSync();
+    const rec = save.levelRecord('flat');
+    rec.done = true;
+    rec.masks = 'NEWER-BEST';
+    const player = { ...save.progress.player };
+    const bogus = encodeMasks(new Uint8Array([0, 0, 0, 0]));
+    queue.enqueue({
+      player, mode: 'story', levelId: 'flat', assist: false, masks: bogus,
+      claim: { ticks: 4, shards: 0, deaths: 0, cleared: true, height: 0 }, client: { build: 'test' },
+    }, { mode: 'story', board: 'flat', levelId: 'flat' });
+    // a genuine run whose masks no longer match the stored best
+    const sim = new Sim(def, { seed: def.seed });
+    const masks: InputMask[] = [];
+    while (!sim.finished && masks.length < 5000) { sim.step(IN.RIGHT); masks.push(IN.RIGHT); }
+    const s = sim.summary();
+    queue.enqueue({
+      player, mode: 'story', levelId: 'flat', assist: false, masks: encodeMasks(new Uint8Array(masks)),
+      claim: { ticks: s.ticks, shards: s.shards, deaths: s.deaths, cleared: s.cleared, height: s.height }, client: { build: 'test' },
+    }, { mode: 'story', board: 'flat', levelId: 'flat' });
+    const r = await scenes.flushQueue();
+    expect(r).toEqual({ sent: 2, dropped: 0, kept: 0 });
+    expect(api.submissions.length).toBe(2);
+    expect(rec.runId).toBeUndefined();
+    expect(rec.masks).toBe('NEWER-BEST');
+    expect(queue.size()).toBe(0);
+  });
+
+  it('boot() flushes what an earlier session left behind', async () => {
+    const def = flatRoom();
+    const storage = new MemStorage();
+    // session one: play offline
+    const first = queuedScenes([def], { storage });
+    first.api.failWith = new TypeError('fetch failed');
+    first.scenes.bootSync();
+    first.ui.emit({ type: 'start', levelId: 'flat' });
+    first.input.heldMask = IN.RIGHT;
+    runFrames(first.scenes, () => first.ui.screen === 'result');
+    await first.scenes.settle();
+    first.timers.fire();
+    expect(JSON.parse(storage.getItem(QUEUE_KEY)!)).toHaveLength(1);
+    // session two: online again
+    const second = queuedScenes([def], { storage });
+    expect(second.queue.size()).toBe(1);
+    await second.scenes.boot({ raf: async () => {}, wait: async () => {} });
+    await second.scenes.settle();
+    expect(second.api.submissions.length).toBe(1);
+    expect(second.save.progress.levels.flat.runId).toBe('run-1');
+    expect(second.queue.size()).toBe(0);
+    expect(second.ui.screen).toBe('title');
+  });
+
+  it('without a queue an unreachable server still reads as offline', async () => {
+    const def = flatRoom();
+    const { scenes, ui, input, api } = makeScenes([def]);
+    api.failWith = new TypeError('fetch failed');
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'flat' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.result!.submit.state).toBe('offline');
+    expect(await scenes.flushQueue()).toBeNull();
+  });
+});
+
+describe('Scenes daily cache', () => {
+  const NOW = Date.parse('2026-09-06T12:00:00.000Z');
+
+  function dailyScenes(storage: MemStorage) {
+    const ui = fakeUI();
+    const input = fakeInput();
+    const api = fakeApi([flatRoom()]);
+    const { save } = makeSave(storage);
+    const tide = tideRoom();
+    const scenes = new Scenes({
+      renderer: fakeRenderer(), audio: fakeAudio(), ui, input, api, save, levels: [flatRoom()], build: 'test',
+      makeDaily: () => ({ ...tide, id: 'daily' }), randomSeed: () => 1, now: () => NOW,
+    });
+    api.levels.daily = { ...tide, id: 'daily' };
+    scenes.bootSync();
+    return { scenes, ui, api, save, storage };
+  }
+  const offlineDaily = async (): Promise<DailyResponse> => { throw new ApiError('network error', 0, 'network'); };
+
+  it('caches the fetched seed and starts a real (eligible) daily from it when the server is unreachable', async () => {
+    const storage = new MemStorage();
+    const online = dailyScenes(storage);
+    online.ui.emit({ type: 'openDaily' });
+    await online.scenes.settle();
+    expect(JSON.parse(storage.getItem(DAILY_CACHE_KEY)!)).toEqual({ date: '2026-09-06', seed: 12345, expiresAt: '2026-09-07T00:00:00.000Z' });
+
+    // a later boot, offline
+    const off = dailyScenes(storage);
+    off.api.daily = offlineDaily;
+    off.ui.emit({ type: 'openDaily' });
+    await off.scenes.settle();
+    const last = off.ui.dailyCalls.at(-1)!;
+    expect(last[2]).toBe('error');
+    expect(last[0]).toEqual({ date: '2026-09-06', seed: 12345, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z' });
+    off.ui.emit({ type: 'daily' });
+    expect(off.ui.screen).toBe('play');
+    const run = off.scenes.run!;
+    expect(run.mode).toBe('daily');
+    expect(run.seed).toBe(12345);
+    expect(run.daily).toEqual({ date: '2026-09-06', seed: 12345 });
+    expect(run.offline).toBe(false);
+    expect(run.eligible).toBe(true);
+  });
+
+  it('reports the missing seed when nothing is cached for today (or only another day)', async () => {
+    const storage = new MemStorage();
+    storage.setItem(DAILY_CACHE_KEY, JSON.stringify({ date: '2026-09-05', seed: 999, expiresAt: '2026-09-06T00:00:00.000Z' }));
+    const { scenes, ui, api } = dailyScenes(storage);
+    api.daily = offlineDaily;
+    ui.emit({ type: 'openDaily' });
+    await scenes.settle();
+    expect(ui.dailyCalls.at(-1)).toEqual([null, null, 'error']);
+    ui.emit({ type: 'daily' });
+    expect(scenes.run).toBeNull();
+    expect(ui.toasts).toContain('오늘의 탑을 아직 받지 못했다');
+    expect(ui.screen).toBe('title');
+  });
+
+  it('keeps the seed already fetched this session when a refresh fails', async () => {
+    const { scenes, ui, api } = dailyScenes(new MemStorage());
+    ui.emit({ type: 'openDaily' });
+    await scenes.settle();
+    expect(ui.dailyCalls.at(-1)?.[2]).toBe('ok');
+    api.daily = offlineDaily;
+    ui.emit({ type: 'openDaily' });
+    await scenes.settle();
+    const last = ui.dailyCalls.at(-1)!;
+    expect(last[2]).toBe('error');
+    expect(last[0]?.seed).toBe(12345);
+    expect(last[1]).not.toBeNull(); // the board fetched earlier stays on screen
   });
 });

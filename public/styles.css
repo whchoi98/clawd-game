@@ -135,6 +135,7 @@ h1,h2,h3,p,dl,dd{margin:0}
 .title__foot{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;font-size:.76rem;color:var(--muted-2);
   animation:fadeUp .8s .5s var(--e-out) both}
 .title__foot .sep{opacity:.5}
+.title__legend{display:inline-flex;flex-wrap:wrap;align-items:center;gap:.5rem}
 .kbd{display:inline-block;padding:.16rem .44rem;border-radius:5px;background:rgba(255,255,255,.07);
   border:1px solid rgba(255,255,255,.12);font-size:.7rem;font-weight:600;color:#C9D6DC;box-shadow:0 1px 0 rgba(0,0,0,.5)}
 .chip{display:inline-flex;align-items:center;gap:.3rem;padding:.24rem .7rem;border-radius:99px;
@@ -143,6 +144,22 @@ h1,h2,h3,p,dl,dd{margin:0}
 .chip b{color:var(--paper);font-weight:600}
 .chip:hover,.chip:focus-visible,.chip.is-cursor{outline:none;background:rgba(127,227,214,.16);color:#fff;border-color:rgba(127,227,214,.4)}
 .chip--name{margin-left:auto}
+
+/* ---------- PWA surfaces: offline badge · iOS hint · update bar ---------- */
+.badge{display:inline-flex;align-items:center;gap:.4rem;padding:.2rem .65rem;border-radius:99px;font-size:.66rem;font-weight:700;letter-spacing:.14em}
+.badge--offline{color:var(--dawn);background:rgba(242,180,138,.1);border:1px solid rgba(242,180,138,.38)}
+.badge--offline::before{content:"";width:.42rem;height:.42rem;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+.title__ios{display:inline-flex;align-items:center;gap:.5rem;flex-basis:100%;font-family:var(--f-kr);font-size:.74rem;color:var(--muted)}
+.title__ios-x{width:1.5rem;height:1.5rem;flex:0 0 auto;border-radius:50%;display:grid;place-items:center;font-size:1rem;line-height:1;text-align:center;
+  color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);transition:background .18s,color .18s}
+.title__ios-x:hover,.title__ios-x:focus-visible{outline:none;color:#fff;background:rgba(127,227,214,.18)}
+.upbar{position:absolute;left:50%;bottom:calc(1rem + env(safe-area-inset-bottom));translate:-50% 0;z-index:15;pointer-events:auto;
+  display:flex;align-items:center;gap:.9rem;padding:.45rem .5rem .45rem 1rem;border-radius:99px;
+  background:rgba(16,32,47,.96);border:1px solid rgba(127,227,214,.35);box-shadow:0 18px 40px -18px rgba(0,0,0,.9);
+  font-family:var(--f-kr);font-size:.82rem;color:var(--paper);white-space:nowrap;animation:fadeUp .5s var(--e-out) both}
+.upbar__btn{padding:.35rem .9rem;border-radius:99px;font-family:var(--f-kr);font-size:.78rem;font-weight:700;text-align:center;color:var(--ink);
+  background:var(--teal);transition:background .18s,transform .18s var(--e-back)}
+.upbar__btn:hover,.upbar__btn:focus-visible{outline:none;background:var(--teal-hi);transform:scale(1.04)}
 
 /* ---------- menu ---------- */
 .menu{display:flex;flex-direction:column;gap:.15rem;max-width:24rem}
@@ -159,6 +176,7 @@ h1,h2,h3,p,dl,dd{margin:0}
 .menu__item:nth-child(4){animation-delay:.46s}
 .menu__item:nth-child(5){animation-delay:.52s}
 .menu__item:nth-child(6){animation-delay:.58s}
+.menu__item:nth-child(7){animation-delay:.64s}
 .menu__item small{font-size:.72rem;font-weight:400;color:var(--muted-2);letter-spacing:0}
 .menu__item::before{content:"";position:absolute;left:0;top:50%;translate:0 -50%;width:3px;height:0;border-radius:99px;
   background:var(--teal);transition:height .3s var(--e-back)}
@@ -354,9 +372,11 @@ th.lb__shards::before{display:none}
   transition:color .2s,background .2s,transform .2s var(--e-back)}
 .hud__pause:hover{color:#fff;background:rgba(127,227,214,.2);transform:scale(1.08)}
 .hud__pause::before,.hud__pause::after{content:"";width:3px;height:11px;border-radius:1px;background:currentColor}
-/* touch mode: keep the pause button and the dash meter clear of the pad and buttons */
+/* touch mode: keep the pause button, the dash meter and the hint clear of the pad and buttons */
 #ui.is-touch .hud__pause{bottom:auto;right:auto;left:50%;translate:-50% 0;top:calc(.85rem + env(safe-area-inset-top))}
 #ui.is-touch .hud__dash{bottom:calc(9.2rem + env(safe-area-inset-bottom))}
+/* the pads occupy the bottom ~8.6rem: the hint sits above them and grows upward, never onto them */
+#ui.is-touch .hud__hint{bottom:calc(10rem + env(safe-area-inset-bottom));max-width:56vw;font-size:.78rem;padding:.4rem .8rem}
 .icon-btn svg{width:1rem;height:1rem}
 
 /* touch controls */
@@ -425,6 +445,7 @@ th.lb__shards::before{display:none}
 .submit--accepted b{color:var(--teal-hi);font-family:var(--f-num);font-size:1rem}
 .submit--rejected{color:var(--danger-hi);background:rgba(255,77,99,.09);border-color:rgba(255,77,99,.3)}
 .submit--offline{color:var(--muted-2)}
+.submit--queued{color:var(--dawn);background:rgba(242,180,138,.08);border-color:rgba(242,180,138,.3)}
 @keyframes pulse{50%{opacity:.45}}
 
 /* name entry */
@@ -517,10 +538,34 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
   .card__title{font-size:.84rem}
   .lb__name{max-width:7rem}
 }
-@container (max-height:420px){
-  .screen--title{gap:.7rem}
-  .title__sub{margin-top:.4rem}
+/* touch devices never need the keyboard legend */
+#ui.is-touch .title__legend{display:none}
+/*
+ * Phones in landscape (iPhone 14: 750x340 · Galaxy S9+: 658x320). The brand and
+ * the menu sit side by side, the kicker and the menu subtitles go, the logo is
+ * sized by the viewport height, and the screen scrolls as a last resort.
+ * (A media query on purpose: the old container query never matched the shell.)
+ */
+@media (max-height:430px){
+  .screen--title{
+    flex-direction:row;flex-wrap:wrap;align-items:center;align-content:center;justify-content:flex-start;
+    gap:.35rem clamp(1.5rem,5vw,3.5rem);padding:.6rem var(--pad-r) .5rem var(--pad);
+    overflow-y:auto;overflow-x:hidden;touch-action:pan-y;
+  }
+  .title__brand{flex:0 1 auto;max-width:48vw}
+  .title__kicker{display:none}
+  .title__logo{font-size:clamp(1.9rem,17vh,3.6rem)}
+  .title__sub{margin-top:.35rem;gap:.6rem}
+  .title__sub b{font-size:.66rem;letter-spacing:.34em}
+  .title__sub i{font-size:.66rem}
+  #title-menu{flex:0 0 auto;gap:0;max-width:17rem}
+  .title__foot{flex-basis:100%;gap:.35rem .5rem;font-size:.7rem}
+  .menu__item{padding:.28rem .8rem .28rem 1rem;font-size:.92rem;gap:0}
+  .menu__item small{display:none}
+  .menu__item::before{height:0}
   .modal{max-height:96vh;padding:1rem 1.1rem .8rem}
+  .modal h2{margin-bottom:.5rem}
+  .screen--page{padding-top:.6rem;padding-bottom:.5rem;gap:.5rem}
 }
 /* phones held upright: the world is 16:9, the pad would cover it */
 @media (orientation:portrait) and (max-width:600px){

@@ -8,10 +8,20 @@
  * query, the id generator) is injectable so the layer runs in Node.
  */
 import type { Binds, LevelRecord, Progress, Settings } from './contracts.js';
+import type { DailyResponse } from '../shared/protocol.js';
 import { BIND_ACTIONS, DEFAULT_BINDS, cloneBinds } from './input/binds.js';
 
 export const SETTINGS_KEY = 'clawd-echo.settings.v1';
 export const PROGRESS_KEY = 'clawd-echo.progress.v1';
+/** Today's DailyResponse, so the Daily Tower can start offline once the seed was seen. */
+export const DAILY_CACHE_KEY = 'clawd-echo.daily-cache.v1';
+
+export interface DailyCache { date: string; seed: number; expiresAt: string }
+
+/** 'YYYY-MM-DD' in UTC for a ms timestamp — the server's daily board key. */
+export function utcDateStr(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
 export const DEFAULT_NAME = '클로드';
 export const SAVE_DEBOUNCE_MS = 250;
 
@@ -295,6 +305,22 @@ export class Save {
 
   dailyRecord(date: string, seed: number): Progress['daily'][string] {
     return (this.progress.daily[date] ||= { bestTicks: 0, cleared: false, height: 0, seed: seed >>> 0 });
+  }
+
+  // ------------------------------------------------------------ daily cache
+  /** Remember today's seed (written immediately: it is tiny and must survive a crash). */
+  cacheDaily(d: DailyResponse): void {
+    const doc: DailyCache = { date: d.date, seed: d.seed >>> 0, expiresAt: d.expiresAt };
+    this.write(DAILY_CACHE_KEY, doc);
+  }
+
+  /** The cached DailyResponse when it is for `date` (UTC), else null. */
+  cachedDaily(date: string): DailyResponse | null {
+    const raw = this.read(DAILY_CACHE_KEY);
+    if (!isObj(raw) || raw.date !== date) return null;
+    if (typeof raw.seed !== 'number' || !Number.isFinite(raw.seed) || typeof raw.expiresAt !== 'string') return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(raw.expiresAt))) return null;
+    return { date, seed: raw.seed >>> 0, levelId: 'daily', expiresAt: raw.expiresAt };
   }
 
   /** Wipe zones, daily, endless and totals; the player identity (id, name) survives. */

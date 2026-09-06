@@ -21,7 +21,7 @@ export const APP_PORT = 8080;
  */
 export const IMAGE_CONTEXT_EXCLUDE: readonly string[] = [
   'node_modules', 'dist', 'cdk.out', '.git', '.gitignore', 'docs', 'test', 'levels',
-  'tools/dev.mjs', 'tools/qa', 'tools/postdeploy.*', 'infra', 'cdk.json', 'cdk.context.json',
+  'tools/dev.mjs', 'tools/qa', 'tools/postdeploy.*', 'tools/icons.*', 'infra', 'cdk.json', 'cdk.context.json',
   'cdk-outputs.json', 'vitest.config.ts', 'clawd-jump.tar.gz', 'LICENSE', '**/*.md', '*.log', '.env',
 ];
 
