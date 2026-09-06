@@ -1,0 +1,10 @@
+node_modules/
+dist/
+cdk.out/
+cdk.context.json
+coverage/
+.playwright/
+tools/qa/out/
+*.log
+.DS_Store
+.env

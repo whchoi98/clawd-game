@@ -1,0 +1,43 @@
+{
+  "name": "clawd-echo-tower",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CLAWD JUMP: ECHO TOWER — a precision platformer with a verified-replay backend on CloudFront → ALB → ECS Fargate",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "node tools/dev.mjs",
+    "build": "node tools/build.mjs",
+    "levels": "tsx levels/build.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p infra/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "qa:browser": "playwright install chromium",
+    "qa:smoke": "tsx tools/qa/smoke.ts",
+    "cdk": "cdk",
+    "synth": "cdk synth --quiet",
+    "deploy": "cdk deploy --require-approval never",
+    "destroy": "cdk destroy --force",
+    "start": "node dist/server/index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "@fastify/rate-limit": "^10.2.0",
+    "@fastify/static": "^8.0.0",
+    "fastify": "^5.2.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "aws-cdk": "^2.1000.0",
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.4.0",
+    "esbuild": "^0.24.0",
+    "playwright": "^1.49.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

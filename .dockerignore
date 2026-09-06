@@ -1,0 +1,9 @@
+node_modules
+dist
+cdk.out
+.git
+docs
+test
+tools/qa/out
+*.md
+.env
