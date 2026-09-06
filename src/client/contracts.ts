@@ -30,6 +30,8 @@ export interface Settings {
   echoSelf: boolean; echoWorld: boolean;
   /** Which board entry the world echo follows: the leader, or the rival ranked just above you (default). */
   echoWorldMode?: 'top' | 'rival';
+  /** Vibration / gamepad rumble on impacts (default on for coarse pointers, off under prefers-reduced-motion). */
+  haptics?: boolean;
   binds: Binds;
 }
 
@@ -236,7 +238,10 @@ export type UIAction =
   | { type: 'retryYesterday' }
   /** Stuck-detector offer: restart the zone in assist mode, or decline (never = do not ask again for this zone). */
   | { type: 'assistAccept' }
-  | { type: 'assistDecline'; never: boolean };
+  | { type: 'assistDecline'; never: boolean }
+  /** Settings → 데이터: move progress to another device (creates a one-time code) / restore from a code. */
+  | { type: 'transferExport' }
+  | { type: 'transferImport'; code: string };
 
 export interface HudState {
   hp: number; maxHp: number;
@@ -311,4 +316,6 @@ export interface ApiPort {
   leaderboard(q: import('../shared/protocol.js').LeaderboardQuery): Promise<LeaderboardResponse>;
   ghost(runId: string): Promise<import('../shared/protocol.js').GhostResponse>;
   health(): Promise<import('../shared/protocol.js').HealthResponse>;
+  transferCreate?(body: import('../shared/protocol.js').TransferCreateRequest): Promise<import('../shared/protocol.js').TransferCreateResponse>;
+  transferGet?(code: string): Promise<import('../shared/protocol.js').TransferGetResponse>;
 }

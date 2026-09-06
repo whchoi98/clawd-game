@@ -28,8 +28,14 @@ export interface StoredRun {
   height: number;
   /** ISO timestamp. */
   createdAt: string;
-  /** Unix seconds; daily runs expire after 30 days, story runs never. */
+  /** Unix seconds; daily runs expire after 30 days, story runs never (a replaced story best gets 90 days). */
   ttl?: number;
+  /** sha256 (hex) of the decoded masks + level + seed: the same replay may not be submitted twice on a board. */
+  hash?: string;
+  /** Replay heuristics recorded at verification (never used to block automatically). */
+  hx?: Record<string, number>;
+  /** Set by the admin CLI: delisted from boards. */
+  flagged?: boolean;
 }
 
 export interface Repo {
@@ -51,4 +57,10 @@ export interface Repo {
    * when the board already had entries. Atomic where the store allows it.
    */
   putIfBoardEmpty?(run: StoredRun): Promise<boolean>;
+  /** Progress snapshot for the transfer-code flow (one per player, TTL 7 days). */
+  putSnapshot?(playerId: string, code: string, blob: string, ttl: number): Promise<void>;
+  /** Consume a transfer code once: returns the snapshot and deletes it, or null when unknown / already used. */
+  takeSnapshot?(code: string): Promise<{ playerId: string; blob: string } | null>;
+  /** Admin: mark a run flagged and remove its board item. */
+  delistRun?(runId: string): Promise<boolean>;
 }

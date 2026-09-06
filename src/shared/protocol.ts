@@ -164,6 +164,25 @@ export const HealthResponse = z.object({
   genVersion: z.number().int().optional(),
 });
 
+// ---------------------------------------------------------------- progress transfer (no accounts)
+/** Snapshot size cap (bytes of JSON); echo masks are stripped before upload. */
+export const MAX_TRANSFER_BYTES = 16 * 1024;
+export const TransferCode = z.string().regex(/^[A-HJ-NP-Z2-9]{8}$/);
+export const TransferCreateRequest = z.object({
+  player: PlayerRef,
+  /** The client's Progress document with masks removed; validated structurally on restore, never trusted for boards. */
+  progress: z.record(z.string(), z.unknown()),
+});
+export type TransferCreateRequest = z.infer<typeof TransferCreateRequest>;
+export const TransferCreateResponse = z.object({ code: TransferCode, expiresAt: z.string() });
+export type TransferCreateResponse = z.infer<typeof TransferCreateResponse>;
+export const TransferGetResponse = z.object({
+  playerId: PlayerRef.shape.id,
+  name: PlayerRef.shape.name,
+  progress: z.record(z.string(), z.unknown()),
+});
+export type TransferGetResponse = z.infer<typeof TransferGetResponse>;
+
 // ---------------------------------------------------------------- telemetry (anonymous)
 /**
  * Product telemetry. No player id, name or IP ever travels here; a per-boot
