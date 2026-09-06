@@ -17,7 +17,7 @@ following calls were made and are recorded here so they can be reversed later:
 | What "exceeds" means | (1) isomorphic deterministic sim that runs on the server → verified leaderboards + ghost replays + daily seeds; (2) TypeScript + hashed immutable assets; (3) CF→ALB→Fargate with prefix-list SG, origin-verify header, autoscaling, circuit breaker; (4) tests at every layer | The reference is a static site; a backend only earns its place if it does something a static site cannot |
 | Language | TypeScript everywhere (client, sim, server, infra, tools). Python level builder replaced by a TS DSL | One toolchain, one type system shared client↔server |
 | Datastore | DynamoDB on-demand, single table, TTL on daily runs | Serverless, ~free at demo scale |
-| Network | Private subnets + 1 NAT for tasks (context `natGateways=0` switches to public-subnet mode with no NAT) | Well-Architected default; cost toggle documented |
+| Network | **User decision (2026-09-06):** reuse the existing VPC `cc-on-bedrock-vpc` (`vpc-0dfa5610180dfa628`, stack `CcOnBedrock-Network`) and its two NAT gateways; ALB in its Public subnets, tasks in its Private subnets. No new VPC, NAT or endpoints | The VPC already has NAT per AZ plus gateway endpoints (S3, DynamoDB) and interface endpoints (ECR api/dkr, logs, secretsmanager, sts, monitoring) |
 | Deployment | Deploy to the user's account after local verification; report URL + destroy command | Reference README carried a live URL; stack is one `cdk destroy` away |
 | Identity | No login. Client-generated player id + display name; rate limits per IP and per player | Demo scope; auth is out of scope |
 | UI language | Korean (like the reference). Code, comments, spec in English. README in Korean | Matches reference and user preference |
@@ -95,10 +95,14 @@ exactly as in the reference. The only external fetch is the UI webfont.
 | Player best | `PLAYER#<playerId>` | `BEST#<mode>#<board>` | so "your rank" is one GetItem |
 
 ### 2.5 Infrastructure (`infra/`, AWS CDK v2, single stack `ClawdEchoTowerStack`)
-Constructs: `Network`, `Data`, `Service`, `Edge`.
-- VPC 2 AZ; public subnets for the ALB; private subnets + NAT for tasks
-  (`-c natGateways=0` → tasks in public subnets with public IPs, still only
-  reachable from the ALB SG). Gateway endpoints for S3 and DynamoDB (free).
+Constructs: `Data`, `Service`, `Edge` (the VPC is imported in the stack).
+- VPC: imported with `ec2.Vpc.fromLookup` by context `vpcId`
+  (`vpc-0dfa5610180dfa628`, `cc-on-bedrock-vpc`). Its subnets carry
+  `aws-cdk:subnet-type` tags, so `SubnetType.PUBLIC` (ALB) and
+  `SubnetType.PRIVATE_WITH_EGRESS` (tasks, egress via the VPC's existing NAT
+  gateways) resolve without extra configuration. Nothing network-level is
+  created except the two security groups. `cdk.context.json` is committed so
+  the lookup is reproducible; unit tests rely on CDK's dummy-VPC fallback.
 - ALB SG ingress: **only** `ec2.Peer.prefixList(cloudfrontPrefixListId)` on
   :80. Context key `cloudfrontPrefixListId`, default `pl-22a6434b`
   (ap-northeast-2). Listener default action: fixed 403. Rule priority 1:
@@ -198,8 +202,8 @@ are the source of truth. Summary:
   subsystem exposes a class with `update(dt)`/`draw()` and reads sim state.
 - `server`: `buildApp(deps)` returns a Fastify instance; deps = `{ repo,
   clock, dailySecret }` so tests inject an in-memory repo.
-- `infra`: `new ClawdEchoTowerStack(app, id, { env, cloudfrontPrefixListId,
-  natGateways, desiredCount })`.
+- `infra`: `new ClawdEchoTowerStack(app, id, { env, vpcId, cloudfrontPrefixListId,
+  desiredCount })`.
 
 ## 6. Testing
 - `test/sim`: determinism (same masks → identical snapshots twice; JSON
@@ -215,7 +219,8 @@ are the source of truth. Summary:
   `SourcePrefixListId`; listener default 403; header rule; CF origin custom
   header; HTTPS redirect; CSP has no `*`; HSTS 1 y; ARM64 runtime platform;
   circuit breaker rollback; table on-demand + PITR; log retention set;
-  autoscaling target present; outputs exist.
+  autoscaling target present; outputs exist; **no** `AWS::EC2::VPC`,
+  `AWS::EC2::NatGateway` or `AWS::EC2::VPCEndpoint` resources are created.
 - `tools/qa`: Playwright smoke — page loads with zero console errors, canvas
   is non-blank, a zone starts, `?shot=` harness renders each zone.
 - Post-deploy smoke: `curl` SiteUrl 200; `curl` ALB DNS directly → 403 or

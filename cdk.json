@@ -2,8 +2,8 @@
   "app": "npx tsx infra/bin/app.ts",
   "watch": { "include": ["infra/**", "src/**", "Dockerfile"], "exclude": ["node_modules", "cdk.out", "dist", "test"] },
   "context": {
+    "vpcId": "vpc-0dfa5610180dfa628",
     "cloudfrontPrefixListId": "pl-22a6434b",
-    "natGateways": 1,
     "desiredCount": 2,
     "@aws-cdk/aws-ecs:arnFormatIncludesClusterName": true,
     "@aws-cdk/aws-ecs:disableExplicitDeploymentControllerForCircuitBreaker": true,
