@@ -7,3 +7,8 @@ test
 tools/qa/out
 *.md
 .env
+clawd-jump.tar.gz
+infra
+cdk.json
+cdk.context.json
+vitest.config.ts
