@@ -5,8 +5,34 @@
  */
 import type { BindAction, Binds, Settings, UiSound } from '../contracts.js';
 import { cloneBinds } from '../input/binds.js';
-import { ECHO_WORLD_MODES, echoWorldMode, setEchoWorldMode, type EchoWorldMode } from '../save.js';
+import {
+  DEFAULT_TOUCH, ECHO_WORLD_MODES, TOUCH_LIMITS, echoWorldMode, setEchoWorldMode, touchLayout,
+  type EchoWorldMode, type TouchLayout,
+} from '../save.js';
 import { el } from './screens.js';
+
+/** Touch layout sliders of the 조작 pane (P3-7), in panel order: field, label, range, value formatter. */
+type TouchNumKey = Exclude<keyof TouchLayout, 'floating'>;
+interface TouchSliderSpec { key: TouchNumKey; label: string; min: number; max: number; step: number; fmt: (v: number) => string }
+const pct = (v: number): string => `${Math.round(v * 100)}%`;
+const px = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(Math.round(v))}px`;
+export const TOUCH_SLIDERS: readonly TouchSliderSpec[] = [
+  { key: 'scale', label: '버튼 크기', ...TOUCH_LIMITS.scale, fmt: pct },
+  { key: 'opacity', label: '버튼 투명도', ...TOUCH_LIMITS.opacity, fmt: pct },
+  { key: 'leftX', label: '스틱 가로 이동', ...TOUCH_LIMITS.offset, fmt: px },
+  { key: 'leftY', label: '스틱 세로 이동', ...TOUCH_LIMITS.offset, fmt: px },
+  { key: 'rightX', label: '버튼 가로 이동', ...TOUCH_LIMITS.offset, fmt: px },
+  { key: 'rightY', label: '버튼 세로 이동', ...TOUCH_LIMITS.offset, fmt: px },
+];
+/** Korean copy of the touch layout editor (tests assert on these). */
+export const TOUCH_KR = {
+  heading: '터치 조작',
+  headingSub: '가상 스틱과 버튼의 크기·투명도·위치 · 바꾸는 동안 실제 패드가 미리 보인다',
+  floating: '플로팅 스틱',
+  floatingSub: '왼쪽 절반 어디를 눌러도 그 자리가 스틱의 원점이 된다 · 손을 떼면 제자리로 돌아온다',
+  reset: '기본 배치로',
+  resetSub: '터치 배치를 처음 상태로 되돌린다',
+} as const;
 
 export type PortraitPainter = (ctx: CanvasRenderingContext2D, skin: string, size: number, t: number) => void;
 
@@ -67,6 +93,8 @@ export interface SettingsPanelDeps {
   build?: string;
   /** Extra rows for the 데이터 pane, rebuilt with it (the progress-transfer widgets). */
   extraDataRows?: () => HTMLElement[];
+  /** The touch layout changed (P3-7): the UI previews it on the real pad; `onChange` is called as well. */
+  onTouchLayout?: (layout: TouchLayout) => void;
 }
 
 export class SettingsPanel {
@@ -111,6 +139,23 @@ export class SettingsPanel {
       b.setAttribute('aria-checked', String(on));
     }
     this.refreshBindLabels();
+    this.syncTouch(s);
+  }
+
+  /** Re-read the touch layout widgets (the mute chip or a settings write may have changed the object). */
+  private syncTouch(s: Settings): void {
+    const t = touchLayout(s);
+    const doc = this.d.doc;
+    for (const i of doc.querySelectorAll<HTMLInputElement>('#pane-ctrl input[type="range"][data-touch-key]')) {
+      const spec = TOUCH_SLIDERS.find((x) => x.key === i.dataset.touchKey);
+      if (!spec) continue;
+      const v = t[spec.key];
+      if (Number(i.value) !== v) i.value = String(v);
+      const val = i.parentElement?.querySelector<HTMLElement>('.row__val');
+      if (val) val.textContent = spec.fmt(v);
+    }
+    const fl = doc.querySelector<HTMLElement>('#pane-ctrl .switch[data-touch-key="floating"]');
+    if (fl) fl.setAttribute('aria-checked', String(t.floating));
   }
 
   build(): void {
@@ -147,6 +192,7 @@ export class SettingsPanel {
     });
     resetRow.ctl.appendChild(rb);
     ctrl.append(resetRow.row, el(doc, 'p', { class: 'row__note' }, 'Enter · Space로 확인, Esc · Backspace로 뒤로. 게임패드는 표준 매핑을 따른다.'));
+    ctrl.append(...this.touchRows());
 
     a11y.replaceChildren(
       this.toggleRow('보조 모드', 'assist', '중력 완화 · 3단 점프 · 짧은 대시 쿨다운 · 순위표에는 오르지 않는다'),
@@ -166,6 +212,77 @@ export class SettingsPanel {
 
     this.wasBuilt = true;
     this.d.onRebuilt();
+  }
+
+  // ------------------------------------------------------------ touch layout editor (P3-7)
+  /**
+   * 터치 조작: six sliders (size, opacity, stick / button offsets), the
+   * floating-stick switch and a reset. Every change mutates `settings.touch`
+   * in place, previews through `onTouchLayout` and persists through `onChange`.
+   */
+  private touchRows(): HTMLElement[] {
+    const doc = this.d.doc;
+    const s = this.d.settings();
+    if (!s) return [];
+    const t = touchLayout(s);
+    const head = el(doc, 'div', { class: 'pane__sub', id: 'touch-editor' },
+      el(doc, 'h3', {}, TOUCH_KR.heading), el(doc, 'small', {}, TOUCH_KR.headingSub));
+    const rows: HTMLElement[] = [head];
+    const changed = (): void => {
+      const cur = this.d.settings();
+      if (!cur) return;
+      const layout = touchLayout(cur);
+      this.d.onTouchLayout?.({ ...layout });
+      this.d.onChange();
+    };
+    for (const spec of TOUCH_SLIDERS) {
+      const { row, ctl } = this.row(spec.label);
+      const input = el(doc, 'input', {
+        type: 'range', min: String(spec.min), max: String(spec.max), step: String(spec.step),
+        'data-touch-key': spec.key, 'aria-label': spec.label,
+      });
+      input.value = String(t[spec.key]);
+      const val = el(doc, 'span', { class: 'row__val' }, spec.fmt(t[spec.key]));
+      input.addEventListener('input', () => {
+        const cur = this.d.settings();
+        if (!cur) return;
+        const v = Math.min(spec.max, Math.max(spec.min, Number(input.value) || 0));
+        touchLayout(cur)[spec.key] = Math.round(v * 1000) / 1000;
+        val.textContent = spec.fmt(touchLayout(cur)[spec.key]);
+        changed();
+      });
+      ctl.append(input, val);
+      rows.push(row);
+    }
+    const fl = this.row(TOUCH_KR.floating, TOUCH_KR.floatingSub);
+    const sw = el(doc, 'button', {
+      class: 'switch', type: 'button', role: 'switch', 'data-touch-key': 'floating',
+      'aria-checked': String(t.floating), 'aria-label': TOUCH_KR.floating,
+    });
+    sw.addEventListener('click', () => {
+      const cur = this.d.settings();
+      if (!cur) return;
+      const layout = touchLayout(cur);
+      layout.floating = !layout.floating;
+      sw.setAttribute('aria-checked', String(layout.floating));
+      this.d.sound('toggle');
+      changed();
+    });
+    fl.ctl.appendChild(sw);
+    rows.push(fl.row);
+    const reset = this.row(TOUCH_KR.reset, TOUCH_KR.resetSub);
+    const rb = el(doc, 'button', { class: 'bindbtn', type: 'button', id: 'touch-reset' }, 'RESET');
+    rb.addEventListener('click', () => {
+      const cur = this.d.settings();
+      if (!cur) return;
+      cur.touch = { ...DEFAULT_TOUCH };
+      this.d.sound('cancel');
+      changed();
+      this.syncTouch(cur);
+    });
+    reset.ctl.appendChild(rb);
+    rows.push(reset.row);
+    return rows;
   }
 
   // ------------------------------------------------------------ widgets

@@ -23,7 +23,7 @@ import { bandBiome, makeDailyLevel } from '../sim/gen/daily.js';
 import { makeEndlessLevel } from '../sim/gen/endless.js';
 import { BIOMES, BIOME_ORDER, C, type Biome } from '../shared/biomes.js';
 import { MAX_MASKS_B64, TransferCode } from '../shared/protocol.js';
-import type { DailyResponse, LeaderboardResponse, RunSubmit } from '../shared/protocol.js';
+import type { DailyResponse, GhostResponse, LeaderboardResponse, RunSubmit } from '../shared/protocol.js';
 import type {
   ApiPort, AudioPort, HudState, InputPort, Progress, RendererPort, ResultView, UIAction, UIPort,
 } from './contracts.js';
@@ -46,6 +46,9 @@ import { GOAL_LABEL, goalEchoFor } from './echo/goal.js';
 import {
   RIVAL_LABEL, SPLIT_NONE, SPLIT_SECONDS, TOP_LABEL, fmtSplit, pickWorldEcho, worldEchoLabel, type SplitSign, type WorldEchoKind,
 } from './echo/rival.js';
+import {
+  RACE_COLOR, RACE_KR, RUN_ID_RE, buildRaceUrl, defaultShareEnv, isFreshDailyDate, raceBanner, raceLabel, shareRaceLink, type ShareEnv,
+} from './echo/race.js';
 import { REHINT_HAZARD, REHINT_PIT } from './ui/hints.js';
 
 export type RunMode = 'story' | 'daily' | 'endless';
@@ -76,6 +79,28 @@ export interface VersusView {
 interface ZoneSession {
   marks: DeathMark[];
   segDeaths: number[];
+}
+
+/** The friend's echo a run races (P3-3): the ghost's run id and name, and its length for the result row. */
+export interface RaceInfo {
+  runId: string;
+  name: string;
+  ticks: number;
+}
+
+/**
+ * A race the shell is in (from a `?race=` link): the ghost as the server sent
+ * it, decoded once, and how it was started. Survives restarts / retries of the
+ * same zone; any other run, or quitting to the menus, ends it.
+ */
+interface PendingRace {
+  g: GhostResponse;
+  masks: Uint8Array;
+  name: string;
+  /** A story zone the player has not unlocked: raced once, never recorded, never submitted, opens nothing. */
+  locked: boolean;
+  /** A daily the server still accepts (today / yesterday); stale ones are raced offline. */
+  fresh: boolean;
 }
 
 /** Death X marks kept per zone session. */
@@ -169,6 +194,10 @@ export interface ScenesDeps {
    * argument is the server's SIM_VERSION when known, null otherwise.
    */
   onServerNewer?: (serverSim: number | null) => void;
+  /** Origin of the race links the result screen shares (P3-3). Default: location.origin, '' in Node. */
+  origin?: string;
+  /** Web Share / clipboard hooks for '메아리 링크 공유'. Default: the platform's navigator. */
+  share?: ShareEnv;
 }
 
 /** Seconds of clear animation before the result screen. */
@@ -230,6 +259,13 @@ export interface Run {
   selfEcho: Echo | null;
   /** The board entry raced as the world echo (a cleared run), for the result screen's 라이벌보다 row. */
   rival: { kind: WorldEchoKind; name: string; ticks: number } | null;
+  /** A friend's echo from a race link (P3-3) and its ghost; the result row compares against it first. */
+  race: RaceInfo | null;
+  raceEcho: Echo | null;
+  /** Racing a zone the player has not unlocked: no progress, no submission, no unlock. */
+  raceLocked: boolean;
+  /** Server id of this run once a submission was accepted (what '메아리 링크 공유' links to). */
+  acceptedRunId: string | null;
   /** Live tick at which the player passed each checkpoint (see checkpointKey). */
   cpTicks: Map<string, number>;
   /** The split chip waiting to be pushed to the UI (`dirty`) and its remaining lifetime (−1 = none). */
@@ -334,6 +370,12 @@ export class Scenes {
   private readonly onServerNewer: ((serverSim: number | null) => void) | null;
   private readonly haptics: HapticsPort | null;
   private readonly persistStorage: (() => Promise<boolean> | boolean | void) | null;
+  private readonly origin: string;
+  private readonly shareEnv: ShareEnv;
+  /** The race a `?race=` link started (kept across restarts of that zone); null when not racing. */
+  private race: PendingRace | null = null;
+  /** startRace is about to begin the raced run: the next beginRun attaches the ghost. */
+  private raceArm = false;
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly runEndListeners: (() => void)[] = [];
   /** Per-zone session memory (death marks, segment deaths), keyed by mode · zone · seed. */
@@ -373,6 +415,8 @@ export class Scenes {
     this.onServerNewer = deps.onServerNewer ?? null;
     this.haptics = deps.haptics ?? null;
     this.persistStorage = deps.persistStorage ?? defaultPersistStorage();
+    this.origin = deps.origin ?? defaultOrigin();
+    this.shareEnv = deps.share ?? defaultShareEnv();
     this.fx = new FxBus({ random: deps.random });
     this.fx.applySettings(this.save.settings);
     this.ui.on((a) => this.onAction(a));
@@ -519,9 +563,110 @@ export class Scenes {
         break;
       case 'transferExport': void this.track(this.transferExport()); break;
       case 'transferImport': void this.track(this.transferImport(a.code)); break;
+      case 'shareEcho': void this.track(this.shareEcho()); break;
       default:
         break;
     }
+  }
+
+  // ================================================================ race links (P3-3)
+  /**
+   * `?race=<runId>` at boot: fetch the ghost and start what it was recorded on.
+   * A story ghost starts its zone — a locked one too, once, without progress,
+   * submission or unlock. A daily ghost starts that date's tower: today's or
+   * yesterday's is a real, submittable climb; an older one is raced locally
+   * (the server would refuse the record) and says so. The friend's echo is
+   * added as '경주 · <name>' and the result screen compares against it.
+   * Resolves true when a run started.
+   */
+  async startRace(runId: string): Promise<boolean> {
+    if (!RUN_ID_RE.test(runId)) return false;
+    let g: GhostResponse;
+    try {
+      g = await this.api.ghost(runId);
+    } catch (err) {
+      this.ui.toast(err instanceof ApiError && !err.offline ? RACE_KR.notFound : RACE_KR.offline);
+      return false;
+    }
+    let masks: Uint8Array;
+    try { masks = decodeMasks(g.masks); } catch { this.ui.toast(RACE_KR.notFound); return false; }
+    if (!masks.length) { this.ui.toast(RACE_KR.notFound); return false; }
+    const name = g.name || '친구';
+    let fresh = true;
+    let locked = false;
+    if (g.mode === 'story') {
+      const def = this.levelById[g.levelId];
+      if (!def) { this.ui.toast(RACE_KR.badZone); return false; }
+      locked = !this.unlockedZones().has(def.id);
+      this.race = { g, masks, name, locked, fresh };
+      this.raceArm = true;
+      this.startLevel(def.id);
+    } else {
+      const today = utcDateStr(this.now());
+      fresh = isFreshDailyDate(g.board, today);
+      this.race = { g, masks, name, locked, fresh };
+      this.raceArm = true;
+      const expiresAt = new Date(Date.parse(`${g.board}T00:00:00.000Z`) + MS_PER_DAY).toISOString();
+      this.startDaily({ date: g.board, seed: g.seed, levelId: 'daily', expiresAt }, { past: g.board !== today, offline: !fresh });
+      if (!fresh) this.ui.toast(RACE_KR.staleDaily);
+    }
+    this.raceArm = false;
+    this.telemetry?.track('race_link_open', { levelId: g.levelId, mode: g.mode, fresh, locked });
+    return this.run !== null && this.run.race !== null;
+  }
+
+  /**
+   * beginRun: attach the pending race to this run when it is the raced zone
+   * (started by startRace, or a restart / retry of it); anything else ends the race.
+   */
+  private attachRace(run: Run, restart: boolean): void {
+    const race = this.race;
+    const arm = this.raceArm;
+    this.raceArm = false;
+    if (!race) return;
+    const sameZone = race.g.levelId === run.def.id && (run.mode !== 'daily' || race.g.seed === run.seed) && run.mode !== 'endless';
+    if (!sameZone || !(arm || restart)) { this.race = null; return; }
+    const echo = new Echo(run.def, race.masks, race.g.seed, race.g.assist, RACE_COLOR, raceLabel(race.name));
+    run.echoes.push(echo);
+    run.raceEcho = echo;
+    run.race = { runId: race.g.runId, name: race.name, ticks: race.g.ticks };
+    run.raceLocked = race.locked;
+    if (race.locked) run.eligible = false;
+    if (!restart) this.ui.banner?.(raceBanner(race.name));
+  }
+
+  /**
+   * '메아리 링크 공유': a `?race=<runId>&z=<levelId>` link to this run's accepted
+   * submission, through the Web Share API or the clipboard (toast either way).
+   */
+  private async shareEcho(): Promise<void> {
+    const run = this.run;
+    const runId = run?.acceptedRunId ?? null;
+    if (!run || !runId || run.view?.submit.state !== 'accepted') { this.ui.toast(RACE_KR.notShareable); return; }
+    const url = buildRaceUrl(this.origin, runId, run.def.id);
+    const text = `${this.save.progress.player.name}의 메아리와 경주하자 · ${run.def.name}`;
+    const outcome = await shareRaceLink(url, text, this.shareEnv);
+    this.telemetry?.track('share_click', { levelId: run.def.id, mode: run.mode, via: outcome });
+    if (outcome === 'cancelled') return;
+    this.ui.toast(outcome === 'shared' ? RACE_KR.shared : outcome === 'copied' ? RACE_KR.copied : RACE_KR.shareFailed);
+  }
+
+  /** The race link a friend could open for this run right now (tests / console), or null before an accepted submission. */
+  raceUrl(): string | null {
+    const run = this.run;
+    return run?.acceptedRunId ? buildRaceUrl(this.origin, run.acceptedRunId, run.def.id) : null;
+  }
+
+  /** The result row against the raced friend: story ghosts are clears by contract; a daily ghost must have cleared too. */
+  private raceVersus(run: Run): VersusView | null {
+    const race = run.race, echo = run.raceEcho;
+    if (!race || !echo || !run.summary?.cleared || !(race.ticks > 0)) return null;
+    if (run.mode !== 'story') {
+      // Let the recording play out (it is behind the result modal): did the friend reach the top?
+      echo.syncTo(Math.max(echo.tick, race.ticks + 1));
+      if (echo.sim.state.phase !== 'clear') return null;
+    }
+    return { label: race.name, deltaTicks: run.summary.ticks - race.ticks };
   }
 
   // ================================================================ progress transfer (P3-5)
@@ -593,8 +738,11 @@ export class Scenes {
   startLevel(id: string, opts: { restart?: boolean } = {}): boolean {
     const def = this.levelById[id];
     if (!def) return false;
-    this.save.progress.lastLevel = id;
-    this.save.saveProgress();
+    // A locked zone raced through a link is not "the zone in progress": 이어하기 must not lead back into it.
+    if (!(this.race?.locked && this.race.g.levelId === id)) {
+      this.save.progress.lastLevel = id;
+      this.save.saveProgress();
+    }
     this.beginRun(def, 'story', def.seed, null, !!opts.restart);
     return true;
   }
@@ -661,6 +809,7 @@ export class Scenes {
     const run: Run = {
       sim, def, mode, biome, seed, masks: new MaskLog(), daily, echoes: [],
       worldEcho: null, selfEcho: null, rival: null,
+      race: null, raceEcho: null, raceLocked: false, acceptedRunId: null,
       cpTicks: new Map(), split: null, splitTimer: -1, segStart: 0, session,
       guide: null, guideTimer: guided ? GUIDE_DELAY : -1,
       segDeaths: { pit: 0, hazard: 0 },
@@ -710,6 +859,8 @@ export class Scenes {
       }
       if (def.tide) { run.toastTimer = TIDE_TOAST_DELAY; run.toastText = '아래에서 조류가 밀려온다'; }
     }
+    // A race link's ghost rides along from tick 0 (after the zone banner, so its banner is what stays on screen).
+    this.attachRace(run, restart);
     this.ui.hud(this.hudState(run));
     this.telemetry?.track(mode === 'daily' ? 'daily_start' : 'zone_start', { levelId: def.id, mode, restart });
     void this.track(this.loadEchoes(run));
@@ -813,8 +964,8 @@ export class Scenes {
   private nextLevel(): void {
     const run = this.run;
     if (!run || run.mode !== 'story') { this.retryRun(); return; }
-    // The very first clear returns to the tower: the eight cards, one newly lit, are the reward.
-    if (run.firstEver && run.summary?.cleared) { this.quitToMenu(); return; }
+    // The very first clear returns to the tower: the eight cards, one newly lit, are the reward. A locked race leads nowhere else.
+    if ((run.firstEver && run.summary?.cleared) || run.raceLocked) { this.quitToMenu(); return; }
     const i = this.levels.findIndex((l) => l.id === run.def.id);
     if (i >= 0 && i + 1 < this.levels.length) this.startLevel(this.levels[i + 1].id);
     else this.quitToMenu();
@@ -834,6 +985,7 @@ export class Scenes {
       this.notifyRunEnd(run);
     }
     this.run = null;
+    this.race = null;
     this.titleDirty = true;
     this.setMuffle(false);
     this.audio.setTrack('title');
@@ -1174,9 +1326,9 @@ export class Scenes {
   }
 
   // ================================================================ splits · segments · death marks (P2-4)
-  /** The echo the live splits are read against: the world echo (라이벌 / 1위 / 목표) when there is one, else the self echo. */
+  /** The echo the live splits are read against: the raced friend first, then the world echo (라이벌 / 1위 / 목표), else the self echo. */
   private splitEchoOf(run: Run): Echo | null {
-    return run.worldEcho ?? run.selfEcho;
+    return run.raceEcho ?? run.worldEcho ?? run.selfEcho;
   }
 
   /**
@@ -1212,9 +1364,9 @@ export class Scenes {
     run.splitTimer = SPLIT_SECONDS;
   }
 
-  /** A story segment's time (ticks, deaths included) goes to the install's segment bests — never from assist / invincible runs. */
+  /** A story segment's time (ticks, deaths included) goes to the install's segment bests — never from assist / invincible runs or a locked race. */
   private recordSegment(run: Run, idx: number, ticks: number): void {
-    if (run.mode !== 'story' || !run.echoSafe || ticks <= 0) return;
+    if (run.mode !== 'story' || !run.echoSafe || run.raceLocked || ticks <= 0) return;
     const rec = this.save.levelRecord(run.def.id);
     if (recordSegmentBest(rec, idx, ticks)) this.save.saveProgress();
   }
@@ -1293,11 +1445,13 @@ export class Scenes {
     run.encoded = encoded;
     if (encoded && encoded.length > MAX_MASKS_B64) run.eligible = false;
     const openBefore = this.unlockedZones();
-    const personalBest = this.recordProgress(run, summary, encoded);
+    // A locked zone raced through a link leaves no trace: no record, no totals, nothing opens.
+    const personalBest = run.raceLocked ? false : this.recordProgress(run, summary, encoded);
     const justUnlocked = new Set<string>();
     for (const id of this.unlockedZones()) if (!openBefore.has(id)) justUnlocked.add(id);
     const i = this.levels.findIndex((l) => l.id === run.def.id);
-    const nextLevelId = run.mode === 'story' && i >= 0 && i + 1 < this.levels.length ? this.levels[i + 1].id : undefined;
+    // A locked race offers no 다음 구역: the tower is still to be climbed.
+    const nextLevelId = run.mode === 'story' && !run.raceLocked && i >= 0 && i + 1 < this.levels.length ? this.levels[i + 1].id : undefined;
     run.view = {
       summary,
       levelName: run.def.name,
@@ -1401,11 +1555,11 @@ export class Scenes {
     run.resultShown = true;
     if (!run.view || !run.summary) return;
     if (run.resultKind === 'clear') {
-      // "라이벌보다 0.62s 빠름": our play ticks against the raced entry's (both the board's score).
+      // "<친구>보다 / 라이벌보다 0.62s 빠름": our play ticks against the raced echo's (both the board's score).
       const r = run.rival;
-      this.ui.setVersus?.(r && run.summary.cleared
+      this.ui.setVersus?.(this.raceVersus(run) ?? (r && run.summary.cleared
         ? { label: r.kind === 'top' ? TOP_LABEL : RIVAL_LABEL, deltaTicks: run.summary.ticks - r.ticks }
-        : null);
+        : null));
       this.ui.showResult(run.view);
     } else {
       this.ui.showOver(run.summary, run.prevBestHeight, {
@@ -1473,6 +1627,7 @@ export class Scenes {
       const res = await this.api.submitRun(body);
       if (res.accepted) {
         view.submit = { state: 'accepted', rank: res.rank, total: res.total };
+        run.acceptedRunId = res.runId;
         this.storeRunId(run, res.runId, encoded);
         if (mode === 'daily') this.storeDailyRank(board, res.rank);
         this.trackVerdict(run, { accepted: true });
@@ -1563,6 +1718,7 @@ export class Scenes {
       run.view.submit = response.accepted
         ? { state: 'accepted', rank: response.rank, total: response.total }
         : { state: 'rejected', reason: response.reason };
+      if (response.accepted) run.acceptedRunId = response.runId;
       this.pushResult(run);
     }
   }
@@ -1598,6 +1754,8 @@ export class Scenes {
       }
     }
     if (!s.echoWorld || run.mode === 'endless') return;
+    // A race link's friend is the rival of this run: the board's echo stays away.
+    if (run.race) return;
     // No world echo to show (empty board, offline, API error): the bundled goal run stands in as '목표'.
     const goal = (): void => {
       if (this.run !== run || run.echoes.some((e) => e.label === GOAL_LABEL)) return;
@@ -1730,6 +1888,12 @@ export function transferErrorText(err: unknown, kind: 'export' | 'import'): stri
     return kind === 'import' ? TRANSFER_KR.importFailed : TRANSFER_KR.createFailed;
   }
   return TRANSFER_KR.offline;
+}
+
+/** `location.origin` where there is one (the browser), '' in Node — race links are then relative. */
+function defaultOrigin(): string {
+  const loc = (globalThis as { location?: { origin?: string } }).location;
+  return typeof loc?.origin === 'string' && loc.origin !== 'null' ? loc.origin : '';
 }
 
 /** `navigator.storage.persist` bound to its manager, or null where the platform has none (Node, old WebViews). */

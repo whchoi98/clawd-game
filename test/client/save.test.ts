@@ -7,14 +7,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import { GEN_VERSION, SIM_VERSION } from '../../src/sim/types.js';
-import type { Progress } from '../../src/client/contracts.js';
+import type { Progress, Settings } from '../../src/client/contracts.js';
 import type { LevelDef } from '../../src/sim/types.js';
 import { MAX_TRANSFER_BYTES, TransferCreateRequest, TransferGetResponse } from '../../src/shared/protocol.js';
 import {
-  DEFAULT_ECHO_WORLD_MODE, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, TRANSFER_MARGIN_BYTES, daysBucket, defaultLevelRecord,
-  defaultProgress, defaultSettings, echoMasks, echoWorldMode, fallbackName, isValidName, jsonBytes, markEcho, mergeProgress,
-  recordSegmentBest, repairProgress, repairSettings, retentionBuckets, segmentBests, setEchoWorldMode, snapshotProgress, streakFor,
-  touchPlayDay, unlockedZones, type StorageLike,
+  DEFAULT_ECHO_WORLD_MODE, DEFAULT_NAME, DEFAULT_TOUCH, PROGRESS_KEY, SETTINGS_KEY, Save, TOUCH_LIMITS, TRANSFER_MARGIN_BYTES,
+  UNMUTE_FALLBACK_MASTER, daysBucket, defaultLevelRecord,
+  defaultProgress, defaultSettings, echoMasks, echoWorldMode, fallbackName, isMuted, isValidName, jsonBytes, markEcho, mergeProgress,
+  recordSegmentBest, repairProgress, repairSettings, repairTouch, retentionBuckets, segmentBests, setEchoWorldMode, snapshotProgress, streakFor,
+  toggleMute, touchLayout, touchPlayDay, unlockedZones, type MuteExtra, type StorageLike, type TouchLayout,
 } from '../../src/client/save.js';
 
 class MemStorage implements StorageLike {
@@ -525,5 +526,66 @@ describe('P3-8 · Settings.haptics default', () => {
     const s = new Save({ storage, coarsePointer: true });
     expect(s.settings.haptics).toBe(true);
     expect(s.settings.music).toBeCloseTo(0.1);
+  });
+});
+
+describe('P3-7 · Settings.touch layout and the mute chip', () => {
+  it('a v1 settings document gets the touch defaults and keeps every other choice; a stored layout round-trips', () => {
+    const storage = new MemStorage();
+    const { touch: _drop, ...v1 } = defaultSettings();
+    storage.setItem(SETTINGS_KEY, JSON.stringify({ ...v1, music: 0.2, skin: 'azure' }));
+    const s = new Save({ storage, schedule: () => 0, cancel: () => {} });
+    expect(s.settings.touch).toEqual(DEFAULT_TOUCH);
+    expect(s.settings.music).toBeCloseTo(0.2);
+    expect(s.settings.skin).toBe('azure');
+
+    // the player's layout survives a write / read cycle exactly
+    const mine: TouchLayout = { scale: 1.25, opacity: 0.6, leftX: 24, leftY: -8, rightX: -40, rightY: 12, floating: true };
+    s.settings.touch = { ...mine };
+    s.flush();
+    const again = new Save({ storage, schedule: () => 0, cancel: () => {} });
+    expect(again.settings.touch).toEqual(mine);
+    expect(touchLayout(again.settings)).toBe(again.settings.touch);
+  });
+
+  it('repairTouch clamps to the limits (scale 0.8–1.4, opacity 0.2–0.8, offsets ±80) and drops junk to the defaults', () => {
+    expect(repairTouch(undefined)).toEqual(DEFAULT_TOUCH);
+    expect(repairTouch('nope')).toEqual(DEFAULT_TOUCH);
+    const r = repairTouch({ scale: 9, opacity: 0.05, leftX: -500, leftY: 'x', rightX: 79.5, rightY: Infinity, floating: 'yes' });
+    expect(r).toEqual({ scale: TOUCH_LIMITS.scale.max, opacity: TOUCH_LIMITS.opacity.min, leftX: -80, leftY: 0, rightX: 79.5, rightY: 0, floating: false });
+    expect(repairTouch({ scale: 0.1 }).scale).toBe(TOUCH_LIMITS.scale.min);
+    // through repairSettings as well
+    const s = repairSettings({ touch: { scale: 0.8, floating: true } }, defaultSettings());
+    expect(s.touch).toEqual({ ...DEFAULT_TOUCH, scale: 0.8, floating: true });
+    // a fixture without the field gets it attached on first read (the editor mutates that object)
+    const bare = defaultSettings();
+    delete bare.touch;
+    const attached = touchLayout(bare);
+    expect(bare.touch).toBe(attached);
+    expect(attached).toEqual(DEFAULT_TOUCH);
+  });
+
+  it('toggleMute zeroes the master volume, remembers the level, restores it, and the memory is sanitised on load', () => {
+    const s = defaultSettings();
+    s.master = 0.55;
+    expect(isMuted(s)).toBe(false);
+    expect(toggleMute(s)).toBe(true);
+    expect(s.master).toBe(0);
+    expect(isMuted(s)).toBe(true);
+    expect((s as Settings & MuteExtra).masterBeforeMute).toBeCloseTo(0.55);
+    expect(toggleMute(s)).toBe(false);
+    expect(s.master).toBeCloseTo(0.55);
+    expect('masterBeforeMute' in s).toBe(false);
+    // muted with no memory (an old save at 0): unmute lands on the fallback level
+    s.master = 0;
+    expect(toggleMute(s)).toBe(false);
+    expect(s.master).toBe(UNMUTE_FALLBACK_MASTER);
+    // persistence: the memory rides along only while muted and only as a positive number
+    const muted = repairSettings({ master: 0, masterBeforeMute: 0.7 }, defaultSettings());
+    expect((muted as Settings & MuteExtra).masterBeforeMute).toBeCloseTo(0.7);
+    const loud = repairSettings({ master: 0.4, masterBeforeMute: 0.7 }, defaultSettings());
+    expect('masterBeforeMute' in loud).toBe(false);
+    const junk = repairSettings({ master: 0, masterBeforeMute: 'x' }, defaultSettings());
+    expect('masterBeforeMute' in junk).toBe(false);
   });
 });

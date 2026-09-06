@@ -44,6 +44,7 @@ import { ECHO_ALPHA, Echo } from '../../src/client/echo/echo.js';
 import { GOAL_LABEL } from '../../src/client/echo/goal.js';
 import { GOAL_ECHOES } from '../../src/sim/echoes.generated.js';
 import { SPLIT_NONE, SPLIT_SECONDS, fmtSplit, fmtVersus, pickWorldEcho, worldEchoLabel } from '../../src/client/echo/rival.js';
+import { RACE_COLOR, RACE_KR, type ShareData, type ShareEnv } from '../../src/client/echo/race.js';
 import { echoWorldMode, segmentBests, setEchoWorldMode } from '../../src/client/save.js';
 import {
   ASSIST_OFFER_DEATHS, DEATH_MARKS_MAX, NAME_ASKED_KEY, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, assistSeenKey,
@@ -334,7 +335,11 @@ function fakeTelemetry(): FakeTelemetry {
 
 function makeScenes(
   levels: LevelDef[],
-  opts: { assist?: boolean; echoWorld?: boolean; echoSelf?: boolean; now?: () => number; makeDaily?: (seed: number) => LevelDef } = {},
+  opts: {
+    assist?: boolean; echoWorld?: boolean; echoSelf?: boolean; now?: () => number; makeDaily?: (seed: number) => LevelDef;
+    /** Race links (P3-3): the origin the shell shares and the share / clipboard fakes (default: nothing available). */
+    origin?: string; share?: ShareEnv;
+  } = {},
 ) {
   const renderer = fakeRenderer();
   const audio = fakeAudio();
@@ -351,6 +356,8 @@ function makeScenes(
     renderer, audio, ui, input, api, save, levels, build: 'test', randomSeed: () => 777, random: () => 0.5,
     telemetry: tele, telemetryEnv: { uaFamily: 'desktop', dpr: 2, hwConcurrency: 8 },
     onServerNewer: (v) => { newer.push(v); },
+    origin: opts.origin ?? 'https://clawd.test',
+    ...(opts.share ? { share: opts.share } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.makeDaily ? { makeDaily: opts.makeDaily } : {}),
   });
@@ -2752,6 +2759,206 @@ describe('Scenes · progress transfer (P3-5)', () => {
     expect(rejecting).toHaveBeenCalledTimes(1);
     expect(fresh.save.progress.seen[PERSIST_ASKED_KEY]).toBe(true);
     expect(throwing).not.toHaveBeenCalled();
+  });
+});
+
+// ================================================================ P3-3 race links
+describe('Scenes · race links (P3-3)', () => {
+  /** A ghost recording: `lead` idle ticks, then RIGHT for `hold` ticks. */
+  const ghostMasks = (lead: number, hold: number): string => {
+    const m = new Uint8Array(lead + hold);
+    m.fill(IN.RIGHT, lead);
+    return encodeMasks(m);
+  };
+  /** A friend's accepted run on `def`, served by the fake GET /api/ghost. */
+  function friend(api: FakeApi, def: LevelDef, over: Partial<GhostResponse> = {}): GhostResponse {
+    const g: GhostResponse = {
+      runId: 'run-friend', mode: 'story', board: def.id, levelId: def.id, seed: def.seed, assist: false,
+      masks: ghostMasks(0, 900), name: '친구A', ticks: 900, ...over,
+    };
+    api.ghosts[g.runId] = g;
+    return g;
+  }
+
+  it("a race link starts the ghost's zone with the friend's echo alone, a banner and race_link_open; the result row compares against the friend", async () => {
+    const def = flatRoom();
+    const { scenes, ui, api, input, tele, save } = makeScenes([def], { echoWorld: true, echoSelf: false });
+    scenes.bootSync();
+    // a board with a rival the world echo WOULD pick — the friend takes its place
+    api.board = [{
+      rank: 1, runId: 'run-r1', ownerId: 'other-1', playerTag: 'a'.repeat(12), name: '주자1', score: 4060, ticks: 4060,
+      shards: 0, deaths: 0, cleared: true, height: 0, createdAt: '2026-09-06T00:00:00.000Z',
+    }];
+    api.ghosts['run-r1'] = { runId: 'run-r1', mode: 'story', board: def.id, levelId: def.id, seed: def.seed, assist: false, masks: ghostMasks(0, 900), name: '주자1', ticks: 4060 };
+    friend(api, def);
+    expect(await scenes.startRace('run-friend')).toBe(true);
+    expect(ui.screen).toBe('play');
+    const run = scenes.run!;
+    expect(run.race).toEqual({ runId: 'run-friend', name: '친구A', ticks: 900 });
+    expect(run.raceLocked).toBe(false);
+    expect(run.eligible).toBe(true);
+    expect(run.echoes.map((e) => e.label)).toEqual(['경주 · 친구A']);
+    expect(run.echoes[0].color).toBe(RACE_COLOR);
+    expect(run.raceEcho).toBe(run.echoes[0]);
+    expect(ui.banners.at(-1)).toBe('친구A의 메아리와 경주한다');
+    expect(tele.of('race_link_open')).toEqual([{ levelId: 'flat', mode: 'story', fresh: true, locked: false }]);
+    await scenes.settle();
+    // the board's rival stays away: the friend is the rival of this run
+    expect(run.echoes).toHaveLength(1);
+    expect(api.lbQueries).toHaveLength(0);
+    // the friend runs in lockstep and reaches the renderer
+    scenes.frame(1 / 60);
+    expect(scenes.frame(1 / 60)).toBeUndefined();
+    expect(run.echoes[0].tick).toBe(run.sim.state.tick);
+    expect(ui.huds.length).toBeGreaterThan(0);
+
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    const summary = ui.result!.summary;
+    expect(summary.cleared).toBe(true);
+    expect(ui.versusCalls.at(-1)).toEqual({ label: '친구A', deltaTicks: summary.ticks - 900 });
+    expect(fmtVersus('친구A', summary.ticks - 900).text).toMatch(/^친구A보다 \d+\.\d{2}s (빠름|느림)$/);
+    await scenes.settle();
+    expect(ui.result!.submit.state).toBe('accepted');
+    expect(scenes.raceUrl()).toBe('https://clawd.test/?race=run-1&z=flat');
+    expect(save.progress.levels.flat.done).toBe(true);
+
+    // a retry keeps racing the same friend (no banner again); quitting ends the race
+    ui.emit({ type: 'retry' });
+    expect(scenes.run!.race?.runId).toBe('run-friend');
+    expect(scenes.run!.echoes.map((e) => e.label)).toEqual(['경주 · 친구A']);
+    ui.emit({ type: 'quit' });
+    expect(ui.screen).toBe('select');
+    ui.emit({ type: 'start', levelId: 'flat' });
+    expect(scenes.run!.race).toBeNull();
+    expect(scenes.run!.echoes.some((e) => e.label?.startsWith('경주'))).toBe(false);
+    await scenes.settle();
+  });
+
+  it('a locked zone can be raced once: no record, no submission, no unlock, no 다음 구역, and 이어하기 never points at it', async () => {
+    const first = flatRoom();
+    const second: LevelDef = { ...flatRoom(), id: 'flat2', name: '둘째 방' };
+    const { scenes, ui, api, input, save, tele } = makeScenes([first, second]);
+    scenes.bootSync();
+    friend(api, second, { runId: 'run-locked' });
+    expect(await scenes.startRace('run-locked')).toBe(true);
+    const run = scenes.run!;
+    expect(run.def.id).toBe('flat2');
+    expect(run.raceLocked).toBe(true);
+    expect(run.eligible).toBe(false);
+    expect(save.progress.lastLevel).toBeNull();
+    expect(tele.of('race_link_open')[0]).toMatchObject({ levelId: 'flat2', locked: true });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.result!.summary.cleared).toBe(true);
+    expect(ui.result!.submit.state).toBe('idle');
+    expect(ui.result!.nextLevelId).toBeUndefined();
+    expect(api.submissions).toHaveLength(0);
+    expect(save.progress.levels.flat2).toBeUndefined();
+    expect(save.progress.totals).toEqual({ deaths: 0, shards: 0 });
+    expect(ui.unlockCalls.at(-1)?.size ?? 0).toBe(0);
+    // the friend's ghost still gives the comparison row; nothing to share
+    expect(ui.versusCalls.at(-1)?.label).toBe('친구A');
+    expect(scenes.raceUrl()).toBeNull();
+    // 다음 구역 from a locked race returns to the tower
+    ui.emit({ type: 'next' });
+    expect(scenes.run).toBeNull();
+    expect(ui.screen).toBe('select');
+  });
+
+  it('a daily race is submittable for today / yesterday and a local, non-submitting run for an older tower', async () => {
+    const daily: LevelDef = { ...flatRoom(), id: 'daily', name: '데일리' };
+    const now = Date.UTC(2026, 8, 6, 12);
+    const { scenes, ui, api, tele } = makeScenes([flatRoom()], { makeDaily: () => daily, now: () => now });
+    scenes.bootSync();
+    friend(api, daily, { runId: 'run-old', mode: 'daily', board: '2026-08-20', seed: 4242 });
+    expect(await scenes.startRace('run-old')).toBe(true);
+    let run = scenes.run!;
+    expect(run.mode).toBe('daily');
+    expect(run.daily).toEqual({ date: '2026-08-20', seed: 4242 });
+    expect(run.offline).toBe(true);
+    expect(run.eligible).toBe(false);
+    expect(run.race?.name).toBe('친구A');
+    expect(run.echoes.map((e) => e.label)).toEqual(['경주 · 친구A']);
+    expect(ui.toasts).toContain(RACE_KR.staleDaily);
+    expect(tele.of('race_link_open').at(-1)).toEqual({ levelId: 'daily', mode: 'daily', fresh: false, locked: false });
+    expect(scenes.daily).toBeNull();          // a past tower never becomes "today's"
+
+    friend(api, daily, { runId: 'run-y', mode: 'daily', board: '2026-09-05', seed: 777 });
+    expect(await scenes.startRace('run-y')).toBe(true);
+    run = scenes.run!;
+    expect(run.offline).toBe(false);
+    expect(run.eligible).toBe(true);
+    expect(run.daily).toEqual({ date: '2026-09-05', seed: 777 });
+    expect(tele.of('race_link_open').at(-1)).toMatchObject({ fresh: true });
+    expect(scenes.daily).toBeNull();          // yesterday's either
+
+    friend(api, daily, { runId: 'run-t', mode: 'daily', board: '2026-09-06', seed: 99 });
+    expect(await scenes.startRace('run-t')).toBe(true);
+    expect(scenes.run!.offline).toBe(false);
+    expect(scenes.daily?.seed).toBe(99);      // today's: the shell adopts the server's seed as today's daily
+    await scenes.settle();
+  });
+
+  it('a missing ghost, a network failure, a bad id or an unknown zone leave the menus alone with a toast', async () => {
+    const def = flatRoom();
+    const { scenes, ui, api } = makeScenes([def]);
+    scenes.bootSync();
+    expect(await scenes.startRace('run-nope')).toBe(false);
+    expect(ui.toasts.at(-1)).toBe(RACE_KR.notFound);
+    expect(scenes.run).toBeNull();
+    expect(await scenes.startRace('<bad id>')).toBe(false);
+    api.ghost = async () => { throw new ApiError('network error', 0, 'network'); };
+    expect(await scenes.startRace('run-x')).toBe(false);
+    expect(ui.toasts.at(-1)).toBe(RACE_KR.offline);
+    api.ghost = async (id) => ({ runId: id, mode: 'story', board: 'zz', levelId: 'zz', seed: 1, assist: false, masks: ghostMasks(0, 10), name: 'x', ticks: 10 });
+    expect(await scenes.startRace('run-zz')).toBe(false);
+    expect(ui.toasts.at(-1)).toBe(RACE_KR.badZone);
+    expect(ui.screen).toBe('title');
+    expect(scenes.run).toBeNull();
+  });
+
+  it('메아리 링크 공유: the Web Share API when there is one, else the clipboard with a toast; share_click carries the outcome', async () => {
+    const def = flatRoom();
+    const shared: ShareData[] = [];
+    const copied: string[] = [];
+    const a = makeScenes([def], { share: { share: async (d) => { shared.push(d); }, writeText: async (t) => { copied.push(t); } } });
+    a.scenes.bootSync();
+    // nothing accepted yet: refused with a toast, no event
+    a.ui.emit({ type: 'shareEcho' });
+    await a.scenes.settle();
+    expect(a.ui.toasts.at(-1)).toBe(RACE_KR.notShareable);
+    expect(a.tele.of('share_click')).toEqual([]);
+    await clearFlat(a);
+    expect(a.ui.result!.submit.state).toBe('accepted');
+    a.ui.emit({ type: 'shareEcho' });
+    await a.scenes.settle();
+    expect(shared).toHaveLength(1);
+    expect(shared[0].url).toBe('https://clawd.test/?race=run-1&z=flat');
+    expect(shared[0].text).toContain(a.save.progress.player.name);
+    expect(copied).toEqual([]);
+    expect(a.ui.toasts.at(-1)).toBe(RACE_KR.shared);
+    expect(a.tele.of('share_click')).toEqual([{ levelId: 'flat', mode: 'story', via: 'shared' }]);
+
+    // no navigator.share: the clipboard, and the toast says so
+    const b = makeScenes([def], { share: { writeText: async (t) => { copied.push(t); } } });
+    b.scenes.bootSync();
+    await clearFlat(b);
+    b.ui.emit({ type: 'shareEcho' });
+    await b.scenes.settle();
+    expect(copied).toEqual(['https://clawd.test/?race=run-1&z=flat']);
+    expect(b.ui.toasts.at(-1)).toBe(RACE_KR.copied);
+    expect(b.tele.of('share_click').at(-1)).toMatchObject({ via: 'copied' });
+
+    // nothing available at all (Node, a locked-down browser)
+    const c = makeScenes([def], { share: {} });
+    c.scenes.bootSync();
+    await clearFlat(c);
+    c.ui.emit({ type: 'shareEcho' });
+    await c.scenes.settle();
+    expect(c.ui.toasts.at(-1)).toBe(RACE_KR.shareFailed);
+    expect(c.tele.of('share_click').at(-1)).toMatchObject({ via: 'failed' });
   });
 });
 

@@ -23,7 +23,7 @@ import type { DailyResponse, LeaderboardResponse, RejectReason } from '../../sha
 import type { Biome } from '../../shared/biomes.js';
 import { BIOMES, BIOME_ORDER } from '../../shared/biomes.js';
 import { DEFAULT_BINDS } from '../input/binds.js';
-import { MS_PER_DAY, streakFor, unlockedZones, utcDateStr } from '../save.js';
+import { MS_PER_DAY, isMuted, streakFor, toggleMute, touchLayout, unlockedZones, utcDateStr, type TouchLayout } from '../save.js';
 import { fmtVersus } from '../echo/rival.js';
 import {
   LEAVE_MS, MODAL_SCREENS, Navigator, ScreenStack, el, lockSvg, replay, starSvg, validateName, NAME_MAX,
@@ -40,6 +40,12 @@ export const RESTART_HOLD_S = 0.6;
 /** The HUD's top-right block (CSS px from the canvas's top-right corner) where the zone name sits; the goal under it hides the name. */
 export const HUD_TOPRIGHT_W = 220;
 export const HUD_TOPRIGHT_H = 90;
+/** The virtual pad hides while a gamepad was used within the last this many seconds; any touch brings it back (P3-7). */
+export const GAMEPAD_HIDE_S = 2;
+/** Seconds the pad stays previewed over the settings after a touch layout change (P3-7). */
+export const TOUCH_PREVIEW_S = 1.2;
+/** HUD mute chip copy (aria labels). */
+export const MUTE_KR = { mute: '소리 끄기', unmute: '소리 켜기' } as const;
 
 export interface UIOptions {
   /** Defaults to the global document. */
@@ -214,6 +220,13 @@ export class UI implements UIPort {
   private unlockSoundPending = false;
   /** What the title's first entry starts: the last zone, or the first zone on a fresh save. */
   private continueId: string | null = null;
+  /** Seconds left of the gamepad auto-hide of the virtual pad (P3-7); 0 = not hiding. */
+  private gamepadHideT = 0;
+  /** Seconds left of the touch layout preview over the settings (P3-7); 0 = none. */
+  private previewT = 0;
+  /** Whether the pad was last shown / previewed, so frame() only touches the DOM on a change. */
+  private padShown = false;
+  private padPreview = false;
 
   constructor(opts: UIOptions = {}) {
     this.doc = opts.document ?? document;
@@ -257,6 +270,7 @@ export class UI implements UIPort {
         this.emit({ type: 'rebind', binds });
       },
       onRebuilt: () => { if (this.screens.top === 'settings') this.nav.refresh(this.screens.el('settings'), true); },
+      onTouchLayout: (layout) => this.previewTouchLayout(layout),
       sound: (n) => this.sound(n),
       portrait: () => this.portrait,
       build: opts.build,
@@ -295,6 +309,7 @@ export class UI implements UIPort {
     const step = Number.isFinite(dt) && dt > 0 ? dt : 0;
     this.hudCtl.frame(step);
     this.tickDaily(step);
+    this.tickTouchVisibility(step, input);
 
     const edges = input.takeMenu();
     const actions = new Set<MenuAction>(edges);
@@ -711,6 +726,51 @@ export class UI implements UIPort {
     if (rebuild) this.settingsPanel.build();
     else this.settingsPanel.sync();
     this.syncEcho();
+    // The pad layout is CSSOM on the real elements; the mute chip mirrors the master volume.
+    this.touchCtl.applyLayout(touchLayout(s));
+    this.syncMute();
+  }
+
+  // ================================================================ touch layout · mute (P3-7)
+  /** A touch layout slider moved: push it to the pad now and keep the pad previewed for a moment. */
+  private previewTouchLayout(layout: TouchLayout): void {
+    this.touchCtl.applyLayout(layout);
+    this.previewT = TOUCH_PREVIEW_S;
+    this.updateTouchVisibility();
+  }
+
+  /**
+   * Per frame: the gamepad auto-hide (a pad used within GAMEPAD_HIDE_S hides the
+   * virtual controls; the first touch brings them back) and the preview timer.
+   */
+  private tickTouchVisibility(dt: number, input: InputPort): void {
+    const dev = input.lastDevice;
+    if (dev === 'gamepad') this.gamepadHideT = GAMEPAD_HIDE_S;
+    else if (dev === 'touch') this.gamepadHideT = 0;
+    else if (this.gamepadHideT > 0) this.gamepadHideT = Math.max(0, this.gamepadHideT - dt);
+    if (this.previewT > 0) this.previewT = Math.max(0, this.previewT - dt);
+    this.updateTouchVisibility();
+  }
+
+  /** The HUD mute chip: pressed state and label follow Settings.master. */
+  private syncMute(): void {
+    const chip = this.doc.getElementById('hud-mute');
+    if (!chip) return;
+    const muted = this.settings ? isMuted(this.settings) : false;
+    chip.setAttribute('aria-pressed', String(muted));
+    chip.setAttribute('aria-label', muted ? MUTE_KR.unmute : MUTE_KR.mute);
+    chip.classList.toggle('is-muted', muted);
+  }
+
+  /** Mute chip tap: master volume ↔ 0 (the previous level is remembered), persisted like any setting. */
+  private toggleMuteChip(): void {
+    const s = this.settings;
+    if (!s) return;
+    const muted = toggleMute(s);
+    this.syncMute();
+    this.settingsPanel.sync();
+    this.sound(muted ? 'cancel' : 'toggle');
+    this.emit({ type: 'settingsChanged' });
   }
 
   setPortraitPainter(fn: PortraitPainter): void {
@@ -1003,6 +1063,9 @@ export class UI implements UIPort {
         break;
       case 'dismissIos': this.dismissIosHint(); break;
       case 'applyUpdate': this.applyUpdate(); break;
+      case 'mute': this.toggleMuteChip(); break;
+      // Result / game-over: a race link to my accepted echo (the shell builds and shares it).
+      case 'shareEcho': this.sound('confirm'); this.emit({ type: 'shareEcho' }); break;
       default: break;
     }
   }
@@ -1093,9 +1156,22 @@ export class UI implements UIPort {
     try { win.screen?.orientation?.addEventListener?.('change', recheck); } catch { /* no Screen Orientation API */ }
   }
 
+  /**
+   * The pad shows during play on a touch-first device unless a gamepad was
+   * used in the last GAMEPAD_HIDE_S; while a touch layout slider moves it is
+   * previewed over the menus instead. DOM is touched only on a change.
+   */
   private updateTouchVisibility(): void {
-    this.touchCtl.setVisible(this.touchCtl.coarse && this.screens.top === 'play');
-    this.doc.getElementById('ui')?.classList.toggle('is-touch', this.touchCtl.coarse);
+    const coarse = this.touchCtl.coarse;
+    const inPlay = this.screens.top === 'play' && !this.dataOpen;
+    const preview = coarse && !inPlay && this.previewT > 0;
+    const show = (coarse && inPlay && this.gamepadHideT <= 0) || preview;
+    if (show !== this.padShown) { this.padShown = show; this.touchCtl.setVisible(show); }
+    if (preview !== this.padPreview) { this.padPreview = preview; this.touchCtl.setPreview(preview); }
+    const ui = this.doc.getElementById('ui');
+    if (ui && ui.classList.contains('is-touch') !== coarse) ui.classList.toggle('is-touch', coarse);
+    const mute = this.doc.getElementById('hud-mute');
+    if (mute && mute.hidden !== !coarse) mute.hidden = !coarse;
   }
 
   /**
@@ -1310,6 +1386,17 @@ export class UI implements UIPort {
         default: break;
       }
       submit.hidden = sub.state === 'idle';
+    }
+    // '메아리 링크 공유' (P3-3): only an accepted submission has a run id a friend can race.
+    const modal = submit?.closest('.modal') ?? null;
+    const share = modal?.querySelector<HTMLElement>('[data-act="shareEcho"]') ?? null;
+    if (share) {
+      const on = sub.state === 'accepted';
+      if (share.hidden !== !on) {
+        share.hidden = !on;
+        const top = this.screens.top;
+        if ((top === 'result' || top === 'over') && this.screens.el(top)?.contains(share)) this.nav.refresh(this.screens.el(top), true);
+      }
     }
     const lbHost = d.getElementById(lbId);
     if (lbHost) {

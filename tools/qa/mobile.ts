@@ -11,7 +11,11 @@
  * a tap on the first open zone starts play; #hud-touch is visible and its
  * buttons rest at computed opacity 0.35; the HUD hint box does not intersect
  * any DASH / JUMP button (and on the iPhone its bottom edge stays inside the
- * top 35% of the viewport); on the upright iPad the rotate prompt stays hidden.
+ * top 35% of the viewport); the touch audit (P3-7) sets the layout scale to
+ * 0.8 through the shell and demands every .tbtn / .tpad box, the pause button
+ * and the mute chip measure at least 44 CSS px a side, touch labels at least
+ * 11 px, no visible play-screen text under 11 px, and the mute chip present;
+ * on the upright iPad the rotate prompt stays hidden.
  * A fifth profile, iPhone portrait 390x664 @3, must show the rotate prompt and
  * hide it on "그래도 계속". Then, on both phones, every story zone is loaded
  * through the deterministic `?shot=<id>&frames=1` harness and no live foe's
@@ -55,6 +59,10 @@ const ZONE_IDS = ['t1', 't2', 't3', 's1', 's2', 's3', 'v1', 'v2', 'v3'];
 const TBTN_IDLE_OPACITY = 0.35;
 /** On a landscape phone the touch hint plate must end inside the top 35% of the viewport. */
 const HINT_MAX_BOTTOM_FRAC = 0.35;
+/** P3-7 audit: the smallest layout scale the settings allow, and the floors every touch control must keep there. */
+const TOUCH_AUDIT_SCALE = 0.8;
+const MIN_HIT_PX = 44;
+const MIN_LABEL_PX = 11;
 
 interface Row { profile: string; step: string; ok: boolean; ms: number; note: string }
 interface Issue { profile: string; step: string; kind: 'console' | 'pageerror' | 'http' | 'assert'; text: string }
@@ -267,6 +275,53 @@ async function playProfile(browser: Browser, profile: Profile, rows: Row[], issu
         check(bottom <= limit + EPS, `hint bottom ${Math.round(bottom)}px is below ${Math.round(HINT_MAX_BOTTOM_FRAC * 100)}% of the ${vp.height}px viewport (${Math.round(limit)}px)`);
       }
       return `${source}: hint ${fmtBox(hintBox)} clear of ${buttons.length} buttons, bottom at ${Math.round((bottom / vp.height) * 100)}% of the height`;
+    });
+
+    await step('touch-audit', async () => {
+      // P3-7: the layout editor's smallest scale, applied through the shell exactly as the settings pane does it.
+      const setScale = (scale: number) => page.evaluate((k) => {
+        type Shell = { save: { settings: { touch?: Record<string, unknown> } }; applySettings(): void };
+        const s = (window as unknown as { __clawd?: Shell }).__clawd;
+        if (!s) return false;
+        s.save.settings.touch = { ...(s.save.settings.touch ?? {}), scale: k };
+        s.applySettings();
+        return true;
+      }, scale);
+      check(await setScale(TOUCH_AUDIT_SCALE), 'the shell (window.__clawd) is missing');
+      await page.waitForTimeout(150);
+      try {
+        const boxes = await page.evaluate(() =>
+          [...document.querySelectorAll<HTMLElement>('#hud-touch .tbtn, #hud-touch .tpad, #scr-play .hud__pause, #hud-mute')].map((el) => {
+            const r = el.getBoundingClientRect();
+            return { sel: el.id || el.className, w: r.width, h: r.height, hidden: el.hidden, font: parseFloat(getComputedStyle(el).fontSize) };
+          }));
+        check(boxes.length >= 5, `expected the pad, DASH, JUMP, pause and mute controls, found ${boxes.length}`);
+        const small = boxes.filter((b) => b.w < MIN_HIT_PX - EPS || b.h < MIN_HIT_PX - EPS);
+        check(small.length === 0, `hit boxes under ${MIN_HIT_PX}px at scale ${TOUCH_AUDIT_SCALE}: ${small.map((b) => `${b.sel} ${Math.round(b.w)}x${Math.round(b.h)}`).join(', ')}`);
+        const mute = boxes.find((b) => b.sel === 'hud-mute');
+        check(!!mute && !mute.hidden, 'the mute chip is missing or hidden on a touch profile');
+        const muteLabel = await page.locator('#hud-mute').getAttribute('aria-label');
+        check(!!muteLabel && /소리/.test(muteLabel), `the mute chip lacks its label: "${muteLabel}"`);
+        const labels = boxes.filter((b) => /tbtn/.test(b.sel) && b.font < MIN_LABEL_PX - 0.01);
+        check(labels.length === 0, `touch labels under ${MIN_LABEL_PX}px: ${labels.map((b) => `${b.sel} ${b.font}px`).join(', ')}`);
+        // Every visible text node on the play screen (HUD chips, timer, zone chip, hint, pad labels) reads at 11 px or more.
+        const tiny = await page.evaluate((min) => {
+          const out: string[] = [];
+          for (const el of document.querySelectorAll<HTMLElement>('#scr-play *, #hud-touch *')) {
+            if (!el.getClientRects().length) continue;
+            const text = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent?.trim() ?? '').join('');
+            if (!text) continue;
+            const fs = parseFloat(getComputedStyle(el).fontSize);
+            if (fs < min) out.push(`${el.id || el.className || el.tagName} "${text.slice(0, 12)}" ${fs}px`);
+          }
+          return out;
+        }, MIN_LABEL_PX);
+        check(tiny.length === 0, `play-screen text under ${MIN_LABEL_PX}px: ${tiny.join('; ')}`);
+        await page.screenshot({ path: join(OUT_DIR, `mobile-${profile.id}-touch08.png`) });
+        return `${boxes.length} hit boxes >= ${MIN_HIT_PX}px at ${TOUCH_AUDIT_SCALE}x · labels >= ${MIN_LABEL_PX}px · mute chip ${Math.round(mute!.w)}x${Math.round(mute!.h)}`;
+      } finally {
+        await setScale(1);
+      }
     });
 
     if (profile.tabletPortrait) {

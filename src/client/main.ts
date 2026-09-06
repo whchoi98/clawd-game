@@ -28,6 +28,7 @@ import { Save } from './save.js';
 import { Haptics } from './haptics.js';
 import { Scenes } from './scenes.js';
 import { parseShotQuery, runShot } from './shot.js';
+import { defaultShareEnv, parseRaceQuery, stripRaceQuery } from './echo/race.js';
 import { loadFonts } from './fonts.js';
 import { installPrompt, isIosSafariNotStandalone, isShotHarness, registerServiceWorker } from './pwa.js';
 
@@ -138,6 +139,9 @@ async function start(): Promise<void> {
       touch: (navigator.maxTouchPoints ?? 0) > 0,
     },
     onServerNewer: () => { void swReady.then((reg) => reg?.update?.()).catch(() => undefined); },
+    // Race links (P3-3): shared as <origin>/?race=<runId>&z=<levelId> through the Web Share API or the clipboard.
+    origin: location.origin,
+    share: defaultShareEnv(navigator),
   });
   window.__clawd = scenes;
 
@@ -182,8 +186,15 @@ async function start(): Promise<void> {
   addEventListener('offline', syncOnline);
 
   const fonts = (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready;
+  // `?race=<runId>` (a friend's link): read before boot, cleaned from the address bar right after it
+  // so a reload does not start the race again, then handed to the shell (the ghost decides the zone).
+  const race = parseRaceQuery(location.search);
   await scenes.boot({ raf: raf2, wait, fonts });
   booted = true;
+  if (race) {
+    try { history.replaceState(history.state, '', stripRaceQuery(location.href)); } catch { /* sandboxed history */ }
+    void scenes.startRace(race.runId);
+  }
 
   let last = performance.now();
   const frame = (now: number): void => {

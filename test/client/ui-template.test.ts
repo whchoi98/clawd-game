@@ -14,6 +14,7 @@ import type { Binds, InputPort, MenuAction, Progress, Screen, Settings, TouchSta
 import type { LevelDef } from '../../src/sim/types.js';
 import { FONTS_HREF } from '../../src/client/fonts.js';
 import { UI } from '../../src/client/ui/ui.js';
+import { MIN_HIT_PX, MIN_LABEL_PX, TOUCH_BASE_REM } from '../../src/client/ui/touch.js';
 
 // happy-dom replaces the global URL, so the template path is resolved with node:url/path.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -198,13 +199,59 @@ describe('public/styles.css', () => {
     expect(css).toMatch(/touch-action\s*:\s*none/);
   });
 
-  it('touch buttons rest at 35% opacity, read 90% while pressed, and sit 12px above the pad line', () => {
+  it('touch buttons rest at 35% opacity (the layout variable\'s default), read 90% while pressed, and sit 12px above the pad line', () => {
     const tbtn = /\n\.tbtn\{([^}]*)\}/.exec(css)?.[1] ?? '';
-    expect(tbtn).toMatch(/(^|;)opacity:\.35(;|$)/);
+    expect(tbtn).toMatch(/(^|;)opacity:var\(--topacity,\.35\)(;|$)/);
     const down = /\.tbtn:active,\.tbtn\.is-down\{([^}]*)\}/.exec(css)?.[1] ?? '';
     expect(down).toMatch(/opacity:\.9/);
     const tbtns = /\.tbtns\{([^}]*)\}/.exec(css)?.[1] ?? '';
-    expect(tbtns).toMatch(/translate:0 -12px/);
+    // the 12 px lift is the offset variable's baseline: translate: <-rightX> calc(-12px - rightY)
+    expect(tbtns).toMatch(/translate:calc\(-1 \* var\(--tright-x,0px\)\) calc\(-12px - var\(--tright-y,0px\)\)/);
+  });
+
+  it('P3-7 · every touch hit box scales from the same rem bases as touchHitPx and never drops under 44 px; labels never under 11 px', () => {
+    const rule = (sel: string): string => new RegExp(`\\n${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+    const size = (kind: keyof typeof TOUCH_BASE_REM): RegExp => new RegExp(`max\\(${MIN_HIT_PX}px,calc\\(${TOUCH_BASE_REM[kind]}rem \\* var\\(--tscale,1\\)\\)\\)`);
+    const tpad = rule('.tpad');
+    expect(tpad).toMatch(new RegExp(`width:${size('pad').source}`));
+    expect(tpad).toMatch(new RegExp(`height:${size('pad').source}`));
+    const tbtn = rule('.tbtn');
+    expect(tbtn).toMatch(new RegExp(`width:${size('tbtn').source}`));
+    expect(tbtn).toMatch(new RegExp(`height:${size('tbtn').source}`));
+    expect(tbtn).toMatch(new RegExp(`font-size:max\\(${MIN_LABEL_PX}px,calc\\([0-9.]+rem \\* var\\(--tscale,1\\)\\)\\)`));
+    const jump = rule('.tbtn--jump');
+    expect(jump).toMatch(new RegExp(`width:${size('jump').source}`));
+    // the pause button and the mute chip are 2.75rem (44 px) in touch layouts
+    const pause = /#ui\.is-touch \.hud__pause\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(pause).toMatch(new RegExp(`width:max\\(${MIN_HIT_PX}px,${TOUCH_BASE_REM.pause}rem\\)`));
+    const mute = rule('.hud__mute');
+    expect(mute).toMatch(new RegExp(`width:max\\(${MIN_HIT_PX}px,${TOUCH_BASE_REM.pause}rem\\)`));
+    expect(mute).toMatch(new RegExp(`height:max\\(${MIN_HIT_PX}px,${TOUCH_BASE_REM.pause}rem\\)`));
+    // HUD text on a phone: nothing under .7rem (11.2 px)
+    for (const sel of ['.hud__level', '.hud__chip--assist', '.hud__height em']) {
+      const fs = /font-size:([0-9.]+)rem/.exec(rule(sel))?.[1];
+      expect(fs, sel).toBeDefined();
+      expect(Number(fs) * 16, sel).toBeGreaterThanOrEqual(MIN_LABEL_PX);
+    }
+    // the floating catch area and the preview lift exist
+    expect(css).toMatch(/\.hud__touch\.is-floating \.tzone\{[^}]*pointer-events:auto/);
+    expect(css).toMatch(/\.hud__touch\.is-preview\{[^}]*pointer-events:none/);
+  });
+
+  it('P3-7 · the touch pad lives beside the play section (previewable over any screen), with the stick zone and the mute chip', () => {
+    const play = html.slice(html.indexOf('id="scr-play"'), html.indexOf('id="hud-touch"'));
+    expect(play).toContain('</section>');            // #hud-touch comes after #scr-play closes
+    expect(html).toMatch(/<div class="tzone" id="tpad-zone"[^>]*>\s*<div class="tpad" id="tpad-move">/);
+    expect(html).toMatch(/<button class="hud__mute" id="hud-mute"[^>]*data-act="mute"[^>]*data-nonav[^>]*aria-pressed="false"[^>]*hidden>/);
+    expect(html).toMatch(/id="hud-mute"[^>]*aria-label="소리 끄기"/);
+  });
+
+  it('P3-3 · the result and game-over modals carry a hidden 메아리 링크 공유 entry', () => {
+    const result = html.slice(html.indexOf('id="scr-result"'), html.indexOf('id="scr-over"'));
+    const over = html.slice(html.indexOf('id="scr-over"'), html.indexOf('id="scr-name"'));
+    for (const modal of [result, over]) {
+      expect(modal).toMatch(/<button class="menu__item menu__item--share" data-act="shareEcho" hidden>메아리 링크 공유<small>[^<]*경주[^<]*<\/small><\/button>/);
+    }
   });
 
   it('result modal has the unlock row and the rank / unlock / card animations respect reduced motion', () => {
