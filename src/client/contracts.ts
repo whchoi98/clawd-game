@@ -28,6 +28,8 @@ export interface Settings {
   invincible: boolean;
   /** Draw my best run / the world's best run as translucent echoes. */
   echoSelf: boolean; echoWorld: boolean;
+  /** Which board entry the world echo follows: the leader, or the rival ranked just above you (default). */
+  echoWorldMode?: 'top' | 'rival';
   binds: Binds;
 }
 
@@ -47,6 +49,8 @@ export interface LevelRecord {
   sim?: number;
   /** Deaths in this zone during the current install (stuck detector input). */
   sessionDeaths?: number;
+  /** Best time per checkpoint segment (ticks, cumulative), echo-safe story runs only. */
+  segBest?: number[];
 }
 
 export interface Progress {
@@ -56,6 +60,8 @@ export interface Progress {
     bestHeight: number; bestShards: number; runs: number;
     /** Replay of the best endless run (encoded masks, SIM_VERSION) and its seed — for the self echo on "같은 탑 다시". */
     bestMasks?: string; bestSeed?: number; bestSim?: number;
+    /** GEN_VERSION the best endless tower was generated with; a different generator makes the self echo meaningless. */
+    bestGen?: number;
   };
   daily: Record<string, {
     bestTicks: number; cleared: boolean; height: number; runId?: string; masks?: string; sim?: number; seed: number;
@@ -165,6 +171,8 @@ export interface RendererPort {
    * under the HUD's top-right block.
    */
   readonly goalScreen: { x: number; y: number; onScreen: boolean } | null;
+  /** Session death positions (world units) drawn as small X marks; the client owns the list. */
+  setDeathMarks?(marks: ReadonlyArray<{ x: number; y: number }>): void;
 }
 
 // ---------------------------------------------------------------- audio
@@ -284,6 +292,12 @@ export interface UIPort {
   offerAssist?(zoneName: string): void;
   /** Result screen: ask for a display name inline before the first eligible submission; resolves with the chosen name (null = skipped). */
   askNameInline?(): Promise<string | null>;
+  /** Live split chip against the echo at a checkpoint ('+0.84s' behind = 1, '−1.20s' ahead = -1, '—' = 0). */
+  split?(text: string | null, sign: -1 | 0 | 1): void;
+  /** Pause screen: per-checkpoint-segment session deaths and segment bests (null clears the list). */
+  segments?(rows: ReadonlyArray<{ idx: number; deaths: number; best: number | null; current: boolean }> | null): void;
+  /** Result screen: "라이벌보다 0.62s 빠름/느림" row; null hides it. */
+  setVersus?(v: { label: string; deltaTicks: number } | null): void;
   applySettings(s: Settings): void;
   /** Virtual controls state for the input layer. */
   readonly touch: TouchState;
