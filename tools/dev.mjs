@@ -209,10 +209,10 @@ startServer();
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { timer = null; rebuild(); }, 250);
   };
-  const dirs = [levelsDir, join(levelsDir, 'zones'), join(levelsDir, 'solutions')];
+  const dirs = [levelsDir, join(levelsDir, 'zones'), join(levelsDir, 'solutions'), join(levelsDir, 'solutions', 'par')];
   if (existsSync(tsxCli)) {
     for (const dir of dirs) if (existsSync(dir)) fsWatch(dir, (_event, name) => schedule(name));
-    log(`watching ${relative(paths.root, levelsDir)}/ (zones, solutions) → npx tsx levels/build.ts`);
+    log(`watching ${relative(paths.root, levelsDir)}/ (zones, solutions, solutions/par) → npx tsx levels/build.ts`);
   } else {
     log('levels  watch disabled: node_modules/tsx not found');
   }

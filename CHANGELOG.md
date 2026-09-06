@@ -15,6 +15,7 @@
 - `tools/stats.mjs`(`npm run stats`): 이벤트 로그 NDJSON에서 boot → zone_start → clear 퍼널, D1 프록시(`daysSinceFirstSeen` 버킷 1 비율), 존별 사망/클리어, 사망 좌표 ASCII 히트맵. `--logs-insights`로 같은 수치를 내는 Logs Insights 쿼리 출력.
 - `docs/runbooks/rollback.md`: 이전 태그 `cdk deploy` 롤백, ECS 태스크 정의 리비전 롤백, 버전 보드 정리 절차.
 - `tools/postdeploy.mjs`: `/api/health.simVersion` / `genVersion`이 이 트리의 `src/sim/types.ts`와 같은지, `/api/daily`가 `gen` / `sim`을 싣는지 검사.
+- 페이스 골든 코퍼스 `levels/solutions/par/<zone>.json`(`npm run solve:par`, `tools/solve.ts --pace`): 9개 존 모두 사망 0·파의 98~103 %로 사람처럼 클리어(대시는 지형이 요구하는 곳에만 0~7회, 안전한 지점에서 멈춤, 파편 수집). `GOAL_ECHOES`('목표' 메아리·`개발자` 시딩)는 이 코퍼스에서 만들고, 빠른 코퍼스(`levels/solutions/`)는 회귀망으로만 남는다(없는 존만 폴백 + 경고). 테스트: 페이스 비율 창·대시 감소·멈춤 하한, 시딩 점수 ≥ 0.9 × par.
 
 ### Changed
 - 죽음 → 조작 복귀 0.6초: `DYING_T` 1.05 → 0.45, 리스폰 후 인트로 `RESPAWN_INTRO_T` 0.15(첫 스폰 `INTRO_T` 0.45 유지). 서버의 마스크 예산(`maxMasksFor`)은 이 sim 상수에서 파생된다.

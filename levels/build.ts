@@ -4,12 +4,15 @@
  * client and the server all import. Output is a pure function of the zone
  * sources, so rebuilding without changes yields a byte-identical file.
  *
- * It also turns the golden replay corpus (levels/solutions/*.json) into
- * src/sim/echoes.generated.ts: GOAL_ECHOES, one verified developer clear per
- * zone, shown as the '목표' echo on an empty board and used to seed boards on
- * the server. A solution recorded on another SIM_VERSION, geometry revision
- * or seed — or one that no longer replays to a death-free clear — is skipped
- * with a printed warning, never emitted.
+ * It also turns the golden replay corpora into src/sim/echoes.generated.ts:
+ * GOAL_ECHOES, one verified developer clear per zone, shown as the '목표' echo
+ * on an empty board and used to seed boards on the server. The PACED corpus
+ * (levels/solutions/par/*.json — a human-looking clear at 0.95–1.10 × par) is
+ * the source; a zone without a usable paced solution falls back to the FAST
+ * corpus (levels/solutions/*.json) with a printed warning, because a 7-second
+ * ghost on a 45-second zone is not a goal anyone can follow. A solution
+ * recorded on another SIM_VERSION, geometry revision or seed — or one that no
+ * longer replays to a death-free clear — is never emitted.
  *
  *   npx tsx levels/build.ts        (npm run levels)
  *   npx tsx levels/build.ts --check   exit 1 if either file on disk is stale
@@ -129,31 +132,51 @@ export function solutionProblem(def: LevelDef, sol: Solution): string | null {
   return null;
 }
 
+/** Which corpus a goal echo came from. */
+export type EchoSource = 'paced' | 'fast';
+
 /**
- * Render src/sim/echoes.generated.ts from the solutions on disk. Zones without
- * a current, verified solution are left out and reported in `warnings`.
+ * Render src/sim/echoes.generated.ts. `paced` is the source corpus; a zone whose
+ * paced solution is missing or no longer verifies takes its `fallback` (fast)
+ * solution instead, with a warning. Zones with neither current solution are left
+ * out and reported in `warnings` as well. `sources` says where each entry came from.
  */
-export function renderEchoes(zones: readonly LevelDef[], solutions: Readonly<Record<string, Solution>>): { src: string; warnings: string[] } {
+export function renderEchoes(
+  zones: readonly LevelDef[], paced: Readonly<Record<string, Solution>>, fallback: Readonly<Record<string, Solution>> = {},
+): { src: string; warnings: string[]; sources: Record<string, EchoSource> } {
   const warnings: string[] = [];
   const entries: string[] = [];
+  const sources: Record<string, EchoSource> = {};
   for (const z of zones) {
-    const sol = solutions[z.id];
-    if (!sol) continue;
-    const problem = solutionProblem(z, sol);
+    let sol: Solution | undefined = paced[z.id];
+    let source: EchoSource = 'paced';
+    let problem = sol ? solutionProblem(z, sol) : 'no paced solution';
     if (problem) {
-      warnings.push(`${z.id}: solution skipped — ${problem}`);
-      continue;
+      const fast = fallback[z.id];
+      const fastProblem = fast ? solutionProblem(z, fast) : 'no fast solution either';
+      if (fast && !fastProblem) {
+        warnings.push(`${z.id}: ${problem} — goal echo falls back to the fast corpus (${fast.time.toFixed(2)}s, ${((fast.time / z.par) * 100).toFixed(0)}% of par)`);
+        sol = fast;
+        source = 'fast';
+        problem = null;
+      } else {
+        warnings.push(`${z.id}: solution skipped — ${problem}; ${fastProblem}`);
+        continue;
+      }
     }
-    entries.push(`  ${z.id}: { sim: ${sol.sim}, rev: ${sol.rev}, seed: ${sol.seed}, masks: ${q(sol.masks)}, ticks: ${sol.ticks} },`);
+    sources[z.id] = source;
+    entries.push(`  ${z.id}: { sim: ${sol!.sim}, rev: ${sol!.rev}, seed: ${sol!.seed}, masks: ${q(sol!.masks)}, ticks: ${sol!.ticks} },`);
   }
   const src = [
     '/**',
-    ' * GENERATED — do not edit. Source: levels/solutions/*.json, built by levels/build.ts',
-    ' * (`npm run levels`). One verified developer clear per story zone (deaths 0,',
-    ` * time ≤ par × 1.2) recorded against SIM_VERSION ${SIM_VERSION} at the zone's geometry`,
-    " * revision. The client runs it as the '목표' echo when a board is empty or",
-    ' * unreachable; the server seeds empty story boards with it. A zone without a',
-    ' * current solution has no entry (see levels/solutions/PENDING.json).',
+    ' * GENERATED — do not edit. Source: levels/solutions/par/*.json (the paced corpus),',
+    ' * built by levels/build.ts (`npm run levels`). One verified developer clear per',
+    ' * story zone — deaths 0, human-paced at 0.95–1.10 × par (a zone without a paced',
+    ' * solution falls back to levels/solutions/<id>.json, the fast corpus, with a build',
+    ` * warning) — recorded against SIM_VERSION ${SIM_VERSION} at the zone's geometry revision.`,
+    " * The client runs it as the '목표' echo when a board is empty or unreachable; the",
+    ' * server seeds empty story boards with it. A zone without a current solution has',
+    ' * no entry (see levels/solutions/par/PENDING.json and levels/solutions/PENDING.json).',
     ' */',
     '',
     'export interface GoalEcho {',
@@ -174,7 +197,7 @@ export function renderEchoes(zones: readonly LevelDef[], solutions: Readonly<Rec
     '};',
     '',
   ].join('\n');
-  return { src, warnings };
+  return { src, warnings, sources };
 }
 
 /** One line per zone for the console. */
@@ -187,7 +210,8 @@ export function summary(zones: readonly LevelDef[]): string {
 
 function main(argv: string[]): number {
   const src = render(ZONES);
-  const echoes = renderEchoes(ZONES, readSolutions(ZONES.map((z) => z.id)));
+  const ids = ZONES.map((z) => z.id);
+  const echoes = renderEchoes(ZONES, readSolutions(ids, 'par'), readSolutions(ids, 'fast'));
   for (const w of echoes.warnings) process.stderr.write(`warning: ${w}\n`);
   if (argv.includes('--check')) {
     let stale = 0;
@@ -205,8 +229,9 @@ function main(argv: string[]): number {
   }
   writeFileSync(GENERATED_PATH, src);
   writeFileSync(ECHOES_PATH, echoes.src);
-  const solved = (echoes.src.match(/^ {2}[a-z][a-z0-9]*: \{ sim:/gm) ?? []).length;
-  process.stdout.write(`${summary(ZONES)}\nwrote ${GENERATED_PATH} (${src.length} bytes)\nwrote ${ECHOES_PATH} (${solved}/${ZONES.length} goal echoes)\n`);
+  const solved = Object.keys(echoes.sources).length;
+  const fast = Object.values(echoes.sources).filter((s) => s === 'fast').length;
+  process.stdout.write(`${summary(ZONES)}\nwrote ${GENERATED_PATH} (${src.length} bytes)\nwrote ${ECHOES_PATH} (${solved}/${ZONES.length} goal echoes${fast ? `, ${fast} from the fast corpus` : ', all human-paced'})\n`);
   return 0;
 }
 

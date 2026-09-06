@@ -153,6 +153,23 @@ describe('board seeding at boot', () => {
     expect(seedRunFor(t1, undefined, now)).toEqual({ reason: 'no goal echo' });
   });
 
+  it('the seeded 개발자 entry is a human-paced run: its score (ticks) is a time of at least 0.9 × par, never the speedrun corpus', () => {
+    const now = new Date('2026-09-06T12:00:00.000Z');
+    let seeded = 0;
+    for (const def of LEVELS) {
+      const echo = GOAL_ECHOES[def.id];
+      if (!echo) continue;
+      const made = seedRunFor(def, echo, now);
+      expect('run' in made, def.id).toBe(true);
+      const run = (made as { run: import('../../src/server/repo/types.js').StoredRun }).run;
+      expect(run.cleared).toBe(true);
+      expect(run.score).toBe(run.ticks);   // boardScore of a clear is its ticks
+      expect(run.score / 120, `${def.id}: 개발자 seed at ${(run.score / 120).toFixed(2)}s is under 0.9 × par ${def.par}`).toBeGreaterThanOrEqual(def.par * 0.9);
+      seeded++;
+    }
+    if (T1_SOLVED) expect(seeded).toBeGreaterThan(0);
+  });
+
   it('seedBoards reports seeded / occupied / skipped and logs one line per seeded board', async () => {
     if (!T1_SOLVED) return;
     const repo = new MemoryRepo();
