@@ -4,12 +4,15 @@
  *   npx tsx tools/qa/smoke.ts [--no-shots] [--register-sw]   BASE_URL=... to point elsewhere
  *
  * Checks, in order: the title screen appears with zero console/page errors and
- * the world canvas is actually painted; Enter opens zone select; Enter again
- * starts a zone (#scr-play); the service worker has precached the shell and
- * the title still renders after a reload with the network cut (offline); then
- * every story zone is rendered through the deterministic `?shot=` harness and
- * screenshotted. Screenshots land in tools/qa/out/. Exit code 1 on any console
- * error, page error or failed step.
+ * the world canvas is actually painted; one Enter on a fresh profile starts the
+ * first zone (#scr-play within 3 s); quitting through the pause menu lands on
+ * zone select; the quit and a forced exception produce anonymous telemetry
+ * batches (POST /api/events carrying zone_start, quit and js_error, never the
+ * player id); the service worker has precached the shell
+ * and the title still renders after a reload with the network cut (offline);
+ * then every story zone is rendered through the deterministic `?shot=` harness
+ * and screenshotted. Screenshots land in tools/qa/out/. Exit code 1 on any
+ * console error, page error or failed step.
  *
  * The offline step needs a secure context (https, or http on localhost); on a
  * plain-http remote BASE_URL it is skipped with a warning. --register-sw makes
@@ -33,6 +36,12 @@ const ZONES = ['t1', 't2', 't3', 's1', 's2', 's3', 'v1', 'v2', 'v3'] as const;
 const STEP_TIMEOUT_MS = 30_000;
 /** Distinct colours required among the 48 sampled canvas pixels. */
 const MIN_DISTINCT_COLOURS = 4;
+/** The exception the telemetry step throws on purpose; its page error is expected. */
+const FORCED_ERROR = 'smoke-forced-js-error';
+/** How long a flushed telemetry batch gets to show up on the wire. */
+const EVENTS_TIMEOUT_MS = 8_000;
+/** P1-4 acceptance: a fresh profile reaches play within 3 s of the first Enter. */
+const FIRST_PLAY_TIMEOUT_MS = 3_000;
 
 interface Row { step: string; ok: boolean; ms: number; note: string }
 interface Issue { step: string; kind: 'console' | 'pageerror' | 'http' | 'assert'; text: string }
@@ -165,7 +174,34 @@ async function run(browser: Browser): Promise<number> {
     }
     issues.push({ step: current, kind: 'console', text: msg.text() });
   });
-  page.on('pageerror', (err) => issues.push({ step: current, kind: 'pageerror', text: err.message }));
+  page.on('pageerror', (err) => {
+    if (err.message.includes(FORCED_ERROR)) { warnings.push(`[${current}] forced page error (expected): ${err.message}`); return; }
+    issues.push({ step: current, kind: 'pageerror', text: err.message });
+  });
+  // Every telemetry batch the page posts (fetch or sendBeacon), oldest first.
+  const eventBodies: string[] = [];
+  page.on('request', (req) => {
+    if (req.method() !== 'POST' || !sameOrigin(req.url()) || !new URL(req.url()).pathname.endsWith('/api/events')) return;
+    const body = req.postData();
+    if (body) eventBodies.push(body);
+  });
+  /** Poll until some batch body satisfies `pred` (bodies are JSON EventBatch documents). */
+  async function waitForEvents(pred: (bodies: string[]) => boolean): Promise<void> {
+    const deadline = Date.now() + EVENTS_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (pred(eventBodies)) return;
+      await page.waitForTimeout(150);
+    }
+    throw new Error(`no matching /api/events batch within ${EVENTS_TIMEOUT_MS} ms (${eventBodies.length} batch(es) seen)`);
+  }
+  const eventNames = (bodies: string[]): string[] => bodies.flatMap((b) => {
+    try {
+      const parsed = JSON.parse(b) as { events?: { t?: string }[] };
+      return (parsed.events ?? []).map((e) => String(e.t));
+    } catch {
+      return [];
+    }
+  });
   page.on('response', (res) => {
     if (!sameOrigin(res.url())) return;
     if (res.status() >= 500) issues.push({ step: current, kind: 'http', text: `${res.status()} ${res.url()}` });
@@ -199,25 +235,58 @@ async function run(browser: Browser): Promise<number> {
   });
 
   if (titleOk) {
-    const selectOk = await step('select', async () => {
+    // A fresh profile's first title entry is '바로 시작 · <first zone>': one Enter is already play (P1-4).
+    const playOk = await step('play', async () => {
       await page.keyboard.press('Enter');
-      await page.locator('#scr-select').waitFor({ state: 'visible' });
-      await page.waitForTimeout(300);
-      await page.screenshot({ path: join(OUT_DIR, '02-select.png') });
-      const zones = await page.locator('#sel-tiers button').count();
-      return zones ? `${zones} zone buttons` : '';
+      await page.locator('#scr-play').waitFor({ state: 'visible', timeout: FIRST_PLAY_TIMEOUT_MS });
+      await page.waitForTimeout(700);
+      const sample = await page.evaluate(sampleCanvas);
+      assertPainted(sample);
+      await page.screenshot({ path: join(OUT_DIR, '03-play.png') });
+      const level = (await page.locator('#hud-level').textContent())?.trim() ?? '';
+      return `${sample.unique} colours${level ? `, level "${level}"` : ''} after one Enter`;
     });
-    if (selectOk) {
-      await step('play', async () => {
-        await page.keyboard.press('Enter');
-        await page.locator('#scr-play').waitFor({ state: 'visible' });
-        await page.waitForTimeout(700);
-        const sample = await page.evaluate(sampleCanvas);
-        assertPainted(sample);
-        await page.screenshot({ path: join(OUT_DIR, '03-play.png') });
-        const level = (await page.locator('#hud-level').textContent())?.trim() ?? '';
-        return `${sample.unique} colours${level ? `, level "${level}"` : ''}`;
+    if (playOk) {
+      const selectOk = await step('select', async () => {
+        // Quit the zone through the pause menu: the tower (zone select) is where a story run returns to.
+        await page.keyboard.press('Escape');
+        await page.locator('#scr-pause').waitFor({ state: 'visible' });
+        await page.locator('#scr-pause [data-act="quit"]').click();
+        await page.locator('#scr-select').waitFor({ state: 'visible' });
+        await page.waitForTimeout(300);
+        await page.screenshot({ path: join(OUT_DIR, '02-select.png') });
+        const zones = await page.locator('#sel-tiers button').count();
+        return zones ? `${zones} zone buttons` : '';
       });
+      if (selectOk) {
+        await step('telemetry', async () => {
+          // The screen changes above flushed the buffered batches: zone_start and quit are on the wire.
+          await waitForEvents((b) => { const n = eventNames(b); return n.includes('zone_start') && n.includes('quit'); });
+          // A forced exception becomes a js_error event; the next screen change sends it.
+          await page.evaluate((msg) => { setTimeout(() => { throw new Error(msg); }, 0); }, FORCED_ERROR);
+          await page.waitForTimeout(100);
+          await page.keyboard.press('Escape');
+          await page.locator('#scr-title').waitFor({ state: 'visible' });
+          await waitForEvents((b) => eventNames(b).includes('js_error'));
+          const names = eventNames(eventBodies);
+          for (const want of ['boot', 'screen', 'zone_start', 'quit', 'js_error']) {
+            if (!names.includes(want)) throw new Error(`no ${want} event in ${eventBodies.length} batch(es)`);
+          }
+          // nothing that identifies the player travels with the events
+          const progress = await page.evaluate(() => {
+            try { return JSON.parse(localStorage.getItem('clawd-echo.progress.v1') ?? 'null') as { player?: { id?: string; name?: string } } | null; } catch { return null; }
+          });
+          const all = eventBodies.join('\n');
+          if (progress?.player?.id && all.includes(progress.player.id)) throw new Error('a telemetry batch carries the player id');
+          if (/"(playerId|ip|name)"\s*:/.test(all)) throw new Error('a telemetry batch carries a forbidden field');
+          for (const b of eventBodies) {
+            const parsed = JSON.parse(b) as { s?: string; events?: unknown[] };
+            if (!/^[a-f0-9]{16}$/.test(parsed.s ?? '')) throw new Error(`bad session id in batch: ${parsed.s}`);
+            if (!parsed.events || parsed.events.length > 20 || Buffer.byteLength(b, 'utf8') > 4096) throw new Error('a batch exceeds 20 events / 4096 bytes');
+          }
+          return `${eventBodies.length} batch(es), ${names.length} events: ${[...new Set(names)].join(' ')}`;
+        });
+      }
     }
   }
 

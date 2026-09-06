@@ -73,5 +73,5 @@ m.ent('G', 107, F - 1);
 
 export const s2 = m.def({
   id: 's2', name: '번개 회로', en: 'LIGHTNING CIRCUIT', biome: 'stormspire', par: 75, seed: 59,
-  hint: '빛나는 스위치를 대시로 통과하면 주황 블록과 파란 블록이 뒤바뀐다',
+  hint: '빛나는 스위치를 {dash} 대시로 통과하면 주황 블록과 파란 블록이 뒤바뀐다',
 });

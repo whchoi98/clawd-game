@@ -40,6 +40,18 @@ interface TrackLayer {
 
 type AudioContextCtor = new (opts?: AudioContextOptions) => AudioContext;
 
+/** The slice of Document the engine watches for visibility (injectable for Node tests). */
+export interface VisibilityDoc {
+  hidden?: boolean;
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+}
+
+export interface AudioEngineOptions {
+  /** Defaults to the global document; `null` watches nothing. */
+  doc?: VisibilityDoc | null;
+}
+
 /** Cross-fade length between tracks, seconds. */
 export const TRACK_FADE = 1.2;
 /** Scheduler period, ms. Well under LOOKAHEAD so late timers never leave a gap. */
@@ -51,6 +63,11 @@ const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi 
 const clamp01 = (v: number) => (Number.isFinite(v) ? clamp(v, 0, 1) : 0);
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const swallow = (p: unknown): void => { if (p && typeof (p as Promise<unknown>).catch === 'function') (p as Promise<unknown>).catch(() => undefined); };
+
+function defaultDoc(): VisibilityDoc | null {
+  const doc = (globalThis as { document?: VisibilityDoc }).document;
+  return doc && typeof doc.addEventListener === 'function' ? doc : null;
+}
 
 function findAudioContext(): AudioContextCtor | null {
   const g = globalThis as unknown as { AudioContext?: AudioContextCtor; webkitAudioContext?: AudioContextCtor };
@@ -89,13 +106,22 @@ export class AudioEngine implements AudioPort, Synth {
   /** The silent unlock buffer has been started once. */
   private kicked = false;
   private visHandler: (() => void) | null = null;
+  private readonly doc: VisibilityDoc | null;
 
   /** Voices created since init — a liveness signal for QA. */
   voices = 0;
 
+  constructor(opts: AudioEngineOptions = {}) {
+    this.doc = opts.doc === undefined ? defaultDoc() : opts.doc;
+  }
+
   // ------------------------------------------------------------ AudioPort
   get ready(): boolean { return this.ctx !== null; }
   get running(): boolean { return this.ctx !== null && this.ctx.state === 'running'; }
+  /** The scheduler interval is armed (false while hidden or with nothing to sequence). */
+  get clockRunning(): boolean { return this.timer !== null; }
+  /** Sequencers of the live track layers (the fading one included), for tests and diagnostics. */
+  sequencers(): Sequencer[] { return this.layers.map((l) => l.seq); }
 
   /**
    * Gesture-time unlock. Browsers only let a context start inside a user
@@ -271,8 +297,7 @@ export class AudioEngine implements AudioPort, Synth {
   dispose(): void {
     this.stopClock();
     if (this.visHandler) {
-      const doc = (globalThis as { document?: Document }).document;
-      try { doc?.removeEventListener('visibilitychange', this.visHandler); } catch { /* no DOM */ }
+      try { this.doc?.removeEventListener('visibilitychange', this.visHandler); } catch { /* no DOM */ }
       this.visHandler = null;
     }
     for (const l of this.layers) { try { l.gain.disconnect(); } catch { /* ignore */ } }
@@ -469,19 +494,32 @@ export class AudioEngine implements AudioPort, Synth {
     this.timer = null;
   }
 
-  /** Pause the clock while the tab is hidden so the music does not stutter through throttled timers. */
+  /**
+   * Hidden tab: stop the scheduler clock (a throttled interval would stutter
+   * the music and pile up missed steps) and suspend the context. Visible again:
+   * resume, resync every sequencer to the audio clock — which kept running in
+   * the background — and restart the clock when there is something to play.
+   */
   private watchVisibility(): void {
-    const doc = (globalThis as { document?: Document }).document;
-    if (!doc || typeof doc.addEventListener !== 'function' || this.visHandler) return;
+    const doc = this.doc;
+    if (!doc || this.visHandler) return;
     this.visHandler = () => {
       const ctx = this.ctx;
-      if (!ctx || this.userSuspended) return;
+      if (!ctx) return;
       if (doc.hidden) {
-        if (ctx.state === 'running') { this.hiddenSuspended = true; swallow(ctx.suspend()); }
-      } else if (this.hiddenSuspended) {
+        this.stopClock();
+        if (!this.userSuspended && ctx.state === 'running') { this.hiddenSuspended = true; swallow(ctx.suspend()); }
+        return;
+      }
+      if (this.userSuspended) return;
+      if (this.hiddenSuspended) {
         this.hiddenSuspended = false;
         if (ctx.state === 'suspended') swallow(ctx.resume());
       }
+      const now = ctx.currentTime;
+      for (const layer of this.layers) layer.seq.nextTime = now + 0.02;
+      this.lastTick = now;
+      if (this.layers.length) this.startClock();
     };
     doc.addEventListener('visibilitychange', this.visHandler);
   }

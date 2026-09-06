@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../../src/sim/sim.js';
-import { IN, MAX_TICKS } from '../../src/sim/types.js';
+import { IN, MAX_TICKS, SIM_VERSION } from '../../src/sim/types.js';
 import type { LevelDef, Replay, RunClaim, VerifyResult } from '../../src/sim/types.js';
 import { VERIFY_CHUNK_TICKS, verifyReplay, verifyReplayChunked } from '../../src/sim/replay.js';
 
@@ -24,13 +24,13 @@ function record(): { replay: Replay; claim: RunClaim } {
   const s = sim.summary();
   expect(s.cleared).toBe(true);
   return {
-    replay: { v: 1, levelId: ROOM.id, seed: ROOM.seed, assist: false, masks: Uint8Array.from(masks) },
+    replay: { v: SIM_VERSION, levelId: ROOM.id, seed: ROOM.seed, assist: false, masks: Uint8Array.from(masks) },
     claim: { ticks: s.ticks, shards: s.shards, deaths: s.deaths, cleared: s.cleared, height: s.height },
   };
 }
 
 /** Standing still never reaches the goal: every mask is stepped. */
-const idle = (n: number): Replay => ({ v: 1, levelId: ROOM.id, seed: ROOM.seed, assist: false, masks: new Uint8Array(n) });
+const idle = (n: number): Replay => ({ v: SIM_VERSION, levelId: ROOM.id, seed: ROOM.seed, assist: false, masks: new Uint8Array(n) });
 
 const counting = () => {
   let n = 0;
@@ -49,6 +49,8 @@ describe('verifyReplayChunked', () => {
       [idle(MAX_TICKS + 1), undefined],
       [idle(7000), claim],
       [idle(7000), undefined],
+      [{ ...replay, v: SIM_VERSION + 1 }, claim],
+      [{ ...idle(7000), v: 0 }, undefined],
     ];
     for (const [r, c] of cases) {
       const sync: VerifyResult = verifyReplay(ROOM, r, c);
@@ -59,6 +61,19 @@ describe('verifyReplayChunked', () => {
     expect(verifyReplay(ROOM, { ...replay, masks: replay.masks.slice(0, replay.masks.length - 30) }).reason).toBe('not-finished');
     expect(verifyReplay(ROOM, { ...replay, levelId: 'nope' }).reason).toBe('bad-level');
     expect(verifyReplay(ROOM, idle(MAX_TICKS + 1)).reason).toBe('too-long');
+    expect(verifyReplay(ROOM, { ...replay, v: SIM_VERSION + 1 }, claim).reason).toBe('sim-version');
+  });
+
+  it('refuses another SIM_VERSION before stepping: no yields, no ticks, even on a maximal log', async () => {
+    const y = counting();
+    const res = await verifyReplayChunked(ROOM, { ...idle(MAX_TICKS), v: SIM_VERSION + 1 }, undefined, { chunk: 100, yield: y.yield });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('sim-version');
+    expect(res.summary.ticks).toBe(0);
+    expect(y.count()).toBe(0);
+    // the version check precedes the level and length checks
+    const wrongLevel = await verifyReplayChunked(ROOM, { ...idle(MAX_TICKS + 1), v: 0, levelId: 'nope' }, undefined, { yield: y.yield });
+    expect(wrongLevel.reason).toBe('sim-version');
   });
 
   it('yields to the event loop every VERIFY_CHUNK_TICKS ticks and not for a log that ends within one chunk', async () => {

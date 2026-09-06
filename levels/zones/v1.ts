@@ -62,5 +62,5 @@ m.ent('G', 113, F - 1);
 
 export const v1 = m.def({
   id: 'v1', name: '공허의 수정', en: 'VOID CRYSTALS', biome: 'voidreef', par: 70, seed: 101,
-  hint: '공중에서 수정에 닿으면 대시와 2단 점프가 되돌아온다 — 수정에서 수정으로',
+  hint: '공중에서 수정에 닿으면 {dash} 대시와 2단 점프가 되돌아온다 — 수정에서 수정으로',
 });

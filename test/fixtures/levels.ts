@@ -185,3 +185,23 @@ export function busyRoom(): LevelDef {
   r.set(57, 17, 'G');
   return r.def('busy', { spikers: [[42, 17]] });
 }
+
+/** Flat floor with a checkpoint pillar at column 10 between P (column 2) and G (column 37). */
+export function checkpointRoom(): LevelDef {
+  const r = new Room(40, 14);
+  r.rect(0, 12, 39, 13);
+  r.set(2, 11, 'P').set(10, 11, 'C').set(37, 11, 'G');
+  return r.def('checkpoint');
+}
+
+/**
+ * Flat floor that turns into a spike bed from column 12 to the far wall, no
+ * goal: holding RIGHT dies by spikes (three contacts), never by a pit.
+ */
+export function spikeRoom(): LevelDef {
+  const r = new Room(60, 14);
+  r.rect(0, 12, 59, 13);
+  r.hline(12, 59, 11, '^');
+  r.set(2, 11, 'P');
+  return r.def('spikes');
+}

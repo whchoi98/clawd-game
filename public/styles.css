@@ -265,6 +265,13 @@ h1,h2,h3,p,dl,dd{margin:0}
 .card__lock svg{width:1.5rem;height:1.5rem;opacity:.75}
 .card[disabled]{cursor:not-allowed}
 .card[disabled]:hover{transform:none;box-shadow:none;border-color:rgba(255,255,255,.09)}
+/* a zone this clear just opened: the card breathes teal once as the select screen comes up */
+.card.is-unlocking{animation:cardUnlock 1.6s .25s var(--e-out) both;border-color:rgba(127,227,214,.55)}
+.card.is-unlocking .card__sky{animation:cardUnlockSky 1.6s .25s var(--e-out) both}
+@keyframes cardUnlock{0%{box-shadow:0 0 0 0 rgba(127,227,214,.0);filter:saturate(.3) brightness(.7)}
+  25%{box-shadow:0 0 0 6px rgba(127,227,214,.35),0 22px 44px -18px rgba(0,0,0,.9);filter:saturate(1.2) brightness(1.25)}
+  100%{box-shadow:0 0 0 0 rgba(127,227,214,0);filter:none}}
+@keyframes cardUnlockSky{0%{opacity:.35;transform:scale(1.08)}100%{opacity:.85;transform:none}}
 
 /* ---------- daily ---------- */
 .daily{display:grid;grid-template-columns:minmax(16rem,22rem) minmax(0,1fr);gap:1.2rem;flex:1 1 auto;min-height:0}
@@ -375,8 +382,9 @@ th.lb__shards::before{display:none}
 /* touch mode: keep the pause button, the dash meter and the hint clear of the pad and buttons */
 #ui.is-touch .hud__pause{bottom:auto;right:auto;left:50%;translate:-50% 0;top:calc(.85rem + env(safe-area-inset-top))}
 #ui.is-touch .hud__dash{bottom:calc(9.2rem + env(safe-area-inset-bottom))}
-/* the pads occupy the bottom ~8.6rem: the hint sits above them and grows upward, never onto them */
-#ui.is-touch .hud__hint{bottom:calc(10rem + env(safe-area-inset-bottom));max-width:56vw;font-size:.78rem;padding:.4rem .8rem}
+/* touch: the pads own the bottom of the screen, so the hint is a plate right under the HUD top row */
+#ui.is-touch .hud__hint{top:calc(4.4rem + env(safe-area-inset-top));bottom:auto;max-width:64vw;font-size:.78rem;padding:.4rem .8rem;
+  border-radius:12px;line-height:1.35}
 .icon-btn svg{width:1rem;height:1rem}
 
 /* touch controls */
@@ -387,12 +395,13 @@ th.lb__shards::before{display:none}
 .tpad i{position:absolute;left:50%;top:50%;translate:-50% -50%;width:2.9rem;height:2.9rem;border-radius:50%;
   background:rgba(232,130,92,.55);border:1px solid rgba(255,255,255,.25);transition:translate .05s linear}
 .tpad.is-active i{background:rgba(232,130,92,.8);transition:none}
-.tbtns{display:flex;gap:.7rem;align-items:flex-end}
+/* buttons sit 12px above the pad line and stay translucent at rest so the world (and its foes) reads through them */
+.tbtns{display:flex;gap:.7rem;align-items:flex-end;translate:0 -12px}
 .tbtn{width:4.4rem;height:4.4rem;border-radius:50%;font-size:.66rem;font-weight:800;letter-spacing:.1em;text-align:center;touch-action:none;
-  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);transition:transform .08s,filter .08s}
+  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);opacity:.35;transition:transform .08s,filter .08s,opacity .08s}
 .tbtn--jump{width:5.4rem;height:5.4rem;background:rgba(232,130,92,.24);border-color:rgba(232,130,92,.5)}
 .tbtn--dash{background:rgba(127,227,214,.16);border-color:rgba(127,227,214,.45)}
-.tbtn:active,.tbtn.is-down{transform:scale(.93);filter:brightness(1.4)}
+.tbtn:active,.tbtn.is-down{transform:scale(.93);filter:brightness(1.4);opacity:.9}
 
 /* ============================================================
    MODALS
@@ -420,6 +429,14 @@ th.lb__shards::before{display:none}
 .res__rank[data-rank="A"]{background:linear-gradient(150deg,var(--teal-hi),var(--teal));box-shadow:0 12px 30px -10px rgba(127,227,214,.7);color:#08262A}
 .res__rank[data-rank="B"],.res__rank[data-rank="C"]{background:linear-gradient(150deg,#C9D6DC,#7F94A0);color:#0F1A22;box-shadow:none}
 @keyframes rankIn{from{opacity:0;transform:scale(.4) rotate(-14deg)}to{opacity:1;transform:none}}
+/* the letter itself pops a beat after the tile lands (replayed by showResult) */
+.res__rank.pop{animation:rankIn .6s .1s var(--e-back) both,rankPop .55s .55s var(--e-back) both}
+@keyframes rankPop{0%{transform:none}40%{transform:scale(1.22) rotate(4deg)}100%{transform:none}}
+.res__unlock{display:flex;align-items:center;gap:.6rem;margin:-.2rem 0 .8rem;padding:.5rem .8rem;border-radius:10px;font-size:.8rem;
+  font-family:var(--f-kr);color:var(--teal-hi);background:rgba(127,227,214,.1);border:1px solid rgba(127,227,214,.35);
+  animation:fadeUp .5s .3s var(--e-out) both}
+.res__unlock::before{content:"";width:.55rem;height:.55rem;border-radius:50%;background:var(--teal);box-shadow:0 0 10px var(--teal);flex:0 0 auto}
+.res__unlock b{color:#fff;font-weight:700}
 .res__rows{display:flex;flex-direction:column;gap:.05rem;margin:.4rem 0 1rem;clear:both}
 .res__row{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;padding:.34rem .1rem;
   border-bottom:1px solid rgba(255,255,255,.055);font-size:.86rem}
@@ -505,6 +522,21 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
 .credits code{font-family:var(--f-num);font-size:.82em;color:var(--teal-hi);background:rgba(127,227,214,.09);padding:.05rem .3rem;border-radius:4px}
 .credits .build{margin-top:1rem;font-size:.68rem;color:var(--muted-2);font-family:var(--f-num)}
 
+/* ---------- data notice (#scr-data) ---------- */
+.data h3{font-size:.68rem;letter-spacing:.24em;color:var(--teal);margin:1.1rem 0 .35rem;font-weight:700}
+.data h3:first-child{margin-top:0}
+.data ul{margin:0;padding-left:1.1rem}
+.data li{margin:.16rem 0;font-family:var(--f-kr)}
+.data__runs{list-style:none;padding-left:0;font-family:var(--f-num);font-size:.78rem;color:var(--muted)}
+.data__runs li{display:flex;justify-content:space-between;gap:1rem;padding:.2rem 0;border-bottom:1px solid var(--line-2)}
+.data__runs li:last-child{border-bottom:0}
+.data__runs b{color:var(--paper);font-weight:500;user-select:all}
+.data__runs .data__none{color:var(--muted-2);font-family:var(--f-kr)}
+/* the server runs a newer sim than this bundle: the update bar turns urgent */
+.upbar--urgent{border-color:rgba(242,140,106,.7);box-shadow:0 0 0 1px rgba(242,140,106,.35),0 18px 40px -18px rgba(0,0,0,.9)}
+.upbar--urgent .upbar__btn{background:var(--coral)}
+.upbar--urgent .upbar__btn:hover,.upbar--urgent .upbar__btn:focus-visible{background:var(--coral-hi)}
+
 .sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 
 /* ---------- portrait prompt ---------- */
@@ -584,4 +616,5 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
   /* these animations end at opacity 0 — show them statically; the HUD timer removes .show */
   .hud__toast.show,.hud__banner.show{animation:none;opacity:1}
   .hud__dash i{transition:none}
+  .res__rank,.res__rank.pop,.card.is-unlocking,.card.is-unlocking .card__sky,.res__unlock{animation:none}
 }

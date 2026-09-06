@@ -8,10 +8,14 @@
  *   ipad-pro11-landscape 1194x834 @2      iPad Pro 11 portrait   834x1194 @2
  * For each: the title loads with zero console / page errors; the "탑 오르기" and
  * "만든 것들" menu items both lie inside the viewport; a tap opens zone select and
- * a tap on the first open zone starts play; #hud-touch is visible; the HUD hint
- * box does not intersect any DASH / JUMP button; on the upright iPad the rotate
- * prompt stays hidden. A fifth profile, iPhone portrait 390x664 @3, must show
- * the rotate prompt and hide it on "그래도 계속". Screenshots land in
+ * a tap on the first open zone starts play; #hud-touch is visible and its
+ * buttons rest at computed opacity 0.35; the HUD hint box does not intersect
+ * any DASH / JUMP button (and on the iPhone its bottom edge stays inside the
+ * top 35% of the viewport); on the upright iPad the rotate prompt stays hidden.
+ * A fifth profile, iPhone portrait 390x664 @3, must show the rotate prompt and
+ * hide it on "그래도 계속". Then, on both phones, every story zone is loaded
+ * through the deterministic `?shot=<id>&frames=1` harness and no live foe's
+ * screen box may intersect a DASH / JUMP button at spawn. Screenshots land in
  * tools/qa/out/mobile-*.png. Exit code 1 on any failure.
  */
 import { mkdirSync } from 'node:fs';
@@ -45,6 +49,12 @@ const PLAY_PROFILES: Profile[] = [
   { id: 'ipad-pro11-portrait', label: 'iPad Pro 11 portrait', viewport: { width: 834, height: 1194 }, dpr: 2, tabletPortrait: true },
 ];
 const PHONE_PORTRAIT: Profile = { id: 'iphone-portrait', label: 'iPhone portrait', viewport: { width: 390, height: 664 }, dpr: 3 };
+/** Story zones in tower order, for the spawn-frame checks. */
+const ZONE_IDS = ['t1', 't2', 't3', 's1', 's2', 's3', 'v1', 'v2', 'v3'];
+/** Touch buttons rest at this computed opacity so the world reads through them. */
+const TBTN_IDLE_OPACITY = 0.35;
+/** On a landscape phone the touch hint plate must end inside the top 35% of the viewport. */
+const HINT_MAX_BOTTOM_FRAC = 0.35;
 
 interface Row { profile: string; step: string; ok: boolean; ms: number; note: string }
 interface Issue { profile: string; step: string; kind: 'console' | 'pageerror' | 'http' | 'assert'; text: string }
@@ -204,8 +214,12 @@ async function playProfile(browser: Browser, profile: Profile, rows: Row[], issu
       check(touchVisible, '#hud-touch is not visible on a touch profile');
       const isTouch = await page.evaluate(() => document.getElementById('ui')?.classList.contains('is-touch') ?? false);
       check(isTouch, '#ui lacks the is-touch class');
+      const opacities = await page.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>('#hud-touch .tbtn')].map((b) => Number(getComputedStyle(b).opacity)));
+      check(opacities.length >= 2, `expected DASH and JUMP buttons, found ${opacities.length}`);
+      for (const o of opacities) check(Math.abs(o - TBTN_IDLE_OPACITY) < 0.01, `touch button idle opacity ${o}, expected ${TBTN_IDLE_OPACITY}`);
       const level = (await page.locator('#hud-level').textContent())?.trim() ?? '';
-      return level ? `level "${level}"` : '';
+      return `${level ? `level "${level}" · ` : ''}buttons at opacity ${opacities[0]}`;
     });
     if (!playOk) return;
 
@@ -237,11 +251,16 @@ async function playProfile(browser: Browser, profile: Profile, rows: Row[], issu
         if (intersects(hintBox, box!)) clashes.push(`${name} ${fmtBox(box!)}`);
       }
       const pad = await page.locator('#tpad-move').boundingBox();
-      if (pad && intersects(hintBox, pad)) warnings.push(`[${profile.id}/hint] hint ${fmtBox(hintBox)} overlaps the stick ${fmtBox(pad)}`);
+      if (pad && intersects(hintBox, pad)) clashes.push(`stick ${fmtBox(pad)}`);
       check(insideViewport(hintBox, vp), `hint ${fmtBox(hintBox)} leaves the viewport`);
       await page.screenshot({ path: join(OUT_DIR, `mobile-${profile.id}-play.png`) });
       check(clashes.length === 0, `hint ${fmtBox(hintBox)} overlaps ${clashes.join(', ')}`);
-      return `${source}: hint ${fmtBox(hintBox)} clear of ${buttons.length} buttons`;
+      const bottom = hintBox.y + hintBox.height;
+      const limit = vp.height * HINT_MAX_BOTTOM_FRAC;
+      if (profile.id === 'iphone14-landscape') {
+        check(bottom <= limit + EPS, `hint bottom ${Math.round(bottom)}px is below ${Math.round(HINT_MAX_BOTTOM_FRAC * 100)}% of the ${vp.height}px viewport (${Math.round(limit)}px)`);
+      }
+      return `${source}: hint ${fmtBox(hintBox)} clear of ${buttons.length} buttons, bottom at ${Math.round((bottom / vp.height) * 100)}% of the height`;
     });
 
     if (profile.tabletPortrait) {
@@ -249,6 +268,70 @@ async function playProfile(browser: Browser, profile: Profile, rows: Row[], issu
         const nag = page.locator('#nag-rotate');
         check(!(await nag.isVisible()), 'the rotate prompt is showing on an upright tablet');
         return 'hidden on tablet portrait';
+      });
+    }
+  });
+}
+
+interface FoeBox extends Box { kind: string }
+
+/**
+ * Every story zone's spawn frame through the `?shot=<id>&frames=1` harness:
+ * project each live foe (centre + size, world units) through the stage's
+ * camera transform into CSS pixels and demand that none of them sits under a
+ * DASH / JUMP button — a foe hidden by a thumb is a death the player never saw.
+ */
+async function spawnProfile(browser: Browser, profile: Profile, rows: Row[], issues: Issue[], warnings: string[]): Promise<void> {
+  await withProfile(browser, profile, rows, issues, warnings, async (page, step) => {
+    for (const id of ZONE_IDS) {
+      await step(`spawn-${id}`, async () => {
+        await page.goto(`${BASE_URL}/?shot=${id}&frames=1`, { waitUntil: 'domcontentloaded' });
+        await page.waitForFunction(() => document.documentElement.dataset.shot !== undefined);
+        const shot = JSON.parse(await page.evaluate(() => document.documentElement.dataset.shot ?? '{}')) as { error?: string; phase?: string };
+        check(!shot.error, `capture harness: ${shot.error}`);
+        await page.locator('#hud-touch').waitFor({ state: 'visible', timeout: 5_000 });
+        const foes = await page.evaluate((): FoeBox[] | null => {
+          // Reaches into the running shell (window.__clawd) and its renderer's
+          // stage: world → device px is w/2 + (wx - camX) · scale · zoom, then / dpr.
+          type Stage = { w: number; h: number; scale: number; dpr: number };
+          type Shell = {
+            run: { sim: { state: { foes: { x: number; y: number; w: number; h: number; dead: boolean; kind: string }[] } } } | null;
+            renderer: { stage: Stage };
+            camera: { view(zoom: number): { camX: number; camY: number; zoom: number } };
+            fx: { zoom: number };
+          };
+          const s = (window as unknown as { __clawd?: Shell }).__clawd;
+          const canvas = document.getElementById('world');
+          if (!s || !s.run || !canvas) return null;
+          const st = s.renderer.stage;
+          const view = s.camera.view(s.fx.zoom);
+          const rect = canvas.getBoundingClientRect();
+          const k = (st.scale * view.zoom) / st.dpr;
+          return s.run.sim.state.foes.filter((f) => !f.dead).map((f) => ({
+            kind: f.kind,
+            x: rect.left + st.w / (2 * st.dpr) + (f.x - view.camX) * k - (f.w * k) / 2,
+            y: rect.top + st.h / (2 * st.dpr) + (f.y - view.camY) * k - (f.h * k) / 2,
+            width: f.w * k,
+            height: f.h * k,
+          }));
+        });
+        check(foes !== null, 'the shell (window.__clawd) or its run is missing');
+        const buttons = await page.locator('#hud-touch .tbtn').all();
+        check(buttons.length >= 2, `expected DASH and JUMP buttons, found ${buttons.length}`);
+        const clashes: string[] = [];
+        let onScreen = 0;
+        for (const b of buttons) {
+          const box = await b.boundingBox();
+          const name = (await b.getAttribute('data-touch')) ?? 'tbtn';
+          check(box !== null, `${name} has no layout box`);
+          for (const f of foes!) {
+            if (insideViewport(f, profile.viewport)) onScreen++;
+            if (intersects(f, box!)) clashes.push(`${f.kind} ${fmtBox(f)} under ${name} ${fmtBox(box!)}`);
+          }
+        }
+        if (clashes.length) await page.screenshot({ path: join(OUT_DIR, `mobile-${profile.id}-spawn-${id}.png`) });
+        check(clashes.length === 0, `spawn frame: ${clashes.join('; ')}`);
+        return `${foes!.length} foe(s), ${onScreen / Math.max(1, buttons.length)} on screen, none under a button`;
       });
     }
   });
@@ -285,6 +368,8 @@ async function run(browser: Browser): Promise<number> {
 
   for (const profile of PLAY_PROFILES) await playProfile(browser, profile, rows, issues, warnings);
   await phonePortrait(browser, rows, issues, warnings);
+  // the phones: a thumb over a foe is a phone problem
+  for (const profile of PLAY_PROFILES.slice(0, 2)) await spawnProfile(browser, profile, rows, issues, warnings);
 
   const failed = rows.filter((r) => !r.ok).length;
   const out: string[] = [];

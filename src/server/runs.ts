@@ -3,14 +3,14 @@
  * decoded, the level is resolved server-side, the run is replayed with the
  * injected verifier and the score is recomputed from the verified summary.
  *
- * Order of checks (cheapest first): assist → mode eligibility (level, date,
- * seed) → mask decoding → mask budget for the claim → replay verification →
- * story must be cleared → personal-best bookkeeping.
+ * Order of checks (cheapest first): assist → sim / generator version → mode
+ * eligibility (level, date, seed) → mask decoding → mask budget for the claim
+ * → replay verification → story must be cleared → personal-best bookkeeping.
  */
 import { randomUUID } from 'node:crypto';
 import type { LevelDef, Replay, RunClaim, RunSummary, VerifyResult } from '../sim/types.js';
-import { MAX_TICKS, TICK_HZ } from '../sim/types.js';
-import { DYING_T, INTRO_T } from '../sim/sim.js';
+import { GEN_VERSION, MAX_TICKS, SIM_VERSION, TICK_HZ } from '../sim/types.js';
+import { DYING_T, INTRO_T, RESPAWN_INTRO_T } from '../sim/sim.js';
 import { decodeMasks } from '../sim/replay.js';
 import { boardScore } from '../sim/config.js';
 import { RejectReason, type Mode, type RunResponse, type RunSubmit } from '../shared/protocol.js';
@@ -49,23 +49,40 @@ export function asyncVerifier(
 }
 
 // ---------------------------------------------------------------- mask budget
-/** A phase ends on the first tick whose accumulated time exceeds its threshold. */
-const phaseTicks = (seconds: number): number => Math.ceil(seconds * TICK_HZ) + 1;
-/** Ticks of 'intro' before play starts (and again after each respawn). */
+/**
+ * A phase ends on the first tick whose accumulated time exceeds its threshold.
+ * Every constant below is derived from the sim's exported phase lengths, never
+ * from a literal, so a retimed sim retunes the budget automatically.
+ */
+export const phaseTicks = (seconds: number): number => Math.ceil(seconds * TICK_HZ) + 1;
+/** Ticks of 'intro' before play starts on the first spawn. */
 export const INTRO_TICKS = phaseTicks(INTRO_T);
+/** Ticks of the shorter 'intro' that follows every respawn. */
+export const RESPAWN_INTRO_TICKS = phaseTicks(RESPAWN_INTRO_T);
 /** Ticks one death costs: the dying animation plus the respawn intro. */
-export const DEATH_TICKS = phaseTicks(DYING_T) + INTRO_TICKS;
+export const DEATH_TICKS = phaseTicks(DYING_T) + RESPAWN_INTRO_TICKS;
 /** Headroom for float drift in the phase timers and a client that stops recording a beat late. */
 export const MASK_SLACK = 240;
 
 /**
  * The most masks a replay reproducing `claim` can need: the claimed play ticks,
- * one intro, a dying + intro cycle per claimed death, and slack. Verification
- * stops at 'finished', so anything beyond this is padding whose only effect is
- * server CPU — it is refused before the sim is even constructed.
+ * one intro, a dying + respawn-intro cycle per claimed death, and slack.
+ * Verification stops at 'finished', so anything beyond this is padding whose
+ * only effect is server CPU — it is refused before the sim is even constructed.
  */
 export function maxMasksFor(claim: RunClaim): number {
   return Math.min(MAX_TICKS, claim.ticks + INTRO_TICKS + claim.deaths * DEATH_TICKS + MASK_SLACK);
+}
+
+// ---------------------------------------------------------------- versions
+/**
+ * A run only verifies against the sim (and, for daily towers, the generator)
+ * it was recorded with. Missing fields are legacy clients (= 0) and are refused
+ * the same way; the UI answers 'sim-version' with "refresh to the new version".
+ */
+export function versionMismatch(body: Pick<RunSubmit, 'mode' | 'sim' | 'gen'>): boolean {
+  if ((body.sim ?? 0) !== SIM_VERSION) return true;
+  return body.mode === 'daily' && (body.gen ?? 0) !== GEN_VERSION;
 }
 
 // ---------------------------------------------------------------- reasons
@@ -150,6 +167,7 @@ async function persistBest(deps: SubmitDeps, body: RunSubmit, board: string, see
 
 export async function submitRun(deps: SubmitDeps, body: RunSubmit): Promise<SubmitOutcome> {
   if (body.assist) return reject('assist');
+  if (versionMismatch(body)) return reject('sim-version');
 
   const elig = eligibility(deps, body);
   if ('reason' in elig) return reject(elig.reason);
@@ -167,7 +185,7 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmit): Promise<Subm
   }
   if (masks.length > maxMasksFor(body.claim)) return reject('too-long');
 
-  const replay: Replay = { v: 1, levelId: body.levelId, seed, assist: false, masks };
+  const replay: Replay = { v: SIM_VERSION, levelId: body.levelId, seed, assist: false, masks };
   const result = await Promise.resolve(deps.verify(def, replay, body.claim));
   if (!result.ok) return reject(toRejectReason(result.reason), result.summary);
   const summary = result.summary;

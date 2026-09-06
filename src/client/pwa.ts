@@ -112,6 +112,14 @@ export interface RegisterOptions {
   /** Milliseconds between update checks when the tab becomes visible (0 disables). */
   updateCheckMs?: number;
   now?: () => number;
+  /**
+   * True while a reload would destroy something (a run in play). A
+   * controllerchange that arrives then is held back and performed on the first
+   * `onRunEnd` callback instead.
+   */
+  isBusy?: () => boolean;
+  /** Subscribe to "the run ended" (the shell calls `cb` when a run leaves play). */
+  onRunEnd?: (cb: () => void) => void;
 }
 
 /**
@@ -131,14 +139,31 @@ export function registerServiceWorker(opts: RegisterOptions): Promise<Registrati
   const hadController = !!container.controller;
   let applied = false;
   let reloaded = false;
+  let pendingReload = false;
+  let reoffered = false;
   let prompted: ServiceWorkerLike | null = null;
 
-  // Reload exactly once, and only when this page asked for the switch or was
-  // already controlled: a first install's clients.claim() must not reload.
-  container.addEventListener('controllerchange', () => {
-    if (reloaded || !(applied || hadController)) return;
+  // Reload exactly once — and never over a run in play: while `isBusy()` the
+  // reload waits for the run to end.
+  const reload = (): void => {
+    if (reloaded) return;
+    if (opts.isBusy?.()) { pendingReload = true; return; }
     reloaded = true;
+    pendingReload = false;
     try { win.location.reload(); } catch { /* unloading */ }
+  };
+  opts.onRunEnd?.(() => { if (pendingReload) reload(); });
+
+  // Only a switch this page asked for reloads it. A first install's
+  // clients.claim() does nothing, and a switch made by another tab (or the
+  // browser) re-offers the update instead of yanking the page: its apply() is
+  // the reload itself, since the new worker already controls the page.
+  container.addEventListener('controllerchange', () => {
+    if (reloaded) return;
+    if (applied) { reload(); return; }
+    if (!hadController || reoffered) return;
+    reoffered = true;
+    opts.onUpdateReady(() => { applied = true; reload(); });
   });
   if (opts.onActivated) {
     container.addEventListener('message', (ev) => {

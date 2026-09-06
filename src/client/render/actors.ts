@@ -15,25 +15,36 @@ import { C, type Biome } from '../../shared/biomes.js';
 import type { GhostView } from '../contracts.js';
 import { Stage, TAU, UI_FONT, alpha, clamp, clamp01, damp, easeOutCubic, lerp, mixHex, sign } from './stage.js';
 import { drawClawd, tintedSkin, type RigPose, type RigState, type Skin } from './clawd.js';
+import type { Particles } from './particles.js';
 
 const FOE_DIE_T = 0.3;
 const SHARD_POP_T = 0.4;
 const RELIC_POP_T = 0.7;
 const TRAIL_N = 14;
 
-interface Streak { x: number; y: number; s: number }
+/**
+ * Rising streaks emitted per second per visible updraft column (halved on the
+ * low tier). Each streak travels the whole column, so the live population is
+ * rate × (column height / rise speed) — about eight per tile of column.
+ */
+export const UPDRAFT_STREAKS_PER_S = 72;
+const UPDRAFT_COL = '#BFF0FF';
+const UPDRAFT_HI = '#DFF6FF';
+
 interface EntVis {
   pop: number;          // seconds since the pickup was consumed
   lit: number;          // damped 0..1 (checkpoint active / goal open)
   minX: number; maxX: number; minY: number; maxY: number;   // observed travel range (rails)
-  streaks: Streak[] | null;
+  /** Updraft: streak emission accumulator, and whether the column was pre-filled on first sight. */
+  acc: number;
+  seeded: boolean;
 }
 interface FoeVis { aim: number; charge: number }
 
 function entVis(map: Map<number, EntVis>, e: EntityState): EntVis {
   let v = map.get(e.id);
   if (!v) {
-    v = { pop: 0, lit: 0, minX: e.x, maxX: e.x, minY: e.y, maxY: e.y, streaks: null };
+    v = { pop: 0, lit: 0, minX: e.x, maxX: e.x, minY: e.y, maxY: e.y, acc: 0, seeded: false };
     map.set(e.id, v);
   }
   return v;
@@ -43,8 +54,10 @@ function entVis(map: Map<number, EntVis>, e: EntityState): EntVis {
 export class Actors {
   private readonly ent = new Map<number, EntVis>();
   private readonly foe = new Map<number, FoeVis>();
+  /** Frame delta from the last `update`, consumed by emitters that run during the draw pass. */
+  private dt = 0;
 
-  constructor(private readonly stage: Stage, public biome: Biome) {}
+  constructor(private readonly stage: Stage, public biome: Biome, private readonly particles: Particles | null = null) {}
 
   setLevel(biome: Biome): void {
     this.biome = biome;
@@ -52,8 +65,14 @@ export class Actors {
     this.foe.clear();
   }
 
+  /** After the particle pool was wiped (respawn, intro): refill every updraft column on its next draw. */
+  resetStreaks(): void {
+    for (const v of this.ent.values()) { v.seeded = false; v.acc = 0; }
+  }
+
   /** Advance visual-only timers. */
   update(dt: number, state: SimState): void {
+    this.dt = dt;
     for (const e of state.entities) {
       const v = entVis(this.ent, e);
       if (!e.alive) v.pop += dt;
@@ -62,16 +81,6 @@ export class Actors {
       if (e.kind === 'platH' || e.kind === 'platV' || e.kind === 'saw') {
         if (e.x < v.minX) v.minX = e.x; if (e.x > v.maxX) v.maxX = e.x;
         if (e.y < v.minY) v.minY = e.y; if (e.y > v.maxY) v.maxY = e.y;
-      }
-      if (e.kind === 'updraft') {
-        if (!v.streaks) {
-          v.streaks = [];
-          for (let i = 0; i < 7; i++) v.streaks.push({ x: Math.random(), y: Math.random(), s: 0.5 + Math.random() });
-        }
-        for (const s of v.streaks) {
-          s.y -= dt * s.s * 0.9;
-          if (s.y < 0) { s.y = 1; s.x = Math.random(); }
-        }
       }
     }
     const p = state.player;
@@ -99,7 +108,9 @@ export class Actors {
   drawEntities(state: SimState): void {
     const st = this.stage;
     for (const e of state.entities) {
-      if (!st.visible(e.x - 40, e.y - 40, 80, 80, 40)) continue;
+      // tall columns and wide platforms are culled on their real extent, small props on a 80-unit box
+      const hw = Math.max(40, (e.w || 0) / 2), hh = Math.max(40, (e.h || 0) / 2);
+      if (!st.visible(e.x - hw, e.y - hh, hw * 2, hh * 2, 40)) continue;
       const v = entVis(this.ent, e);
       switch (e.kind) {
         case 'shard': this.shard(e, v); break;
@@ -503,31 +514,86 @@ export class Actors {
     }
   }
 
+  /**
+   * Updraft column: a body that brightens toward the floor, a soft core beam
+   * down the centre, 1 px boundary lines on both edges, a floor glow where the
+   * air enters, and a stream of rising streaks from the particle pool. The
+   * column must read at a glance — it is the only thing that carries you up.
+   */
   private updraft(e: EntityState, v: EntVis): void {
-    const ctx = this.stage.ctx, gctx = this.stage.gctx;
+    const st = this.stage, ctx = st.ctx, gctx = st.gctx;
     const w = e.w || TILE, h = Math.max(TILE, e.h || TILE * 3);
     const x = e.x - w / 2, y = e.y - h / 2;
+    const bottom = y + h;
+    const pulse = 0.5 + 0.5 * Math.sin(e.t * 3.1 + e.x * 0.01);
     ctx.save();
-    const g = ctx.createLinearGradient(0, y + h, 0, y);
-    g.addColorStop(0, alpha('#BFF0FF', 0.16));
-    g.addColorStop(1, alpha('#BFF0FF', 0));
+    // body: air is densest where it enters the column
+    const g = ctx.createLinearGradient(0, bottom, 0, y);
+    g.addColorStop(0, alpha(UPDRAFT_COL, 0.16));
+    g.addColorStop(0.55, alpha(UPDRAFT_COL, 0.08));
+    g.addColorStop(1, alpha(UPDRAFT_COL, 0.03));
     ctx.fillStyle = g;
     ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = alpha('#DFF6FF', 0.5);
-    ctx.lineWidth = 0.9;
-    const base = ctx.globalAlpha;
-    for (const s of v.streaks ?? []) {
-      const sx = x + 2 + s.x * (w - 4);
-      const sy = y + s.y * h;
-      ctx.globalAlpha = base * 0.5 * Math.sin(s.y * Math.PI);
-      ctx.beginPath();
-      ctx.moveTo(sx, sy); ctx.lineTo(sx, sy - 7 * s.s);
-      ctx.stroke();
-    }
+    // core beam, brightest along the centre line — air, not a pillar, so it stays translucent
+    const core = ctx.createLinearGradient(x, 0, x + w, 0);
+    core.addColorStop(0, alpha(UPDRAFT_HI, 0));
+    core.addColorStop(0.5, alpha(UPDRAFT_HI, 0.14 + 0.04 * pulse));
+    core.addColorStop(1, alpha(UPDRAFT_HI, 0));
+    ctx.fillStyle = core;
+    ctx.fillRect(x, y, w, h);
+    // 1 px boundary highlight on both edges (one device pixel, whatever the zoom)
+    const px1 = 1 / Math.max(1e-6, st.scale * st.zoom);
+    ctx.fillStyle = alpha(UPDRAFT_HI, 0.38);
+    ctx.fillRect(x, y, px1, h);
+    ctx.fillRect(x + w - px1, y, px1, h);
+    // floor glow: a half-ellipse of light sitting on the column base
+    const fg = ctx.createRadialGradient(e.x, bottom, 0, e.x, bottom, w * 1.1);
+    fg.addColorStop(0, alpha(UPDRAFT_HI, 0.45 + 0.1 * pulse));
+    fg.addColorStop(1, alpha(UPDRAFT_HI, 0));
+    ctx.fillStyle = fg;
+    ctx.beginPath();
+    ctx.ellipse(e.x, bottom, w * 1.1, 7, 0, Math.PI, TAU);
+    ctx.fill();
     ctx.restore();
-    if (this.stage.settings.bloom) {
-      gctx.fillStyle = alpha('#BFF0FF', 0.08);
+
+    this.emitStreaks(v, x, y, w, h);
+
+    if (st.settings.bloom) {
+      gctx.fillStyle = alpha(UPDRAFT_COL, 0.06);
       gctx.fillRect(x, y, w, h);
+      gctx.fillStyle = alpha(UPDRAFT_HI, 0.2);
+      gctx.beginPath(); gctx.ellipse(e.x, bottom, w, 5, 0, Math.PI, TAU); gctx.fill();
+    }
+  }
+
+  /**
+   * Rising streaks for one visible column. Emission runs from the draw pass
+   * (so only columns on screen pay), at UPDRAFT_STREAKS_PER_S — half on the
+   * low tier. The first time a column is seen it is pre-filled along its
+   * height so a fresh view never shows an empty column.
+   */
+  private emitStreaks(v: EntVis, x: number, y: number, w: number, h: number): void {
+    const P = this.particles;
+    if (!P) return;
+    const rate = this.stage.quality === 'low' ? UPDRAFT_STREAKS_PER_S / 2 : UPDRAFT_STREAKS_PER_S;
+    const speed = clamp(h * 0.75, 60, 150);        // world units per second, upward
+    const life = h / speed;                         // one streak spans the whole column
+    const bottom = y + h;
+    const spawn = (f: number) => {
+      const len = 4 + Math.random() * 4;
+      const sx = x + 1.5 + Math.random() * (w - 3);
+      P.streak(sx, bottom - f * h, -speed, len, UPDRAFT_HI, (1 - f) * life, life, 0.35);
+    };
+    if (!v.seeded) {
+      v.seeded = true;
+      v.acc = 0;
+      const n = Math.round(rate * life);
+      for (let i = 0; i < n; i++) spawn(Math.random());
+    }
+    v.acc += rate * this.dt;
+    while (v.acc >= 1) {
+      v.acc -= 1;
+      spawn(0);
     }
   }
 

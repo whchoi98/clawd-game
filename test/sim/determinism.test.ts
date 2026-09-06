@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Sim } from '../../src/sim/sim.js';
 import { makeRng } from '../../src/sim/rng.js';
-import { IN } from '../../src/sim/types.js';
+import { IN, SIM_VERSION } from '../../src/sim/types.js';
 import type { Replay } from '../../src/sim/types.js';
 import { decodeMasks, encodeMasks, verifyReplay } from '../../src/sim/replay.js';
 import { busyRoom, flatRoom } from '../fixtures/levels.js';
@@ -45,6 +45,17 @@ describe('determinism', () => {
     expect(a.state.stats.jumps + a.state.stats.dashes).toBeGreaterThan(10);
   });
 
+  it('RETRY taps in the log are reproduced: identical state and death counts on both sims', () => {
+    const masks = scriptedMasks(3600, 7);
+    for (let i = 300; i < 3600; i += 700) masks[i] |= IN.RETRY;
+    const a = new Sim(busyRoom(), { seed: 5 });
+    const b = new Sim(busyRoom(), { seed: 5 });
+    for (let i = 0; i < 3600; i++) { a.step(masks[i]); b.step(masks[i]); }
+    expect(JSON.stringify(a.state)).toBe(JSON.stringify(b.state));
+    expect(a.state.stats.deaths).toBeGreaterThanOrEqual(3);
+    expect(a.summary().deaths).toBe(a.state.stats.deaths);
+  });
+
   it('a different seed changes hopper timing but not the level', () => {
     const masks = scriptedMasks(1200, 3);
     const a = new Sim(busyRoom(), { seed: 1 });
@@ -70,7 +81,7 @@ describe('replay verification', () => {
     expect(sim.finished).toBe(true);
     const s = sim.summary();
     return {
-      replay: { v: 1, levelId: def.id, seed: def.seed, assist: false, masks: Uint8Array.from(log) },
+      replay: { v: SIM_VERSION, levelId: def.id, seed: def.seed, assist: false, masks: Uint8Array.from(log) },
       ticks: s.ticks, shards: s.shards, deaths: s.deaths,
     };
   }
@@ -97,5 +108,17 @@ describe('replay verification', () => {
     expect(short.reason).toBe('not-finished');
     const wrong = verifyReplay(flatRoom(), { ...replay, levelId: 'nope' });
     expect(wrong.reason).toBe('bad-level');
+  });
+
+  it('refuses a log recorded against another SIM_VERSION before stepping a single tick', () => {
+    const { replay, ticks, shards, deaths } = record();
+    const claim = { ticks, shards, deaths, cleared: true, height: 0 };
+    for (const v of [0, SIM_VERSION - 1, SIM_VERSION + 1]) {
+      const res = verifyReplay(flatRoom(), { ...replay, v }, claim);
+      expect(res.ok).toBe(false);
+      expect(res.reason).toBe('sim-version');
+      expect(res.summary.ticks).toBe(0);
+    }
+    expect(verifyReplay(flatRoom(), replay, claim).ok).toBe(true);
   });
 });

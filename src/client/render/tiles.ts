@@ -33,6 +33,19 @@ const DEPTH_BANDS = [1, 3, 6];
 const DEPTH_ALPHA = [0.1, 0.14, 0.2];
 
 /**
+ * Spikes are drawn 1.3× the reference art: blade width 4.2 → 5.5, and blade
+ * heights grow from 9 / 11.5 to 12.3 / 13.4 (the 1.3× values are capped so the
+ * tallest tip still stays 0.6 units inside the tile); the tile clip catches
+ * the rest. Three blades fill the tile width.
+ */
+export const SPIKE_SCALE = 1.3;
+const SPIKE_HALF_W = 2.1 * SPIKE_SCALE;                                      // 2.73
+const SPIKE_CX = [TILE / 2 - 2 * SPIKE_HALF_W, TILE / 2, TILE / 2 + 2 * SPIKE_HALF_W];
+const SPIKE_H = [Math.min(TILE - 3.7, 11 * SPIKE_SCALE), Math.min(TILE - 2.6, 13.5 * SPIKE_SCALE), Math.min(TILE - 3.7, 11 * SPIKE_SCALE)];
+/** Where the tallest blade's tip sits below the tile's top edge (world units); the QA scripts sample here. */
+export const SPIKE_TIP_INSET = TILE - 2 - SPIKE_H[1];
+
+/**
  * Baked rock face: mottling + horizontal strata + pebbles, wrapped so it tiles.
  * Doing this once per biome means pass 1 is a single fill for the whole screen.
  */
@@ -513,16 +526,30 @@ export class Terrain {
     }
   }
 
+  /**
+   * Spike tile, drawn SPIKE_SCALE larger than the reference art but clipped to
+   * its own tile so the hitbox never lies. Every blade carries a drop shadow
+   * and a dark outline (a luminance edge against the crust, whose lip is as
+   * bright as the blade), a tip highlight in the biome's spike.hi, and on
+   * voidreef a magenta rim: its cyan blades otherwise dissolve into the cyan
+   * crust of the ledge beside them.
+   */
   private spike(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingContext2D, tx: number, ty: number, ch: string, t: number): void {
     const px = tx * TILE, py = ty * TILE;
     const pulse = 0.55 + 0.45 * Math.sin(t * 4 + tx * 0.9 + ty);
     const sp = this.biome.spike;
+    const rim = this.biome.id === 'voidreef' ? this.biome.accent : null;
     ctx.save();
+    ctx.beginPath();
+    ctx.rect(px, py, TILE, TILE);
+    ctx.clip();
     ctx.translate(px + TILE / 2, py + TILE / 2);
     if (ch === 'V') ctx.rotate(Math.PI);
     else if (ch === '{') ctx.rotate(Math.PI / 2);
     else if (ch === '}') ctx.rotate(-Math.PI / 2);
     ctx.translate(-TILE / 2, -TILE / 2);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
 
     const bg = ctx.createLinearGradient(0, TILE, 0, TILE - 5);
     bg.addColorStop(0, mixHex(sp.lo, '#000000', 0.4));
@@ -530,33 +557,63 @@ export class Terrain {
     ctx.fillStyle = bg;
     ctx.fillRect(0, TILE - 4.5, TILE, 4.5);
 
+    const base = TILE - 2;
+    const blade = (cx: number, h: number, dx = 0, dy = 0) => {
+      ctx.beginPath();
+      ctx.moveTo(cx + dx, base - h + dy);
+      ctx.lineTo(cx + SPIKE_HALF_W + dx, base + dy);
+      ctx.lineTo(cx - SPIKE_HALF_W + dx, base + dy);
+      ctx.closePath();
+    };
+    // shadows first so no blade's shadow falls over a neighbour's face
+    ctx.fillStyle = alpha('#000000', 0.55);
+    for (let i = 0; i < 3; i++) blade(SPIKE_CX[i], SPIKE_H[i], 0.9, 0.9);
+    ctx.fill();
+
     for (let i = 0; i < 3; i++) {
-      const bx = 1.6 + i * 4.6;
-      const h = i === 1 ? 13.5 : 11;
-      const g = ctx.createLinearGradient(bx, TILE - h, bx + 4, TILE);
+      const cx = SPIKE_CX[i], h = SPIKE_H[i];
+      const tipY = base - h;
+      const g = ctx.createLinearGradient(cx - SPIKE_HALF_W, tipY, cx + SPIKE_HALF_W, base);
       g.addColorStop(0, sp.hi);
       g.addColorStop(0.42, sp.mid);
       g.addColorStop(1, sp.lo);
+      blade(cx, h);
       ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.moveTo(bx + 2, TILE - h);
-      ctx.lineTo(bx + 4.1, TILE - 2);
-      ctx.lineTo(bx - 0.1, TILE - 2);
-      ctx.closePath();
       ctx.fill();
+      // dark outline: the luminance edge that separates the blade from a crust lip behind it
+      ctx.strokeStyle = alpha('#050810', 0.85);
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+      if (rim) {
+        ctx.strokeStyle = alpha(rim, 0.9);
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
+      // danger pulse up the blade's centre
       ctx.fillStyle = alpha(C.danger, 0.42 * pulse);
       ctx.beginPath();
-      ctx.moveTo(bx + 2, TILE - h);
-      ctx.lineTo(bx + 2.65, TILE - h * 0.58);
-      ctx.lineTo(bx + 1.35, TILE - h * 0.58);
+      ctx.moveTo(cx, tipY + 1.2);
+      ctx.lineTo(cx + 0.7, base - h * 0.5);
+      ctx.lineTo(cx - 0.7, base - h * 0.5);
       ctx.closePath();
+      ctx.fill();
+      // tip highlight: a bright bead of spike.hi with a white core
+      ctx.strokeStyle = sp.hi;
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(cx, tipY + 0.4);
+      ctx.lineTo(cx, tipY + 3.4);
+      ctx.stroke();
+      ctx.fillStyle = alpha('#FFFFFF', 0.9);
+      ctx.beginPath();
+      ctx.arc(cx, tipY + 0.9, 0.55, 0, TAU);
       ctx.fill();
     }
     ctx.restore();
 
     if (this.stage.settings.bloom) {
-      gctx.fillStyle = alpha(C.danger, 0.1 * pulse);
-      gctx.fillRect(px + 3, py + 3, TILE - 6, TILE - 7);
+      gctx.fillStyle = alpha(rim ?? C.danger, (rim ? 0.14 : 0.1) * pulse);
+      gctx.fillRect(px + 2, py + 1, TILE - 4, TILE - 5);
     }
   }
 

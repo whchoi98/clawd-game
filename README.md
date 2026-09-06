@@ -9,8 +9,8 @@
 [![play](https://img.shields.io/badge/▶_PLAY-clawd--game.whchoi.net-E8825C?style=for-the-badge&labelColor=07060B)](https://clawd-game.whchoi.net/)
 
 [![sim](https://img.shields.io/badge/simulation-isomorphic_·_120Hz-5BD8E0?labelColor=15121F)](#결정론적-시뮬레이션이-백엔드를-정당화한다)
-[![tests](https://img.shields.io/badge/tests-539_passing-8BE86A?labelColor=15121F)](#테스트)
-[![payload](https://img.shields.io/badge/client-304_KB_·_92_KB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
+[![tests](https://img.shields.io/badge/tests-689_passing-8BE86A?labelColor=15121F)](#테스트)
+[![payload](https://img.shields.io/badge/client-325_KB_·_100_KB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
 [![pwa](https://img.shields.io/badge/PWA-installable_·_offline-8B7BF0?labelColor=15121F)](#pwa-설치와-오프라인)
 [![infra](https://img.shields.io/badge/edge-CloudFront_→_ALB_→_Fargate-FF9900?labelColor=15121F)](#아키텍처)
 [![license](https://img.shields.io/badge/license-MIT-8B7BF0?labelColor=15121F)](LICENSE)
@@ -93,6 +93,18 @@ DynamoDB 단일 테이블(`pk`/`sk`): `LB#<mode>#<board>` / `<score 12자리>#<9
 
 > iOS는 Chromium 기기 에뮬레이션으로 검증했습니다. Safari 고유 동작(7일 미사용 시 캐시 삭제, 가로 고정 미지원, 수동 설치)은 실기기 확인이 필요합니다. 결정론은 설계상 보장되지만 iOS 실기기에서의 기록 제출은 아직 실측하지 않았습니다.
 
+## 로드맵과 Phase 1
+
+`docs/superpowers/plans/2026-09-06-top-chart-roadmap.md`에 3단계 30개 항목의 로드맵이 있습니다(North star: 익명 D1 복귀율 35%). Phase 1은 모든 플레이어가 겪는 실패 루프·온보딩·폴리시입니다.
+
+- **SIM_VERSION 2** — 물리·페이즈 타이밍·지형이 바뀌면 리플레이와 보드가 함께 버전됩니다. 서버는 다른 버전의 제출을 재생 전에 거절(`sim-version`)하고, 스토리 보드 키는 `LB#story#<zone>#s2r<rev>`. 릴리스 절차는 `npm run release:dry`로 계획을 보고 `npm run release -- minor`(typecheck → 테스트 → 빌드 → 배포 → 점검 → CloudFront 무효화 → 에셋 확인 → 버전 태그·CHANGELOG). 롤백은 `docs/runbooks/rollback.md`.
+- **무료 실패** — 죽음 → 조작 복귀 약 0.6초(dying 0.45s + 리스폰 인트로 0.15s). `R` 탭은 마지막 체크포인트로 즉시 재도전하며 **입력 로그의 `RETRY` 비트로 기록**되어 서버 재생에서도 재현됩니다. `R`을 0.6초 홀드하면 존 재시작.
+- **익명 텔레메트리** — `POST /api/events`: 세션 id(부팅마다 랜덤)와 이벤트만. 플레이어 id·이름·IP는 클라이언트가 보내지 않고 서버 로그도 남기지 않습니다(테스트로 고정). `tools/stats.mjs`가 퍼널·D1 버킷·존별 사망 히트맵을 뽑습니다. 크레딧 옆 '데이터 안내' 화면에 수집/미수집 항목을 밝힙니다.
+- **첫 실행 바로 시작** — 새 프로필은 타이틀에서 Enter 한 번에 새벽 물가로 들어가고, 첫 클리어 후 탑 구조와 해금 연출을 봅니다.
+- **기기 인식 힌트 + 길잡이 메아리** — 힌트는 `{move} {jump} {dash}` 토큰 템플릿으로 키보드·패드·터치 글리프를 치환하고, 같은 구간에서 반복 사망하면 원인별 힌트를 다시 띄웁니다. 첫 t1에서는 번들된 9초 입력 로그(수백 바이트)를 재생하는 반투명 '길잡이'가 첫 구덩이를 2단 점프로 시연합니다.
+- **판독성** — 상승기류 스트릭 파티클, 가시 1.3배·팁 하이라이트(공허의 초는 마젠타 림), 화면 밖 골을 가리키는 비콘, 터치 버튼 반투명·상향 이동. `npm run qa:readability`가 픽셀 대비를 단언합니다.
+- **모바일 라이프사이클** — 백그라운드 복귀 시 누적 dt 폐기, 메뉴 30fps, 게임패드 해제 시 일시정지, 숨김 시 오디오 클록 정지.
+
 ## 조작
 
 | 동작 | 키보드 | 게임패드 |
@@ -131,6 +143,8 @@ npm run levels         # 레벨 DSL → levels.generated.ts (검증 포함)
 npm run build          # dist/public (해시 에셋) + dist/server/index.js
 npm run qa:browser && npm run qa:smoke   # Playwright 스모크 + 오프라인 단계 (dev 서버 필요)
 npm run qa:mobile      # 폰·태블릿 에뮬레이션 레이아웃 QA
+npm run qa:readability # 상승기류·가시·골 비콘 픽셀 대비 QA
+npm run stats -- --help  # 텔레메트리 NDJSON → 퍼널·D1·사망 히트맵
 npm run icons          # public/icons/icon.svg → PNG (Playwright; 결과는 커밋)
 ```
 
@@ -176,8 +190,8 @@ npm run destroy              # 전부 삭제 (테이블·로그·시크릿 포�
 
 | | |
 |---|---|
-| 테스트 | 539개 |
-| 플레이어가 내려받는 것 | JS 304 KB (gz 92 KB) · CSS 39 KB · HTML 14 KB · SW 2 KB · 폰트 외 외부 요청 0 |
+| 테스트 | 689개 |
+| 플레이어가 내려받는 것 | JS 325 KB (gz 100 KB) · CSS 39 KB · HTML 14 KB · SW 2 KB · 폰트 외 외부 요청 0 |
 | 콘텐츠 | 9구역 · 3바이옴 · 데일리 타워 · 끝없는 등반 · 적 6종 · 오브젝트 11종 |
 
 ## 크레딧 · 라이선스

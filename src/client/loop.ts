@@ -11,7 +11,7 @@
  * fast display) carries the latched bits over to the next frame instead of
  * dropping them.
  */
-import { DT } from '../sim/types.js';
+import { DT, IN_ALL } from '../sim/types.js';
 import type { InputMask } from '../sim/types.js';
 
 /** Frames longer than this are treated as a stall (tab switch, GC pause). */
@@ -33,7 +33,7 @@ export interface TimeControl {
  */
 export function planTicks(held: InputMask, latched: InputMask, n: number): InputMask[] {
   const out = new Array<InputMask>(Math.max(0, n | 0));
-  for (let i = 0; i < out.length; i++) out[i] = i === 0 ? (held | latched) & 0x3f : held & 0x3f;
+  for (let i = 0; i < out.length; i++) out[i] = i === 0 ? (held | latched) & IN_ALL : held & IN_ALL;
   return out;
 }
 
@@ -48,7 +48,7 @@ export class TickScheduler {
    * hitstop, remembering any latched press for the next frame that runs.
    */
   plan(dtWall: number, held: InputMask, latched: InputMask, ctl: TimeControl): InputMask[] {
-    this.carry |= latched & 0x3f;
+    this.carry |= latched & IN_ALL;
     if (ctl.hitstop > 0) return [];
     const dt = dtWall > MAX_FRAME_DT ? MAX_FRAME_DT : dtWall > 0 ? dtWall : 0;
     const scale = ctl.timeScale > 2 ? 2 : ctl.timeScale > 0 ? ctl.timeScale : 0;

@@ -14,7 +14,7 @@
  * ticks, tick 0 carrying the latched press edges → every tick's mask is
  * recorded → render once.
  */
-import { MAX_TICKS, TILE } from '../sim/types.js';
+import { GEN_VERSION, IN, IN_ALL, MAX_TICKS, SIM_VERSION, TILE } from '../sim/types.js';
 import type { InputMask, LevelDef, PlayerState, RunSummary, SimEvent } from '../sim/types.js';
 import { PHYS } from '../sim/config.js';
 import { Sim } from '../sim/sim.js';
@@ -25,25 +25,34 @@ import { BIOMES, BIOME_ORDER, C, type Biome } from '../shared/biomes.js';
 import { MAX_MASKS_B64 } from '../shared/protocol.js';
 import type { DailyResponse, LeaderboardResponse, RunSubmit } from '../shared/protocol.js';
 import type {
-  ApiPort, AudioPort, HudState, InputPort, RendererPort, ResultView, UIAction, UIPort,
+  ApiPort, AudioPort, HudState, InputPort, Progress, RendererPort, ResultView, UIAction, UIPort,
 } from './contracts.js';
 import { MAX_FRAME_DT, TickScheduler } from './loop.js';
 import { FxBus } from './fx.js';
 import { Camera } from './camera.js';
-import { Save, utcDateStr } from './save.js';
+import { Save, echoMasks, markEcho, retentionBuckets, utcDateStr } from './save.js';
 import { cloneBinds } from './input/binds.js';
 import { ApiError } from './net/api.js';
 import type { FlushEvent, FlushResult, QueuedRun, SubmitQueue } from './net/queue.js';
+import type { TelemetryData, TelemetryPort } from './net/telemetry.js';
 import { Echo } from './echo/echo.js';
+import { GUIDE_COLOR, GUIDE_DELAY, GUIDE_LABEL, guideFor } from './echo/guide.js';
+import { REHINT_HAZARD, REHINT_PIT } from './ui/hints.js';
 
 export type RunMode = 'story' | 'daily' | 'endless';
 
 /** UIPort plus the optional extras the concrete UI offers. */
 export interface ShellUI extends UIPort {
+  /** `justUnlocked` names the zones this refresh opens (card animation + unlock sound). */
+  refreshSelect(progress: Progress, levels: LevelDef[], justUnlocked?: ReadonlySet<string>): void;
   banner?(text: string): void;
   boot?(k: number, label?: string): void;
   /** navigator.onLine mirror (title badge). */
   setOffline?(on: boolean): void;
+  /** Where the renderer drew the goal after the last frame (hides the zone chip under the HUD's top-right block). */
+  setGoalScreen?(g: { x: number; y: number; onScreen: boolean } | null): void;
+  /** The server runs a newer sim than this bundle: the update bar turns urgent. */
+  setVersionBehind?(on: boolean): void;
 }
 /** AudioPort plus the pause-menu muffle the concrete engine offers. */
 export interface ShellAudio extends AudioPort {
@@ -73,14 +82,28 @@ export interface ScenesDeps {
   /** Build id sent with submissions. */
   build?: string;
   now?: () => number;
+  /** Anonymous telemetry sink (none in tests without one, and under the capture harness). */
+  telemetry?: TelemetryPort;
+  /** Device facts for the boot event (uaFamily, dpr, hwConcurrency) — never a raw UA string. */
+  telemetryEnv?: TelemetryData;
+  /**
+   * The server reported (or implied, through a 'sim-version' rejection) a sim
+   * newer than this bundle: main.ts asks the service worker to update. The
+   * argument is the server's SIM_VERSION when known, null otherwise.
+   */
+  onServerNewer?: (serverSim: number | null) => void;
 }
 
 /** Seconds of clear animation before the result screen. */
 export const RESULT_DELAY = 1.25;
+/** Menu screens redraw the title backdrop at most this often (30 fps). */
+export const MENU_FRAME_DT = 1 / 30;
 /** Seconds after the tide swallows the player before the game-over screen. */
 export const OVER_DELAY = 1.1;
 export const HINT_DELAY = 2.0;
 export const HINT_DURATION = 7.0;
+/** Deaths of one kind (pit · spike/saw) inside one checkpoint segment before the matching hint is shown again. */
+export const REHINT_DEATHS = 2;
 export const TIDE_TOAST_DELAY = 1.7;
 /** The title vista rotates biomes this often. */
 export const TITLE_ROTATE = 14;
@@ -101,7 +124,7 @@ export class MaskLog {
       next.set(this.buf);
       this.buf = next;
     }
-    this.buf[this.length++] = m & 0x3f;
+    this.buf[this.length++] = m & IN_ALL;
   }
 
   bytes(): Uint8Array { return this.buf.slice(0, this.length); }
@@ -116,6 +139,20 @@ export interface Run {
   masks: MaskLog;
   daily: { date: string; seed: number } | null;
   echoes: Echo[];
+  /** The bundled '길잡이' echo while it is running (first play of a guided zone), else null. */
+  guide: Echo | null;
+  /** Seconds until the guide sets off; -1 = none pending. */
+  guideTimer: number;
+  /** Deaths per kind since the last checkpoint, for the re-hints. */
+  segDeaths: { pit: number; hazard: number };
+  /** No story zone had been cleared when this run began: its clear returns to the tower instead of the next zone. */
+  firstEver: boolean;
+  /** Checkpoints reached so far (the segment index a death is reported under). */
+  checkpoints: number;
+  /** Wall-clock `t` of the last death, for the death → respawn gap the player felt. */
+  deathAt: number;
+  /** onRunEnd has fired for this run (result settled, or quit). */
+  endNotified: boolean;
   /**
    * Started without a server (capture harness, or a daily begun while the
    * server was unreachable): no leaderboard or ghost fetch, never submitted.
@@ -144,8 +181,9 @@ export interface Run {
   t: number;
 }
 
-function deathLine(cause: string): string {
+function deathLine(cause: string): string | null {
   switch (cause) {
+    case 'retry': return null;   // the player asked for it
     case 'pit': return '심연';
     case 'spike': return '가시';
     case 'saw': return '톱날';
@@ -187,12 +225,25 @@ export class Scenes {
   private readonly randomSeed: () => number;
   private readonly build: string;
   private readonly now: () => number;
+  private readonly telemetry: TelemetryPort | null;
+  private readonly telemetryEnv: TelemetryData;
+  private readonly onServerNewer: ((serverSim: number | null) => void) | null;
   private readonly inflight = new Set<Promise<unknown>>();
+  private readonly runEndListeners: (() => void)[] = [];
 
   private titleT = 0;
   private titleSwitchT = 0;
   private titleIdx = 0;
+  /** Menu backdrop throttle: dt accumulated since the last drawTitle, and "draw on the next frame regardless". */
+  private titleAcc = 0;
+  private titleDirty = true;
   private muffled = false;
+  /** A latched RETRY press waiting for a frame that runs ticks (see frame()). */
+  private retryCarry: InputMask = 0;
+  /** The tab was hidden: the next frame renders once and runs no catch-up ticks. */
+  private resumeDiscard = false;
+  /** The UI screen the last frame saw (screen-change telemetry). */
+  private lastScreen: string | null = null;
 
   constructor(deps: ScenesDeps) {
     this.renderer = deps.renderer;
@@ -209,6 +260,9 @@ export class Scenes {
     this.randomSeed = deps.randomSeed ?? defaultRandomSeed;
     this.build = deps.build ?? 'dev';
     this.now = deps.now ?? (() => Date.now());
+    this.telemetry = deps.telemetry ?? null;
+    this.telemetryEnv = deps.telemetryEnv ?? {};
+    this.onServerNewer = deps.onServerNewer ?? null;
     this.fx = new FxBus({ random: deps.random });
     this.fx.applySettings(this.save.settings);
     this.ui.on((a) => this.onAction(a));
@@ -220,6 +274,7 @@ export class Scenes {
     this.applySettings();
     this.ui.setPortraitPainter((ctx, skin, size, t) => this.renderer.drawPortrait(ctx, skin, size, t));
     this.ui.refreshSelect(this.save.progress, this.levels);
+    this.bootTelemetry();
     this.showTitle();
   }
 
@@ -230,6 +285,8 @@ export class Scenes {
     await hooks.raf();
     this.applySettings();
     this.ui.setPortraitPainter((ctx, skin, size, t) => this.renderer.drawPortrait(ctx, skin, size, t));
+    // The server's sim version is compared in the background: boot never waits on the network.
+    void this.track(this.checkServerVersion());
     ui.boot?.(0.4, '지형 텍스처 베이킹…');
     await hooks.raf();
     // warm the sky gradients / noise before the first visible frame
@@ -238,6 +295,7 @@ export class Scenes {
     ui.boot?.(0.7, '레벨 로드…');
     await hooks.raf();
     this.ui.refreshSelect(this.save.progress, this.levels);
+    this.bootTelemetry();
     ui.boot?.(1, '준비 완료');
     await hooks.wait(240);
     this.showTitle();
@@ -245,10 +303,34 @@ export class Scenes {
     void this.flushQueue();
   }
 
+  /** Count today as a play day and report the anonymous boot event (device facts + retention buckets). */
+  private bootTelemetry(): void {
+    const now = this.now();
+    this.save.touchPlayDay(now);
+    this.telemetry?.track('boot', { ...this.telemetryEnv, ...retentionBuckets(this.save.progress, now) });
+  }
+
+  /**
+   * GET /api/health carries the server's SIM_VERSION: a newer one means this
+   * bundle's replays would be refused, so the update is offered right away.
+   */
+  private async checkServerVersion(): Promise<void> {
+    try {
+      const h = await this.api.health();
+      if (typeof h.simVersion === 'number' && h.simVersion > SIM_VERSION) this.serverNewer(h.simVersion);
+    } catch { /* offline or a pre-versioning server: nothing to compare */ }
+  }
+
+  private serverNewer(serverSim: number | null): void {
+    this.ui.setVersionBehind?.(true);
+    this.onServerNewer?.(serverSim);
+  }
+
   private showTitle(): void {
     this.ui.show('title');
     this.audio.setTrack('title');
     this.audio.setIntensity(0.45);
+    this.titleDirty = true;
   }
 
   /** Push the settings object to every subsystem (cheap to repeat). */
@@ -280,10 +362,10 @@ export class Scenes {
       case 'daily': this.onDailyStart(); break;
       case 'endless': this.startEndless(); break;
       case 'resume': this.resume(); break;
-      case 'restart': this.restartRun(); break;
+      case 'restart': this.trackRun('retry', { kind: 'restart' }); this.restartRun(); break;
       case 'quit': this.quitToMenu(); break;
       case 'next': this.nextLevel(); break;
-      case 'retry': this.retryRun(); break;
+      case 'retry': this.trackRun('retry', { kind: 'retry' }); this.retryRun(); break;
       case 'openSelect': this.ui.refreshSelect(this.save.progress, this.levels); break;
       case 'openDaily': void this.track(this.openDaily()); break;
       case 'openSettings':
@@ -352,6 +434,13 @@ export class Scenes {
       void this.track(this.openDaily());
       return;
     }
+    // A tower generated by a newer sim / generator cannot be reproduced here, so its
+    // record would be refused: the player is asked to update instead of wasting a climb.
+    if (!dailyVersionOk(d)) {
+      this.ui.toast('새 버전이 나왔다. 새로고침 후 오늘의 탑을 오를 수 있다');
+      this.serverNewer(d.sim ?? null);
+      return;
+    }
     this.startDaily(d);
   }
 
@@ -360,8 +449,16 @@ export class Scenes {
     const sim = new Sim(def, { seed, assist: s.assist, invincible: s.invincible });
     const biome = BIOMES[def.biome];
     const echoSafe = !s.assist && !s.invincible;
+    const firstPlay = !restart && !this.save.progress.seen[def.id];
+    const guided = firstPlay && mode === 'story' && guideFor(def, seed) !== null;
     const run: Run = {
       sim, def, mode, biome, seed, masks: new MaskLog(), daily, echoes: [],
+      guide: null, guideTimer: guided ? GUIDE_DELAY : -1,
+      segDeaths: { pit: 0, hazard: 0 },
+      firstEver: mode === 'story' && !this.levels.some((l) => this.save.progress.levels[l.id]?.done),
+      checkpoints: 0,
+      deathAt: -1,
+      endNotified: false,
       offline,
       eligible: echoSafe && mode !== 'endless' && !offline,
       echoSafe,
@@ -386,18 +483,31 @@ export class Scenes {
     this.input.reset();
     this.ui.hint(null);
     this.ui.show('play');
+    this.retryCarry = 0;
     if (!restart) {
       this.ui.banner?.(def.name);
-      if (def.hint && !this.save.progress.seen[def.id]) {
+      if (firstPlay) {
         this.save.progress.seen[def.id] = true;
         this.save.saveProgress();
-        run.hintTimer = HINT_DELAY;
-        run.hintText = def.hint;
+        if (def.hint) {
+          run.hintTimer = HINT_DELAY;
+          run.hintText = def.hint;
+        }
       }
       if (def.tide) { run.toastTimer = TIDE_TOAST_DELAY; run.toastText = '아래에서 조류가 밀려온다'; }
     }
     this.ui.hud(this.hudState(run));
+    this.telemetry?.track(mode === 'daily' ? 'daily_start' : 'zone_start', { levelId: def.id, mode, restart });
     void this.track(this.loadEchoes(run));
+  }
+
+  /** Story zones open right now: the first one plus every zone whose predecessor is done (mirrors the select screen). */
+  private unlockedZones(progress: Progress = this.save.progress): Set<string> {
+    const open = new Set<string>();
+    this.levels.forEach((lv, i) => {
+      if (i === 0 || progress.levels[this.levels[i - 1].id]?.done) open.add(lv.id);
+    });
+    return open;
   }
 
   private resume(): void {
@@ -427,6 +537,8 @@ export class Scenes {
   private nextLevel(): void {
     const run = this.run;
     if (!run || run.mode !== 'story') { this.retryRun(); return; }
+    // The very first clear returns to the tower: the eight cards, one newly lit, are the reward.
+    if (run.firstEver && run.summary?.cleared) { this.quitToMenu(); return; }
     const i = this.levels.findIndex((l) => l.id === run.def.id);
     if (i >= 0 && i + 1 < this.levels.length) this.startLevel(this.levels[i + 1].id);
     else this.quitToMenu();
@@ -441,7 +553,12 @@ export class Scenes {
 
   quitToMenu(): void {
     const run = this.run;
+    if (run) {
+      this.telemetry?.track('quit', { levelId: run.def.id, mode: run.mode, t: Math.round(run.t), finished: run.sim.finished });
+      this.notifyRunEnd(run);
+    }
     this.run = null;
+    this.titleDirty = true;
     this.setMuffle(false);
     this.audio.setTrack('title');
     this.audio.setIntensity(0.45);
@@ -456,30 +573,116 @@ export class Scenes {
   // ================================================================ per frame
   /** One rendered frame. `dtRaw` is wall-clock seconds since the previous frame. */
   frame(dtRaw: number): void {
-    const dt = Number.isFinite(dtRaw) && dtRaw > 0 ? Math.min(dtRaw, 0.25) : 0;
+    let dt = Number.isFinite(dtRaw) && dtRaw > 0 ? Math.min(dtRaw, 0.25) : 0;
+    // Back from a hidden tab: the gap is not play time. Render once, tick nothing.
+    if (this.resumeDiscard) { this.resumeDiscard = false; dt = 0; }
     this.input.poll();
     const held = this.input.held();
     const latched = this.input.takeLatched();
     this.ui.frame(dt, this.input);
+    const screen = this.ui.screen;
+    if (screen !== this.lastScreen) {
+      this.lastScreen = screen;
+      this.telemetry?.screen(screen);
+    }
 
     const run = this.run;
-    if (!run) { this.titleFrame(dt); return; }
+    if (!run) { this.menuFrame(dt); return; }
 
-    const playing = this.ui.screen === 'play';
+    const playing = screen === 'play';
     this.setMuffle(!playing && !run.summary);
+    // The clear / game-over countdown belongs to the run, not to the play
+    // screen: a pause or a lost gamepad during the animation still lands on the result.
+    if (!playing) this.resultTick(run, dt);
     if (playing) {
       const dtWall = Math.min(dt, MAX_FRAME_DT);
       run.t += dtWall;
       this.fx.update(dtWall);
       const live = !run.sim.finished;
       const masks = this.scheduler.plan(dtWall, live ? held : 0, live ? latched : 0, this.fx);
+      // IN.RETRY rides along with the other bits. The scheduler may still mask
+      // to the six movement bits, so the retry bit is re-applied here with the
+      // same semantics: a held bind on every tick, a tap on the first tick that
+      // runs (carried across hitstop frames). Idempotent once the scheduler
+      // passes IN_ALL through.
+      if (live) {
+        this.retryCarry |= latched & IN.RETRY;
+        if (masks.length) {
+          const heldRetry = held & IN.RETRY;
+          if (heldRetry) for (let i = 0; i < masks.length; i++) masks[i] |= heldRetry;
+          masks[0] |= this.retryCarry;
+          this.retryCarry = 0;
+        }
+      }
       for (const m of masks) this.tick(m);
       const p = run.sim.state.player;
       this.camera.update(dtWall * (this.fx.hitstop > 0 ? 0.2 : 1), p, run.sim.level, this.renderer.viewW, this.renderer.viewH, this.fx.zoom);
       this.timers(run, dtWall);
+      this.resultTick(run, dtWall);
       this.audio.setIntensity(run.sim.finished ? 0.25 : 0.55 + this.threat(run) * 0.45);
     }
     this.drawFrame(playing ? dt : 0);
+  }
+
+  /** Menu screens: the title backdrop is redrawn at most 30 times a second (the first frame after a switch right away). */
+  private menuFrame(dt: number): void {
+    this.titleAcc += dt;
+    if (!this.titleDirty && this.titleAcc < MENU_FRAME_DT - 1e-6) return;
+    this.titleDirty = false;
+    const step = this.titleAcc;
+    this.titleAcc = 0;
+    this.titleFrame(step);
+  }
+
+  // ================================================================ lifecycle hooks (main.ts)
+  /**
+   * document.visibilitychange. Hidden: nothing to do here (the UI pauses, the
+   * audio engine stops its clock). Visible again: the next frame's dt is the
+   * whole absence, so it is discarded — one render, no catch-up ticks.
+   */
+  visibility(hidden: boolean): void {
+    if (hidden) return;
+    this.resumeDiscard = true;
+    this.scheduler.reset();
+  }
+
+  /** The gamepad went away mid-run: pause so the character does not run on unattended. */
+  gamepadLost(): void {
+    const run = this.run;
+    if (!run || run.sim.finished || this.ui.screen !== 'play') return;
+    this.ui.show('pause');
+    this.ui.toast('게임패드 연결이 끊겼다');
+  }
+
+  /**
+   * A reload right now would destroy something: a run from its start until the
+   * result has settled (submission answered or not needed). Paused counts too.
+   */
+  isBusy(): boolean {
+    return this.run !== null && !this.run.endNotified;
+  }
+
+  /** Called once per run when it stops being busy (result settled, or the player quit). */
+  onRunEnd(cb: () => void): void {
+    this.runEndListeners.push(cb);
+  }
+
+  private notifyRunEnd(run: Run): void {
+    if (run.endNotified) return;
+    run.endNotified = true;
+    for (const cb of this.runEndListeners) { try { cb(); } catch { /* a listener must not break the flow */ } }
+  }
+
+  /** The result is on screen and nothing is in flight any more: the run has ended. */
+  private settleRunEnd(run: Run): void {
+    if (run.resultShown && run.view && run.view.submit.state !== 'pending') this.notifyRunEnd(run);
+  }
+
+  /** Telemetry about the current run (no-op without one). */
+  private trackRun(t: 'retry', extra: TelemetryData): void {
+    const run = this.run;
+    if (!run) return;
+    this.telemetry?.track(t, { levelId: run.def.id, mode: run.mode, ...extra });
   }
 
   /** Step the live sim one tick, echoes in lockstep, and dispatch the tick's events. */
@@ -507,10 +710,14 @@ export class Scenes {
   drawFrame(dt: number): void {
     const run = this.run;
     if (!run) return;
-    if (run.echoes.some((e) => e.done)) run.echoes = run.echoes.filter((e) => !e.done);
+    if (run.echoes.some((e) => e.done)) {
+      run.echoes = run.echoes.filter((e) => !e.done);
+      if (run.guide && !run.echoes.includes(run.guide)) run.guide = null;
+    }
     const ghosts = [];
     for (const e of run.echoes) { const v = e.view(); if (v) ghosts.push(v); }
     this.renderer.draw(run.sim, this.camera.view(this.fx.zoom), this.fx.state(), ghosts, dt);
+    this.ui.setGoalScreen?.(this.renderer.goalScreen);
     this.ui.hud(this.hudState(run));
   }
 
@@ -541,10 +748,39 @@ export class Scenes {
       run.toastTimer -= dt;
       if (run.toastTimer < 0 && run.toastText) { this.ui.toast(run.toastText); run.toastText = null; }
     }
-    if (run.resultTimer >= 0) {
-      run.resultTimer -= dt;
-      if (run.resultTimer < 0) this.showResult(run);
+    if (run.guideTimer >= 0) {
+      run.guideTimer -= dt;
+      if (run.guideTimer < 0) this.spawnGuide(run);
     }
+  }
+
+  /** The clear / game-over countdown; runs whether or not the play screen is up. */
+  private resultTick(run: Run, dt: number): void {
+    if (run.resultTimer < 0) return;
+    run.resultTimer -= dt;
+    if (run.resultTimer < 0) this.showResult(run);
+  }
+
+  /**
+   * Add the bundled guide echo: a second Sim fed the recorded masks from its
+   * own tick 0, so it sets off from the spawn point GUIDE_DELAY seconds after
+   * the player did. Silent, never recorded, never submitted.
+   */
+  private spawnGuide(run: Run): void {
+    if (run.guide || run.sim.finished) return;
+    const masks = guideFor(run.def, run.seed);
+    if (!masks) return;
+    const echo = new Echo(run.def, masks, run.seed, false, GUIDE_COLOR, GUIDE_LABEL);
+    run.guide = echo;
+    run.echoes.push(echo);
+  }
+
+  /** The player reached a checkpoint: the guide has done its job. */
+  private dropGuide(run: Run): void {
+    run.guideTimer = -1;
+    if (!run.guide) return;
+    run.echoes = run.echoes.filter((e) => e !== run.guide);
+    run.guide = null;
   }
 
   private threat(run: Run): number {
@@ -614,14 +850,48 @@ export class Scenes {
         if (ev.total > 0 && ev.n === ev.total) this.ui.toast('파편 전부 회수');
         break;
       case 'relic': this.ui.toast('유물 발견'); break;
-      case 'checkpoint': this.ui.toast('기록 지점'); break;
-      case 'death':
-        if (run.mode === 'story') this.ui.toast(deathLine(ev.cause));
+      case 'checkpoint':
+        this.ui.toast('기록 지점');
+        this.dropGuide(run);
+        run.segDeaths.pit = 0;
+        run.segDeaths.hazard = 0;
+        run.checkpoints++;
+        break;
+      case 'death': {
+        const line = deathLine(ev.cause);
+        if (line && run.mode === 'story') this.ui.toast(line);
+        this.rehint(run, ev.cause);
+        run.deathAt = run.t;
+        // Tile coordinates only: the death heat-map needs nothing finer.
+        this.telemetry?.track('death', {
+          levelId: run.def.id, cause: ev.cause, tx: Math.floor(ev.x / TILE), ty: Math.floor(ev.y / TILE), checkpointIdx: run.checkpoints,
+        });
+        break;
+      }
+      case 'respawn':
+        this.telemetry?.track('respawn', {
+          levelId: run.def.id, ...(run.deathAt >= 0 ? { ms: Math.max(0, Math.round((run.t - run.deathAt) * 1000)) } : {}),
+        });
+        run.deathAt = -1;
         break;
       case 'goal': this.finish(run, ev.summary, 'clear'); break;
       case 'tideOver': this.finish(run, ev.summary, 'over'); break;
       default: break;
     }
+  }
+
+  /**
+   * Repeated deaths of one kind in a checkpoint segment bring the matching
+   * hint back: two pits → the double jump, two spikes / saws → the dash. Same
+   * delay and lifetime as the zone hint.
+   */
+  private rehint(run: Run, cause: string): void {
+    const kind = cause === 'pit' ? 'pit' : cause === 'spike' || cause === 'saw' ? 'hazard' : null;
+    if (!kind) return;
+    run.segDeaths[kind]++;
+    if (run.segDeaths[kind] !== REHINT_DEATHS) return;
+    run.hintText = kind === 'pit' ? REHINT_PIT : REHINT_HAZARD;
+    run.hintTimer = HINT_DELAY;
   }
 
   private finish(run: Run, summary: RunSummary, kind: 'clear' | 'over'): void {
@@ -630,20 +900,33 @@ export class Scenes {
     run.resultKind = kind;
     run.resultTimer = kind === 'clear' ? RESULT_DELAY : OVER_DELAY;
     this.ui.hint(null);
+    this.dropGuide(run);
+    if (kind === 'clear') {
+      this.telemetry?.track(run.mode === 'daily' ? 'daily_clear' : 'clear', {
+        levelId: run.def.id, mode: run.mode, ticks: summary.ticks, deaths: summary.deaths, shards: summary.shards,
+      });
+    } else if (run.mode === 'daily') {
+      this.telemetry?.track('daily_over', { levelId: run.def.id, height: Math.floor(summary.height), deaths: summary.deaths, ticks: summary.ticks });
+    }
     const encoded = run.echoSafe ? encodeMasks(run.masks.bytes()) : null;
     run.encoded = encoded;
     if (encoded && encoded.length > MAX_MASKS_B64) run.eligible = false;
+    const openBefore = this.unlockedZones();
     const personalBest = this.recordProgress(run, summary, encoded);
+    const justUnlocked = new Set<string>();
+    for (const id of this.unlockedZones()) if (!openBefore.has(id)) justUnlocked.add(id);
     const i = this.levels.findIndex((l) => l.id === run.def.id);
+    const nextLevelId = run.mode === 'story' && i >= 0 && i + 1 < this.levels.length ? this.levels[i + 1].id : undefined;
     run.view = {
       summary,
       levelName: run.def.name,
       personalBest,
       stars: starsFor(summary),
       submit: { state: run.eligible ? 'pending' : 'idle' },
-      nextLevelId: run.mode === 'story' && i >= 0 && i + 1 < this.levels.length ? this.levels[i + 1].id : undefined,
+      nextLevelId,
+      ...(nextLevelId && justUnlocked.has(nextLevelId) ? { unlocked: { levelId: nextLevelId, name: this.levelById[nextLevelId].name } } : {}),
     };
-    this.ui.refreshSelect(this.save.progress, this.levels);
+    this.ui.refreshSelect(this.save.progress, this.levels, justUnlocked);
     if (run.eligible && encoded) void this.track(this.submit(run, encoded));
   }
 
@@ -658,7 +941,7 @@ export class Scenes {
         pb = rec.bestTicks === 0 || s.ticks < rec.bestTicks;
         if (pb) {
           rec.bestTicks = s.ticks;
-          if (encoded) rec.masks = encoded;
+          if (encoded) markEcho(rec, encoded);
           else { delete rec.masks; delete rec.runId; }
         }
         rec.stars = Math.max(rec.stars, starsFor(s));
@@ -677,7 +960,7 @@ export class Scenes {
       if (better) {
         pb = true;
         if (s.cleared) { rec.cleared = true; rec.bestTicks = s.ticks; }
-        if (encoded) rec.masks = encoded;
+        if (encoded) markEcho(rec, encoded);
         else { delete rec.masks; delete rec.runId; }
         rec.seed = run.daily.seed;
       }
@@ -705,10 +988,22 @@ export class Scenes {
       this.ui.showOver(run.summary, run.prevBestHeight);
       if (run.view.submit.state !== 'idle') this.ui.updateResult(run.view);
     }
+    this.telemetry?.track('result_shown', { levelId: run.def.id, kind: run.resultKind ?? 'clear', mode: run.mode });
+    this.settleRunEnd(run);
   }
 
   private pushResult(run: Run): void {
     if (this.run === run && run.resultShown && run.view) this.ui.updateResult(run.view);
+    this.settleRunEnd(run);
+  }
+
+  /** The server's verdict on a submission, for the funnel; a 'sim-version' refusal also means this bundle is behind. */
+  private trackVerdict(run: Pick<Run, 'mode' | 'def'>, res: { accepted: true } | { accepted: false; reason: string }): void {
+    const mode = run.mode === 'daily' ? 'daily' : 'story';
+    this.telemetry?.track('submit_result', {
+      accepted: res.accepted, mode, levelId: run.def.id, ...(res.accepted ? {} : { reason: res.reason }),
+    });
+    if (!res.accepted && res.reason === 'sim-version') this.serverNewer(null);
   }
 
   // ================================================================ submission
@@ -724,6 +1019,9 @@ export class Scenes {
       levelId: run.def.id,
       ...(mode === 'daily' ? { date: run.daily!.date, seed: run.daily!.seed } : {}),
       assist: false,
+      // The versions this replay was recorded under; the server refuses a mismatch before replaying.
+      sim: SIM_VERSION,
+      gen: GEN_VERSION,
       masks: encoded,
       claim: { ticks: s.ticks, shards: s.shards, deaths: s.deaths, cleared: s.cleared, height: s.height },
       client: { build: this.build },
@@ -734,14 +1032,18 @@ export class Scenes {
       if (res.accepted) {
         view.submit = { state: 'accepted', rank: res.rank, total: res.total };
         this.storeRunId(run, res.runId, encoded);
+        this.trackVerdict(run, { accepted: true });
       } else {
         view.submit = { state: 'rejected', reason: res.reason };
+        this.trackVerdict(run, { accepted: false, reason: res.reason });
       }
     } catch (err) {
       const offline = !(err instanceof ApiError) || err.offline;
       reachable = !offline;
-      if (!offline) view.submit = { state: 'rejected', reason: (err as ApiError).reason };
-      else if (this.queue) {
+      if (!offline) {
+        view.submit = { state: 'rejected', reason: (err as ApiError).reason };
+        this.trackVerdict(run, { accepted: false, reason: (err as ApiError).reason });
+      } else if (this.queue) {
         // Kept locally and sent on the next boot / `online`; the result line says so.
         this.queue.enqueue(body, { mode, board, levelId: run.def.id });
         view.submit = { state: 'queued' };
@@ -783,6 +1085,8 @@ export class Scenes {
     if (ev.kind !== 'sent') return;
     const { item, response } = ev;
     if (response.accepted) this.adoptRunId(item, response.runId);
+    this.trackVerdict({ mode: item.mode, def: { id: item.levelId } as LevelDef },
+      response.accepted ? { accepted: true } : { accepted: false, reason: response.reason });
     // The result screen of the run that was just queued is still up: settle its line.
     const run = this.run;
     if (run?.view && run.view.submit.state === 'queued' && run.encoded === item.body.masks) {
@@ -807,10 +1111,12 @@ export class Scenes {
     const s = this.save.settings;
     const prog = this.save.progress;
     if (s.echoSelf) {
-      const rec = run.mode === 'story' ? prog.levels[run.def.id] : run.mode === 'daily' && run.daily ? prog.daily[run.daily.date] : null;
-      if (rec?.masks) {
+      const rec = run.mode === 'story' ? prog.levels[run.def.id] : run.mode === 'daily' && run.daily ? prog.daily[run.daily.date] : undefined;
+      // Only a replay recorded by this SIM_VERSION reproduces on this sim (older masks are dropped).
+      const masks = echoMasks(rec);
+      if (masks) {
         try {
-          const echo = new Echo(run.def, decodeMasks(rec.masks), run.seed, false, C.echoSelf, '나');
+          const echo = new Echo(run.def, decodeMasks(masks), run.seed, false, C.echoSelf, '나');
           echo.syncTo(run.sim.state.tick);
           run.echoes.push(echo);
         } catch { /* a corrupt local replay is simply not shown */ }
@@ -841,6 +1147,8 @@ export class Scenes {
     try {
       this.daily = await this.api.daily();
       this.save.cacheDaily(this.daily);
+      // A newer sim / generator on the server: offer the update now, not after a climb the server would refuse.
+      if (!dailyVersionOk(this.daily)) this.serverNewer(this.daily.sim ?? null);
     } catch {
       // Offline: today's seed seen earlier (this session or a cached one) still
       // starts a real daily — the seed is the server's, so the run stays
@@ -870,6 +1178,17 @@ export class Scenes {
       if (this.daily === d) this.ui.setDaily(d, this.dailyLb, 'error');
     }
   }
+}
+
+/**
+ * A daily can only be climbed when this bundle reproduces the server's tower:
+ * the sim and the generator versions must match (a pre-versioning server sends
+ * neither and is trusted).
+ */
+export function dailyVersionOk(d: DailyResponse): boolean {
+  if (typeof d.sim === 'number' && d.sim !== SIM_VERSION) return false;
+  if (typeof d.gen === 'number' && d.gen !== GEN_VERSION) return false;
+  return true;
 }
 
 /** 32 random bits for endless seeds, from the platform CSPRNG when available. */

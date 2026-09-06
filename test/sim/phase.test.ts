@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { Sim } from '../../src/sim/sim.js';
-import { DT, IN } from '../../src/sim/types.js';
-import { flatRoom, openRoom, pitRoom } from '../fixtures/levels.js';
+import { DYING_T, DYING_TICKS, INTRO_T, RESPAWN_INTRO_T, RESPAWN_INTRO_TICKS, Sim } from '../../src/sim/sim.js';
+import { DT, IN, IN_ALL } from '../../src/sim/types.js';
+import { flatRoom, openRoom, pitRoom, spikeRoom } from '../fixtures/levels.js';
 import { INTRO_TICKS, J, R, collect, playing, run, stepUntil } from './helpers.js';
 
 describe('phase machine', () => {
@@ -85,10 +85,10 @@ describe('phase machine', () => {
     expect(sim.state.stats.deaths).toBe(1);
     expect(sim.state.player.dead).toBe(true);
     expect(sim.finished).toBe(false);
-    // 1.05 s later we are back in intro at the spawn point with full hp
+    // DYING_T (0.45 s = 54 ticks) later we are back in intro at the spawn point with full hp
     const m = stepUntil(sim, (s) => s.state.phase === 'intro', 400);
-    expect(m).toBeGreaterThan(100);
-    expect(m).toBeLessThan(140);
+    expect(m).toBe(DYING_TICKS);
+    expect(m).toBe(54);
     expect(sim.drainEvents().some((e) => e.type === 'respawn')).toBe(true);
     expect(sim.state.player.x).toBeCloseTo(start.x, 3);
     expect(sim.state.player.y).toBeCloseTo(start.y, 0);
@@ -115,7 +115,45 @@ describe('phase machine', () => {
     expect(sim.drainEvents()).toEqual([]);
   });
 
-  it('exposes the input bit layout', () => {
+  it('the first spawn keeps a 54-tick intro (INTRO_T 0.45 s) and the flip tick is the first play tick', () => {
+    expect(INTRO_T).toBe(0.45);
+    const sim = new Sim(openRoom());
+    const n = stepUntil(sim, (s) => s.state.phase === 'play', 120);
+    expect(n).toBe(54);
+    expect(sim.summary().ticks).toBe(1);
+  });
+
+  it('a spike death hands control back within 0.6 s: play again at most 72 ticks after the death event', () => {
+    expect(DYING_T).toBe(0.45);
+    expect(RESPAWN_INTRO_T).toBe(0.15);
+    const sim = playing(spikeRoom());
+    const n = stepUntil(sim, (s) => s.state.phase === 'dying', 4800, R);
+    expect(n).toBeGreaterThan(0);
+    const death = sim.drainEvents().find((e) => e.type === 'death');
+    expect(death && death.type === 'death' && death.cause).toBe('spike');
+    const deathTick = sim.state.tick;
+    const m = stepUntil(sim, (s) => s.state.phase === 'play', 200);
+    expect(m).toBeGreaterThan(0);
+    expect(sim.state.tick - deathTick).toBeLessThanOrEqual(72);
+    expect(sim.state.tick - deathTick).toBe(DYING_TICKS + RESPAWN_INTRO_TICKS);
+    expect(sim.state.player.dead).toBe(false);
+    expect(sim.state.player.hp).toBe(3);
+  });
+
+  it('the respawn intro is 18 ticks (RESPAWN_INTRO_T 0.15 s), shorter than the first spawn', () => {
+    const sim = playing(pitRoom());
+    stepUntil(sim, (s) => s.state.phase === 'dying', 2400, R);
+    const m = stepUntil(sim, (s) => s.state.phase === 'intro', 200);
+    expect(m).toBe(DYING_TICKS);
+    const k = stepUntil(sim, (s) => s.state.phase === 'play', 200);
+    expect(k).toBe(RESPAWN_INTRO_TICKS);
+    expect(k).toBe(18);
+    expect(RESPAWN_INTRO_TICKS).toBeLessThan(INTRO_TICKS);
+  });
+
+  it('exposes the input bit layout: six movement bits plus RETRY, all inside IN_ALL', () => {
     expect(IN.LEFT | IN.RIGHT | IN.UP | IN.DOWN | IN.JUMP | IN.DASH).toBe(63);
+    expect(IN.RETRY).toBe(64);
+    expect(IN_ALL).toBe(127);
   });
 });

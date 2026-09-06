@@ -39,8 +39,13 @@ export type RendererOptions = StageOptions;
 
 const TITLE_SEEDS: Record<BiomeId, number> = { tidepool: 3, stormspire: 12, voidreef: 21 };
 
+/** The goal counts as on screen only when its orb sits this far (world units) inside the view. */
+const GOAL_EDGE_MARGIN = 10;
+/** Distance of the edge beacon's centre from the rendered box's edge, in world units. */
+const BEACON_INSET = 20;
+
 export class Renderer implements RendererPort {
-  /** Goal projection after the last draw; see RendererPort. Filled in by the readability pass. */
+  /** Goal projection after the last draw in CSS px relative to the canvas; see RendererPort. */
   goalScreen: { x: number; y: number; onScreen: boolean } | null = null;
   readonly stage: Stage;
   readonly sky: Sky;
@@ -73,7 +78,7 @@ export class Renderer implements RendererPort {
     this.stage = new Stage(canvas, opts);
     this.sky = new Sky(this.stage);
     this.particles = new Particles(this.stage);
-    this.actors = new Actors(this.stage, BIOMES.tidepool);
+    this.actors = new Actors(this.stage, BIOMES.tidepool, this.particles);
     const skins: Record<string, { name: string; kr: string }> = {};
     for (const s of Object.values(SKINS)) skins[s.id] = { name: s.name, kr: s.kr };
     this.skins = skins;
@@ -98,6 +103,7 @@ export class Renderer implements RendererPort {
     this.particles.clear();
     this.switchFlash = 0;
     this.t = 0;
+    this.goalScreen = null;
   }
 
   resize(): void { this.stage.resize(); }
@@ -160,6 +166,70 @@ export class Renderer implements RendererPort {
     ctx.fillRect(0, st.viewH * 0.72, st.viewW, st.viewH * 0.28);
 
     st.composite(fx);
+
+    // HUD-like, so after the film pass: never bloomed, vignetted or grained
+    this.goalBeacon(state, fx, biome);
+  }
+
+  /**
+   * Project the goal orb to the canvas (CSS px) into `goalScreen` and, when it
+   * lies outside the view, draw a pulsing edge beacon toward it in the biome
+   * accent. Mirrors the transform `Stage.world` pushed for this frame.
+   */
+  private goalBeacon(state: SimState, fx: FxState, biome: Biome): void {
+    const goal = state.entities.find((e) => e.kind === 'goal');
+    if (!goal) { this.goalScreen = null; return; }
+    const st = this.stage;
+    const gx = goal.x, gy = goal.y + TILE / 2 - 18;      // the orb, see Actors.goal
+    const zoom = st.zoom;
+    const rx = (gx - st.camX) * zoom, ry = (gy - st.camY) * zoom;
+    const rot = fx.shakeRot || 0;
+    const cos = Math.cos(rot), sin = Math.sin(rot);
+    // screen units: origin top-left of the rendered box, world units per unit
+    const sx = rx * cos - ry * sin + st.viewW / 2 + (fx.shakeX || 0);
+    const sy = rx * sin + ry * cos + st.viewH / 2 + (fx.shakeY || 0);
+    const m = GOAL_EDGE_MARGIN;
+    const onScreen = sx > m && sx < st.viewW - m && sy > m && sy < st.viewH - m;
+    const dpr = st.dpr || 1;
+    this.goalScreen = { x: (st.ox + sx * st.scale) / dpr, y: (st.oy + sy * st.scale) / dpr, onScreen };
+    if (onScreen) return;
+
+    // clamp the centre→goal ray to the box inset by BEACON_INSET
+    const cx = st.viewW / 2, cy = st.viewH / 2;
+    const dx = sx - cx, dy = sy - cy;
+    const kx = Math.abs(dx) > 1e-6 ? (cx - BEACON_INSET) / Math.abs(dx) : Infinity;
+    const ky = Math.abs(dy) > 1e-6 ? (cy - BEACON_INSET) / Math.abs(dy) : Infinity;
+    const k = Math.min(kx, ky);
+    if (!Number.isFinite(k)) return;
+    const bx = cx + dx * k, by = cy + dy * k;
+    const ang = Math.atan2(dy, dx);
+    const pulse = 0.5 + 0.5 * Math.sin(this.t * 5);
+    const ctx = st.ctx;
+    st.screen();
+    ctx.save();
+    ctx.globalAlpha = 1 - clamp01(fx.fade);
+    ctx.translate(bx, by);
+    const haloR = 15 + pulse * 5;
+    const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, haloR);
+    halo.addColorStop(0, alpha(biome.accent, 0.38));
+    halo.addColorStop(1, alpha(biome.accent, 0));
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(0, 0, haloR, 0, TAU); ctx.fill();
+    // dark backing so the chevron reads over a bright sky
+    ctx.fillStyle = alpha('#07060B', 0.5);
+    ctx.beginPath(); ctx.arc(0, 0, 9.5, 0, TAU); ctx.fill();
+    ctx.strokeStyle = alpha(biome.accent, 0.3 + 0.4 * pulse);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(0, 0, 11 + pulse * 2.5, 0, TAU); ctx.stroke();
+    // chevron pointing at the goal, opaque in the accent
+    ctx.rotate(ang);
+    ctx.fillStyle = biome.accent;
+    ctx.beginPath();
+    ctx.moveTo(8, 0); ctx.lineTo(-4.5, -6.5); ctx.lineTo(-1.5, 0); ctx.lineTo(-4.5, 6.5);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = alpha('#FFF6C8', 0.9);
+    ctx.beginPath(); ctx.arc(1.2, 0, 1.6, 0, TAU); ctx.fill();
+    ctx.restore();
   }
 
   // ------------------------------------------------------------ port: events
@@ -170,7 +240,7 @@ export class Renderer implements RendererPort {
     const p = sim.state.player;
     switch (ev.type) {
       case 'phase':
-        if (ev.phase === 'intro') { this.playerVis.reset(p); P.clear(); }
+        if (ev.phase === 'intro') { this.playerVis.reset(p); P.clear(); this.actors.resetStreaks(); }
         break;
       case 'jump':
         this.playerVis.jump();
@@ -259,6 +329,7 @@ export class Renderer implements RendererPort {
       case 'respawn':
         this.playerVis.reset(p);
         P.clear();
+        this.actors.resetStreaks();
         P.ring(ev.x, ev.y - 8, 2, 34, 0.4, skin.glow, 2, 1.2);
         break;
       case 'goal':

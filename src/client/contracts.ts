@@ -43,13 +43,15 @@ export interface LevelRecord {
   runId?: string;
   /** Locally kept replay of the best run (encoded masks), for the self-echo. */
   masks?: string;
+  /** SIM_VERSION the masks were recorded on; masks from another version are dropped on load. */
+  sim?: number;
 }
 
 export interface Progress {
   v: 1;
   levels: Record<string, LevelRecord>;
   endless: { bestHeight: number; bestShards: number; runs: number };
-  daily: Record<string, { bestTicks: number; cleared: boolean; height: number; runId?: string; masks?: string; seed: number }>;
+  daily: Record<string, { bestTicks: number; cleared: boolean; height: number; runId?: string; masks?: string; sim?: number; seed: number }>;
   totals: { deaths: number; shards: number };
   seen: Record<string, boolean>;
   lastLevel: string | null;
@@ -245,8 +247,12 @@ export interface UIPort {
   hud(h: HudState): void;
   hint(text: string | null): void;
   toast(text: string): void;
-  /** Populate zone select with progress and lock state. */
-  refreshSelect(progress: Progress, levels: LevelDef[]): void;
+  /** Populate zone select with progress and lock state; `justUnlocked` cards play the unlock moment. */
+  refreshSelect(progress: Progress, levels: LevelDef[], justUnlocked?: ReadonlySet<string>): void;
+  /** Renderer goal projection each frame; the UI hides #hud-level when the goal sits under the HUD. */
+  setGoalScreen?(g: RendererPort['goalScreen']): void;
+  /** The server runs a newer SIM_VERSION than this bundle: highlight the update bar. */
+  setVersionBehind?(on: boolean): void;
   /** Daily screen: seed/date, your best, and the leaderboard (or its loading / error state). */
   setDaily(daily: DailyResponse | null, lb: LeaderboardResponse | null, status: 'loading' | 'ok' | 'error'): void;
   showResult(view: ResultView): void;

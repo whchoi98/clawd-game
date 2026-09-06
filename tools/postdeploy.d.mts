@@ -36,6 +36,13 @@ export interface ResolvedOutputs {
 }
 
 export function regionFromEnv(env?: Record<string, string | undefined>): string;
+
+export const SIM_TYPES_PATH: string;
+export interface SimVersions { sim: number; gen: number }
+/** `{ sim, gen }` parsed from the text of src/sim/types.ts, or null when either constant is missing. */
+export function versionsFromSource(text: string): SimVersions | null;
+/** The versions the checked-out tree ships (reads SIM_TYPES_PATH under `root`), or null. */
+export function readSimVersions(root?: string): SimVersions | null;
 export function describeStacksArgs(opts: { stackName: string; region: string }): string[];
 export function outputsFromFile(path: string): { outputs: StackOutputs | null; error: string | null };
 export function outputsFromCloudFormation(

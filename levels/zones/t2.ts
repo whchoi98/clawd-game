@@ -72,5 +72,5 @@ m.ent('G', 106, F - 1);
 
 export const t2 = m.def({
   id: 't2', name: '조류의 도약', en: 'TIDAL LEAP', biome: 'tidepool', par: 55, seed: 13,
-  hint: 'SHIFT 대시 · 용수철은 대시를 되돌려준다 · 물에 빠지면 헤엄쳐 나오면 된다',
+  hint: '{dash} 대시 · 용수철은 대시를 되돌려준다 · 물에 빠지면 헤엄쳐 나오면 된다',
 });

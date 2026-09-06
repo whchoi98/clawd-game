@@ -26,7 +26,9 @@ m.arc(14, F - 1, 18, F - 1, 3, 'o', 2.5);
 m.ground(18, 40, F);
 m.plat(24, 28, F - 2);
 m.shards([[25, F - 3], [27, F - 3]]);
-m.ent('w', 33, F - 1);
+// the walker patrols the whole 18..40 floor; it spawns under the first ledge so
+// the spawn frame never draws it under a phone's DASH / JUMP thumb (qa:mobile)
+m.ent('w', 24, F - 1);
 m.plat(33, 37, F - 4);
 m.shards([[34, F - 5], [36, F - 5]]);
 
@@ -56,5 +58,8 @@ m.ent('G', 96, F - 1);
 
 export const t1 = m.def({
   id: 't1', name: '새벽 물가', en: 'DAWN SHALLOWS', biome: 'tidepool', par: 45, seed: 5,
-  hint: '← → 이동 · 점프 · 공중에서 한 번 더 누르면 2단 점프',
+  hint: '{move} 이동 · {jump} 점프 · 공중에서 {jump} 한 번 더 — 2단 점프',
+  // walker moved 33 → 24 for the phone spawn frame while SIM_VERSION 2 was still
+  // unreleased, so no v2 replay predates it and rev stays 0; bump `rev` (and
+  // re-record src/client/echo/guide.ts) for any cell change after v2 ships.
 });

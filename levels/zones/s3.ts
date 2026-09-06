@@ -65,6 +65,8 @@ m.ent('G', 116, F - 1);
 
 export const s3 = m.def({
   id: 's3', name: '폭풍의 눈', en: 'EYE OF THE STORM', biome: 'stormspire', par: 90, seed: 79,
-  hint: '포탑은 밟아서 부수고, 톱날은 리듬을 읽고, 돌진하는 적은 웅크릴 때 피한다',
-  spikers: [[27, F - 1]],
+  hint: '포탑은 공중에서 {stomp} 스톰프로 부수고 · 톱날은 리듬을 읽고 · 돌진하는 적은 {down} 웅크려 피한다',
+  // the spiker patrols the 15..30 floor; it starts at 24 so a phone's spawn frame
+  // never hides it under the DASH thumb (moved before SIM_VERSION 2 shipped: rev stays 0)
+  spikers: [[24, F - 1]],
 });

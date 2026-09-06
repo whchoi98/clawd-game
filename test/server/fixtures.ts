@@ -17,6 +17,7 @@ import type { LevelDef, Replay, RunClaim, RunSummary, VerifyResult } from '../..
 import type { RunSubmit } from '../../src/shared/protocol.js';
 import type { AppDeps } from '../../src/server/types.js';
 import { encodeMasks } from '../../src/sim/replay.js';
+import { GEN_VERSION, SIM_VERSION } from '../../src/sim/types.js';
 import { MemoryRepo } from '../../src/server/repo/memory.js';
 import { buildApp } from '../../src/server/app.js';
 
@@ -29,8 +30,9 @@ export const SECRET = 'test-secret';
 
 /**
  * 600 ticks of RIGHT held, then 120 ticks of RIGHT|JUMP. The server refuses logs
- * longer than `maxMasksFor(claim)` (ticks + 55 + 182·deaths + 240), so a test that
- * steers the score through `claim.ticks` must keep it ≥ 425 or pass shorter masks.
+ * longer than `maxMasksFor(claim)` (ticks + INTRO_TICKS + DEATH_TICKS·deaths + 240,
+ * derived from the sim's phase constants), so a test that steers the score through
+ * `claim.ticks` must keep it ≥ 720 − INTRO_TICKS − 240 or pass shorter masks.
  */
 export const MASKS = (() => {
   const m = new Uint8Array(720);
@@ -83,6 +85,8 @@ export function submitBody(over: SubmitOverride = {}): RunSubmit {
     mode: 'story',
     levelId: 't1',
     assist: false,
+    sim: SIM_VERSION,
+    gen: GEN_VERSION,
     masks: MASKS_B64,
     claim: { ticks: 720, shards: 3, deaths: 0, cleared: true, height: 0, ...claim },
     client: { build: 'test' },

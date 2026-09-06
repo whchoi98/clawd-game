@@ -6,11 +6,13 @@
  * they leave the board.
  */
 import type { Mode } from '../../shared/protocol.js';
+import { boardKey as storedBoard } from '../boards.js';
 import { SaveConflictError } from './errors.js';
 import type { Repo, StoredRun } from './types.js';
 
-const boardKey = (mode: Mode, board: string) => `${mode}#${board}`;
-const bestKey = (playerId: string, mode: Mode, board: string) => `${playerId}#${mode}#${board}`;
+/** Same partitioning as DynamoRepo: story boards carry the sim version and zone revision. */
+const boardKey = (mode: Mode, board: string) => `${mode}#${storedBoard(mode, board)}`;
+const bestKey = (playerId: string, mode: Mode, board: string) => `${playerId}#${mode}#${storedBoard(mode, board)}`;
 
 /** The LB sort-key order of DynamoRepo: score ascending, then more shards, then run id. */
 export function compareRuns(a: StoredRun, b: StoredRun): number {

@@ -18,7 +18,7 @@
  *   &ui=select|settings|result|...        with shot=title: show a UI surface over the backdrop
  *   &audio                                also init the audio engine (diagnostics only)
  */
-import { IN } from '../sim/types.js';
+import { IN, IN_ALL } from '../sim/types.js';
 import type { InputMask, LevelDef, PlayerState, RunSummary, SimEvent } from '../sim/types.js';
 import { BIOMES } from '../shared/biomes.js';
 import type { AudioPort, RendererPort, ResultView, Screen } from './contracts.js';
@@ -103,7 +103,7 @@ export class ShotScript {
     for (const pl of s.pulse) {
       if (step >= pl.n && step % pl.n < PULSE_HOLD_TICKS) m |= ACTION_BIT[pl.a];
     }
-    return m & 0x3f;
+    return m & IN_ALL;
   }
 
   /**

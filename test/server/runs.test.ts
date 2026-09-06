@@ -4,11 +4,13 @@ import { boardScore } from '../../src/sim/config.js';
 import { dailySeed } from '../../src/server/daily.js';
 import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { encodeMasks, verifyReplayChunked } from '../../src/sim/replay.js';
-import { MAX_TICKS } from '../../src/sim/types.js';
+import { GEN_VERSION, MAX_TICKS, SIM_VERSION, TICK_HZ } from '../../src/sim/types.js';
+import { DYING_T, INTRO_T, RESPAWN_INTRO_T } from '../../src/sim/sim.js';
 import { DynamoRepo, KEY } from '../../src/server/repo/dynamo.js';
 import { RUNS_PER_IP_PER_MINUTE } from '../../src/server/routes/runs.js';
 import {
-  DEATH_TICKS, INTRO_TICKS, MASK_SLACK, PlayerLimiter, asyncVerifier, maxMasksFor, submitRun, toRejectReason,
+  DEATH_TICKS, INTRO_TICKS, MASK_SLACK, PlayerLimiter, RESPAWN_INTRO_TICKS, asyncVerifier, maxMasksFor, phaseTicks, submitRun,
+  toRejectReason, versionMismatch,
 } from '../../src/server/runs.js';
 import { FakeClient } from './fakeDynamo.js';
 import {
@@ -40,7 +42,7 @@ describe('POST /api/runs', () => {
     // the verifier saw the decoded masks and the level's own seed, never the claim's word
     expect(calls).toHaveLength(1);
     expect(calls[0].def.id).toBe('t1');
-    expect(calls[0].replay).toMatchObject({ v: 1, levelId: 't1', seed: FIX_T1.seed, assist: false });
+    expect(calls[0].replay).toMatchObject({ v: SIM_VERSION, levelId: 't1', seed: FIX_T1.seed, assist: false });
     expect(Array.from(calls[0].replay.masks)).toEqual(Array.from(MASKS));
     expect(calls[0].claim).toEqual({ ticks: 720, shards: 3, deaths: 0, cleared: true, height: 0 });
     // persisted
@@ -130,6 +132,61 @@ describe('POST /api/runs', () => {
     expect(res.statusCode).toBe(422);
     expect(res.json()).toEqual({ accepted: false, reason: 'assist' });
     expect(calls).toHaveLength(0);
+  });
+
+  describe('sim / generator version gate', () => {
+    it('refuses sim ≠ SIM_VERSION with 422 { reason: sim-version } before the masks are decoded or verified', async () => {
+      const calls: VerifyCall[] = [];
+      const { app, repo } = await up({ verify: echoVerify(calls) });
+      for (const sim of [SIM_VERSION - 1, SIM_VERSION + 1, 0]) {
+        const res = await postRun(app, submitBody({ sim, masks: '!!!!' })); // undecodable masks: the gate comes first
+        expect(res.statusCode, `sim=${sim}`).toBe(422);
+        expect(RunResponse.parse(res.json())).toEqual({ accepted: false, reason: 'sim-version' });
+      }
+      expect(calls).toHaveLength(0);
+      expect(await repo.topRuns('story', 't1', 10)).toHaveLength(0);
+    });
+
+    it('a legacy client that sends no sim field is refused the same way', async () => {
+      const calls: VerifyCall[] = [];
+      const { app } = await up({ verify: echoVerify(calls) });
+      const res = await postRun(app, submitBody({ sim: undefined }));
+      expect(res.statusCode).toBe(422);
+      expect(res.json().reason).toBe('sim-version');
+      expect(calls).toHaveLength(0);
+    });
+
+    it('accepts sim = SIM_VERSION and passes replay.v = SIM_VERSION to the verifier', async () => {
+      const calls: VerifyCall[] = [];
+      const { app } = await up({ verify: echoVerify(calls) });
+      expect((await postRun(app, submitBody({ sim: SIM_VERSION }))).statusCode).toBe(200);
+      expect(calls[0].replay.v).toBe(SIM_VERSION);
+    });
+
+    it('story runs ignore gen; daily runs need gen = GEN_VERSION', async () => {
+      const calls: VerifyCall[] = [];
+      const { app } = await up({ verify: echoVerify(calls) });
+      expect((await postRun(app, submitBody({ gen: GEN_VERSION + 5 }))).statusCode).toBe(200);
+      expect((await postRun(app, submitBody({ gen: undefined }))).statusCode).toBe(200);
+      const seed = dailySeed(TODAY, SECRET).seed;
+      const stale = await postRun(app, dailyBody(seed, { gen: GEN_VERSION + 1 }));
+      expect(stale.statusCode).toBe(422);
+      expect(stale.json().reason).toBe('sim-version');
+      const missing = await postRun(app, dailyBody(seed, { gen: undefined }));
+      expect(missing.json().reason).toBe('sim-version');
+      expect(calls).toHaveLength(2);
+      expect((await postRun(app, dailyBody(seed))).statusCode).toBe(200);
+    });
+
+    it('versionMismatch is the single decision behind the gate', () => {
+      expect(versionMismatch({ mode: 'story', sim: SIM_VERSION })).toBe(false);
+      expect(versionMismatch({ mode: 'story', sim: SIM_VERSION, gen: 0 })).toBe(false);
+      expect(versionMismatch({ mode: 'story' })).toBe(true);
+      expect(versionMismatch({ mode: 'story', sim: SIM_VERSION + 1 })).toBe(true);
+      expect(versionMismatch({ mode: 'daily', sim: SIM_VERSION, gen: GEN_VERSION })).toBe(false);
+      expect(versionMismatch({ mode: 'daily', sim: SIM_VERSION })).toBe(true);
+      expect(versionMismatch({ mode: 'daily', sim: SIM_VERSION, gen: GEN_VERSION + 1 })).toBe(true);
+    });
   });
 
   it('rejects a story run that did not clear the zone with not-finished', async () => {
@@ -330,17 +387,30 @@ describe('POST /api/runs', () => {
     /** RLE + base64 of `n` identical masks — a few hundred bytes for ten minutes of input. */
     const longLog = (n: number, mask = 0) => encodeMasks(new Uint8Array(n).fill(mask));
 
-    it('maxMasksFor allows one intro, a dying+intro cycle per death and slack', () => {
+    it('derives the phase tick constants from the sim exports (INTRO_T 0.45 · RESPAWN_INTRO_T 0.15 · DYING_T 0.45), never from literals', () => {
+      // Phase 1 contract values; the server must follow the sim when they move.
+      expect(INTRO_T).toBe(0.45);
+      expect(RESPAWN_INTRO_T).toBe(0.15);
+      expect(DYING_T).toBe(0.45);
+      expect(phaseTicks(0.45)).toBe(Math.ceil(0.45 * TICK_HZ) + 1);
+      expect(INTRO_TICKS).toBe(phaseTicks(INTRO_T));
+      expect(RESPAWN_INTRO_TICKS).toBe(phaseTicks(RESPAWN_INTRO_T));
+      expect(DEATH_TICKS).toBe(phaseTicks(DYING_T) + RESPAWN_INTRO_TICKS);
       expect(INTRO_TICKS).toBe(55);
-      expect(DEATH_TICKS).toBe(127 + 55);
+      expect(RESPAWN_INTRO_TICKS).toBe(19);
+      expect(DEATH_TICKS).toBe(55 + 19);
+    });
+
+    it('maxMasksFor allows one intro, a dying+respawn-intro cycle per death and slack', () => {
       expect(maxMasksFor({ ticks: 600, shards: 0, deaths: 0, cleared: true, height: 0 })).toBe(600 + INTRO_TICKS + MASK_SLACK);
       expect(maxMasksFor({ ticks: 600, shards: 0, deaths: 5, cleared: true, height: 0 })).toBe(600 + INTRO_TICKS + 5 * DEATH_TICKS + MASK_SLACK);
       expect(maxMasksFor({ ticks: MAX_TICKS, shards: 0, deaths: 100_000, cleared: true, height: 0 })).toBe(MAX_TICKS);
     });
 
-    it('a legitimate run with several deaths fits the budget (the sim really needs 182 ticks per death)', () => {
+    it('a legitimate run with several deaths fits the budget (the sim spends ⌈T·120⌉ ticks in each phase)', () => {
       const deaths = 8;
-      const needed = 54 + 600 + deaths * (126 + 54); // measured intro / dying lengths
+      const spent = (t: number) => Math.ceil(t * TICK_HZ);
+      const needed = spent(INTRO_T) + 600 + deaths * (spent(DYING_T) + spent(RESPAWN_INTRO_T));
       expect(needed).toBeLessThanOrEqual(maxMasksFor({ ticks: 600, shards: 0, deaths, cleared: true, height: 0 }));
     });
 
@@ -401,7 +471,7 @@ describe('POST /api/runs', () => {
       repo: new DynamoRepo(client, TABLE), now: () => FIXED_NOW, dailySecret: SECRET, verify: echoVerify(), resolve: fakeResolveLevel,
     });
     const otherBest = (score: number) => ({ Item: {
-      pk: 'PLAYER#player-0001', sk: 'BEST#story#t1', runId: 'run-other', mode: 'story', board: 't1', levelId: 't1', seed: FIX_T1.seed, assist: false,
+      pk: 'PLAYER#player-0001', sk: 'BEST#story#t1#s2r0', runId: 'run-other', mode: 'story', board: 't1', levelId: 't1', seed: FIX_T1.seed, assist: false,
       playerId: 'player-0001', name: '클로드', score, ticks: score, shards: 2, deaths: 0, cleared: true, height: 0, createdAt: '2026-09-06T11:59:59.000Z',
     } });
 
@@ -442,7 +512,7 @@ describe('POST /api/runs', () => {
       expect(items).toHaveLength(4);
       expect(items[2].Put.ConditionExpression).toBe('runId = :prev');
       expect(items[2].Put.ExpressionAttributeValues).toEqual({ ':prev': 'run-other' });
-      expect(items[3].Delete.Key).toEqual({ pk: 'LB#story#t1', sk: KEY.lbSk(900, 2, 'run-other') });
+      expect(items[3].Delete.Key).toEqual({ pk: 'LB#story#t1#s2r0', sk: KEY.lbSk(900, 2, 'run-other') });
     });
 
     it('gives up after the second refusal so the caller sees a 500 rather than a fabricated best', async () => {

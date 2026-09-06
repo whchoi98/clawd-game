@@ -2,7 +2,8 @@ import { Sim } from '../../src/sim/sim.js';
 import { IN } from '../../src/sim/types.js';
 import type { InputMask, LevelDef, SimEvent, SimOptions } from '../../src/sim/types.js';
 
-export const INTRO_TICKS = 60; // 0.45 s + margin
+/** First-spawn intro (INTRO_T 0.45 s = 54 ticks) plus margin. Respawn intros are shorter (RESPAWN_INTRO_T). */
+export const INTRO_TICKS = 60;
 
 export function run(sim: Sim, n: number, mask: InputMask = 0): void {
   for (let i = 0; i < n && !sim.finished; i++) sim.step(mask);
@@ -34,5 +35,5 @@ export function collect(sim: Sim, n: number, mask: InputMask = 0): SimEvent[] {
   return out;
 }
 
-export const J = IN.JUMP, R = IN.RIGHT, L = IN.LEFT, D = IN.DASH, DN = IN.DOWN, UP = IN.UP;
+export const J = IN.JUMP, R = IN.RIGHT, L = IN.LEFT, D = IN.DASH, DN = IN.DOWN, UP = IN.UP, RETRY = IN.RETRY;
 export const TILE = 16;

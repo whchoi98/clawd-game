@@ -24,8 +24,17 @@ export interface FxOptions {
   random?: () => number;
 }
 
-/** Seconds into the death animation before the screen starts fading to black. */
-const DEATH_FADE_AT = 0.7;
+/**
+ * Seconds into the death animation before the screen starts fading to black.
+ * The sim respawns DYING_T (0.45 s) after a death, so the fade-out has ~0.2 s
+ * to reach black and the fade-in runs during the short respawn intro: death →
+ * control reads as ~0.6 s.
+ */
+export const DEATH_FADE_AT = 0.25;
+/** Half-life of the fade towards clear (respawn, new level). */
+export const FADE_IN_HALF = 0.06;
+/** Half-life of the fade towards black (death): faster, so the screen is black when the respawn lands. */
+export const FADE_OUT_HALF = 0.045;
 const MAX_TRAUMA = 1.6;
 /** Flash cap when the photosensitivity toggle is off. */
 const FLASH_CAP_SAFE = 0.12;
@@ -155,7 +164,7 @@ export class FxBus implements TimeControl {
     this.aberr = Math.max(0, this.aberr - dt * 2.6);
     this.zoomTarget = damp(this.zoomTarget, 1, 0.1, dt);
     this.zoom = damp(this.zoom, this.zoomTarget, 0.07, dt);
-    this.fade = damp(this.fade, this.fadeTarget, 0.1, dt);
+    this.fade = damp(this.fade, this.fadeTarget, this.fadeTarget > this.fade ? FADE_OUT_HALF : FADE_IN_HALF, dt);
     if (Math.abs(this.zoomTarget - 1) < 1e-4) this.zoomTarget = 1;
     if (Math.abs(this.zoom - this.zoomTarget) < 1e-4) this.zoom = this.zoomTarget;
     if (Math.abs(this.fade - this.fadeTarget) < 1e-3) this.fade = this.fadeTarget;

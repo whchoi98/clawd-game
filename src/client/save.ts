@@ -9,6 +9,7 @@
  */
 import type { Binds, LevelRecord, Progress, Settings } from './contracts.js';
 import type { DailyResponse } from '../shared/protocol.js';
+import { SIM_VERSION } from '../sim/types.js';
 import { BIND_ACTIONS, DEFAULT_BINDS, cloneBinds } from './input/binds.js';
 
 export const SETTINGS_KEY = 'clawd-echo.settings.v1';
@@ -24,6 +25,65 @@ export function utcDateStr(ms: number): string {
 }
 export const DEFAULT_NAME = '클로드';
 export const SAVE_DEBOUNCE_MS = 250;
+const MS_PER_DAY = 86_400_000;
+
+// ---------------------------------------------------------------- echo versioning
+/**
+ * A locally kept replay is only meaningful for the SIM_VERSION that recorded
+ * it, so the version is stored next to `masks` (the LevelRecord / daily record
+ * contract does not name the field yet; it is read and written through these
+ * helpers only). Records whose masks predate the current version — including
+ * v1 saves, which carry no version at all — lose the masks and keep everything
+ * else (best time, stars, run id).
+ */
+export interface EchoVersioned { sim?: number }
+type EchoRecord = { masks?: string; runId?: string } & EchoVersioned;
+
+/** Store a finished run's masks as the record's echo, stamped with the current SIM_VERSION. */
+export function markEcho(rec: EchoRecord, encoded: string): void {
+  rec.masks = encoded;
+  rec.sim = SIM_VERSION;
+}
+
+/** The record's echo masks when they were recorded by the current SIM_VERSION, else undefined. */
+export function echoMasks(rec: EchoRecord | undefined): string | undefined {
+  if (!rec || typeof rec.masks !== 'string' || !rec.masks) return undefined;
+  return rec.sim === SIM_VERSION ? rec.masks : undefined;
+}
+
+// ---------------------------------------------------------------- retention (anonymous)
+export type DaysBucket = '0' | '1' | '2-6' | '7+';
+
+/** Coarse day count for the boot event: 0 · 1 · 2-6 · 7+. */
+export function daysBucket(days: number): DaysBucket {
+  if (!Number.isFinite(days) || days <= 0) return '0';
+  if (days < 2) return '1';
+  if (days < 7) return '2-6';
+  return '7+';
+}
+
+/**
+ * Mark today (UTC) as played: seeds `firstSeen` on the first boot and counts a
+ * new distinct UTC day in `playDays`. Returns true when anything changed.
+ */
+export function touchPlayDay(p: Progress, nowMs: number): boolean {
+  const today = utcDateStr(nowMs);
+  let changed = false;
+  if (typeof p.firstSeen !== 'number' || !Number.isFinite(p.firstSeen) || p.firstSeen <= 0) { p.firstSeen = nowMs; changed = true; }
+  if (p.lastPlayDay !== today) {
+    p.lastPlayDay = today;
+    p.playDays = (typeof p.playDays === 'number' && Number.isFinite(p.playDays) && p.playDays > 0 ? Math.floor(p.playDays) : 0) + 1;
+    changed = true;
+  }
+  return changed;
+}
+
+/** The two anonymous retention buckets the boot event carries (whole UTC days since first boot, distinct days played). */
+export function retentionBuckets(p: Progress, nowMs: number): { daysSinceFirstSeen: DaysBucket; daysPlayedBucket: DaysBucket } {
+  const first = typeof p.firstSeen === 'number' && Number.isFinite(p.firstSeen) && p.firstSeen > 0 ? p.firstSeen : nowMs;
+  const days = Math.floor(nowMs / MS_PER_DAY) - Math.floor(first / MS_PER_DAY);
+  return { daysSinceFirstSeen: daysBucket(days), daysPlayedBucket: daysBucket(p.playDays ?? 0) };
+}
 
 /** The subset of the Storage interface the save layer uses. */
 export interface StorageLike {
@@ -179,7 +239,9 @@ function repairLevelRecord(raw: unknown): LevelRecord {
   r.relics = int(r.relics);
   r.deaths = int(r.deaths);
   if (typeof r.runId !== 'string') delete r.runId;
-  if (typeof r.masks !== 'string') delete r.masks;
+  // Echo masks survive only with the SIM_VERSION that recorded them (see markEcho).
+  const v = r as LevelRecord & EchoVersioned;
+  if (typeof v.masks !== 'string' || v.sim !== SIM_VERSION) { delete v.masks; delete v.sim; }
   return r;
 }
 
@@ -197,11 +259,15 @@ export function repairProgress(raw: unknown, defaults: Progress): Progress {
       daily[date] = {
         bestTicks: int(d.bestTicks), cleared: bool(d.cleared, false), height: num(d.height, 0, 1e6, 0), seed: int(d.seed) >>> 0,
         ...(typeof d.runId === 'string' ? { runId: d.runId } : {}),
-        ...(typeof d.masks === 'string' ? { masks: d.masks } : {}),
+        ...(typeof d.masks === 'string' && d.sim === SIM_VERSION ? { masks: d.masks, sim: SIM_VERSION } : {}),
       };
     }
   }
   p.daily = daily;
+  // Retention inputs: a positive epoch ms, a whole day count and a UTC date string — or nothing.
+  if (typeof p.firstSeen !== 'number' || !Number.isFinite(p.firstSeen) || p.firstSeen <= 0) delete p.firstSeen;
+  p.playDays = int(p.playDays);
+  if (typeof p.lastPlayDay !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(p.lastPlayDay)) delete p.lastPlayDay;
   p.endless = {
     bestHeight: num(p.endless?.bestHeight, 0, 1e6, 0), bestShards: int(p.endless?.bestShards), runs: int(p.endless?.runs),
   };
@@ -305,6 +371,11 @@ export class Save {
 
   dailyRecord(date: string, seed: number): Progress['daily'][string] {
     return (this.progress.daily[date] ||= { bestTicks: 0, cleared: false, height: 0, seed: seed >>> 0 });
+  }
+
+  /** Boot: count today (UTC) as a play day and seed firstSeen; written through when anything changed. */
+  touchPlayDay(nowMs: number): void {
+    if (touchPlayDay(this.progress, nowMs)) this.saveProgress();
   }
 
   // ------------------------------------------------------------ daily cache

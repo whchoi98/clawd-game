@@ -35,7 +35,7 @@ describe('key builders', () => {
   });
 
   it('builds the spec §2.4 keys with the shard tiebreak in the LB sort key', () => {
-    expect(KEY.lbPk('story', 't1')).toBe('LB#story#t1');
+    expect(KEY.lbPk('story', 't1')).toBe('LB#story#t1#s2r0');
     expect(KEY.lbPk('daily', '2026-09-06')).toBe('LB#daily#2026-09-06');
     expect(KEY.lbSk(45, 7, 'abc')).toBe('000000000045#99992#abc');
     expect(KEY.runPk('abc')).toBe('RUN#abc');
@@ -133,8 +133,8 @@ describe('DynamoRepo', () => {
   it('topRuns queries the board partition ascending with the limit', async () => {
     const { client, repo } = setup();
     client.responses.push({ Items: [
-      { pk: 'LB#story#t1', sk: '000000000500#99992#a', ...run({ runId: 'a', mode: 'story', board: 't1', score: 500, masks: undefined as never }) },
-      { pk: 'LB#story#t1', sk: '000000000600#99992#b', ...run({ runId: 'b', mode: 'story', board: 't1', score: 600, masks: undefined as never }) },
+      { pk: 'LB#story#t1#s2r0', sk: '000000000500#99992#a', ...run({ runId: 'a', mode: 'story', board: 't1', score: 500, masks: undefined as never }) },
+      { pk: 'LB#story#t1#s2r0', sk: '000000000600#99992#b', ...run({ runId: 'b', mode: 'story', board: 't1', score: 600, masks: undefined as never }) },
     ] });
     const top = await repo.topRuns('story', 't1', 20);
     expect(client.sent[0].name).toBe(QueryCommand.name);
@@ -143,7 +143,7 @@ describe('DynamoRepo', () => {
     expect(input.ScanIndexForward).toBe(true);
     expect(input.Limit).toBe(20);
     expect(input.KeyConditionExpression).toBe('pk = :pk');
-    expect(input.ExpressionAttributeValues).toEqual({ ':pk': 'LB#story#t1' });
+    expect(input.ExpressionAttributeValues).toEqual({ ':pk': 'LB#story#t1#s2r0' });
     expect(top.map((r) => r.runId)).toEqual(['a', 'b']);
     expect(top[0]).not.toHaveProperty('pk');
     expect(top[0].masks).toBe('');
@@ -160,10 +160,10 @@ describe('DynamoRepo', () => {
     expect(client.sent.map((s) => s.name)).toEqual([QueryCommand.name, QueryCommand.name, QueryCommand.name]);
     expect(client.sent[0].input).toMatchObject({
       TableName: TABLE, Select: 'COUNT', KeyConditionExpression: 'pk = :pk AND sk < :sk',
-      ExpressionAttributeValues: { ':pk': 'LB#story#t1', ':sk': '000000000700' },
+      ExpressionAttributeValues: { ':pk': 'LB#story#t1#s2r0', ':sk': '000000000700' },
     });
     expect(client.sent[1].input.ExclusiveStartKey).toEqual({ pk: 'x', sk: 'y' });
-    expect(client.sent[2].input).toMatchObject({ Select: 'COUNT', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': 'LB#story#t1' } });
+    expect(client.sent[2].input).toMatchObject({ Select: 'COUNT', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': 'LB#story#t1#s2r0' } });
   });
 
   it('getRun and getPlayerBest read single items and return null when absent', async () => {

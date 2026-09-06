@@ -48,5 +48,5 @@ m.ent('G', 68, 5);
 
 export const t3 = m.def({
   id: 't3', name: '조수 첨탑', en: 'TIDE SPIRE', biome: 'tidepool', par: 70, seed: 29,
-  hint: '좁은 통로에서는 좌우 벽을 번갈아 차며 오른다 — 벽에 붙은 순간 점프',
+  hint: '좁은 통로에서는 좌우 벽을 번갈아 차며 오른다 — 벽에 붙은 순간 {jump}',
 });

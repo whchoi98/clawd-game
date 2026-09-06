@@ -54,8 +54,13 @@ export function makeTouchState(): TouchState {
 }
 
 // ---------------------------------------------------------------- tables
+/**
+ * Bind action → sim mask bit. `restart` is a sim input too: a press edge is a
+ * checkpoint retry inside the replay (the UI turns a ≥0.6 s hold into a full
+ * zone restart on top of it).
+ */
 const ACTION_BIT: Readonly<Partial<Record<BindAction, InputMask>>> = {
-  left: IN.LEFT, right: IN.RIGHT, up: IN.UP, down: IN.DOWN, jump: IN.JUMP, dash: IN.DASH,
+  left: IN.LEFT, right: IN.RIGHT, up: IN.UP, down: IN.DOWN, jump: IN.JUMP, dash: IN.DASH, restart: IN.RETRY,
 };
 
 /** Bind action → menu action. Jump doubles as confirm (Z / A activate menu items). */

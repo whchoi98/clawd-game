@@ -12,7 +12,7 @@ import { Stage, TAU, alpha, clamp01 } from './stage.js';
 
 const CAP = 1400;
 
-const Kind = { Dot: 0, Square: 1, Spark: 2, Smoke: 3, Ring: 4, Tri: 5, Text: 6 } as const;
+const Kind = { Dot: 0, Square: 1, Spark: 2, Smoke: 3, Ring: 4, Tri: 5, Text: 6, Streak: 7 } as const;
 type Kind = (typeof Kind)[keyof typeof Kind];
 
 class P {
@@ -153,6 +153,20 @@ export class Particles {
     p.txt = txt; p.col = col; p.glow = glow; p.a0 = 1; p.r = 9;
   }
 
+  /**
+   * One rising updraft streak: a short vertical line that travels straight up
+   * at `vy` (negative) and fades in and out over its life. Exactly one particle
+   * per call — the emitter owns the rate, so the quality budget is not applied
+   * here. `max` > `life` seeds a streak part-way through its envelope.
+   */
+  streak(x: number, y: number, vy: number, len: number, col: string, life: number, max = life, glow = 0.5): void {
+    const p = this.take();
+    p.kind = Kind.Streak; p.life = life; p.max = Math.max(life, max);
+    p.x = x; p.y = y; p.vx = 0; p.vy = vy;
+    p.r = len; p.grav = 0; p.drag = 1;
+    p.col = col; p.glow = glow; p.a0 = 0.42;
+  }
+
   /** A single ambient mote. */
   mote(x: number, y: number, vx: number, vy: number, r: number, col: string, life: number, glow = 0): void {
     const p = this.take();
@@ -275,6 +289,23 @@ export class Particles {
           if (g) {
             g.fillStyle = alpha(p.col, a * p.glow);
             g.beginPath(); g.arc(p.x, p.y, s * 1.4, 0, TAU); g.fill();
+          }
+          break;
+        }
+        case Kind.Streak: {
+          // fade in over the first fifth of the life, out over the last third
+          const env = Math.min(1, age * 5, t * 3) * p.a0;
+          ctx.strokeStyle = alpha(p.col, env);
+          ctx.lineWidth = 0.9;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y - p.r);
+          ctx.stroke();
+          if (g) {
+            g.strokeStyle = alpha(p.col, env * p.glow);
+            g.lineWidth = 2.2;
+            g.beginPath();
+            g.moveTo(p.x, p.y); g.lineTo(p.x, p.y - p.r);
+            g.stroke();
           }
           break;
         }

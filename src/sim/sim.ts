@@ -7,7 +7,7 @@
  * safe to JSON.stringify — the same code verifies replays on the server, so
  * nothing here may touch the DOM, the clock or non-deterministic math.
  */
-import { DT, TICK_HZ, TILE } from './types.js';
+import { DT, IN, IN_ALL, TICK_HZ, TILE } from './types.js';
 import type {
   BoltState, InputMask, LevelDef, PlayerState, RunStats, RunSummary, SimEvent, SimOptions, SimPhase, SimState,
 } from './types.js';
@@ -20,10 +20,22 @@ import type { PlatformRide, SimHost } from './player.js';
 import { Entity, MovePlat, Toggle, Updraft, resetActorIds, spawnEntity } from './entities.js';
 import { Foe, Spiker, spawnFoe } from './foes.js';
 
-/** Seconds of spawn-in before input is live. */
+/** Seconds of spawn-in before input is live on the first spawn of a run. */
 export const INTRO_T = 0.45;
+/**
+ * Seconds of spawn-in after every respawn. The free-failure loop hands control
+ * back DYING_T + RESPAWN_INTRO_T = 0.6 s after a death.
+ */
+export const RESPAWN_INTRO_T = 0.15;
 /** Seconds of death animation before the respawn / game over. */
-export const DYING_T = 1.05;
+export const DYING_T = 0.45;
+/**
+ * The phase machine counts whole ticks, so a transition never depends on how
+ * the float accumulation of DT rounds against a threshold. 54 / 18 / 54 ticks.
+ */
+export const INTRO_TICKS = Math.round(INTRO_T * TICK_HZ);
+export const RESPAWN_INTRO_TICKS = Math.round(RESPAWN_INTRO_T * TICK_HZ);
+export const DYING_TICKS = Math.round(DYING_T * TICK_HZ);
 /** Foes think only while their box is within this gap of the player's box (or while dying). */
 export const FOE_WAKE_GAP = 140;
 /** Bolts expire after this many seconds of flight. */
@@ -51,6 +63,10 @@ export class Sim implements SimHost {
   private readonly foeList: Foe[] = [];
   private events: SimEvent[] = [];
   private prevMask: InputMask = 0;
+  /** Ticks stepped in the current phase (the integer twin of state.phaseT). */
+  private phaseTicks = 0;
+  /** True until the first respawn: the opening intro is longer than a respawn intro. */
+  private firstSpawn = true;
   private playTicks = 0;
   private comboT = 0;
   private boltSeq = 1;
@@ -200,23 +216,32 @@ export class Sim implements SimHost {
   private setPhase(p: SimPhase): void {
     this.state.phase = p;
     this.state.phaseT = 0;
+    this.phaseTicks = 0;
     this.emit({ type: 'phase', phase: p });
   }
 
   // ------------------------------------------------------------------ step
-  /** Advance one tick with this tick's input. Inert once the run is over. */
+  /**
+   * Advance one tick with this tick's input. Inert once the run is over.
+   *
+   * A RETRY press edge during 'play' is a death like any other (cause 'retry'):
+   * it counts, plays the dying beat and respawns at the last checkpoint. Every
+   * other phase ignores it, and a hold never repeats — the edge is derived from
+   * the previous tick's mask, so a replay reproduces it exactly.
+   */
   step(mask: InputMask): void {
     const st = this.state;
     if (st.phase === 'over') return;
-    mask &= 0x3f;
+    mask &= IN_ALL;
     const prev = this.prevMask;
     this.prevMask = mask;
     st.tick++;
     st.phaseT += DT;
+    this.phaseTicks++;
 
     switch (st.phase) {
       case 'intro':
-        if (st.phaseT > INTRO_T) {
+        if (this.phaseTicks >= (this.firstSpawn ? INTRO_TICKS : RESPAWN_INTRO_TICKS)) {
           // The flip tick is already controllable (the player reads this mask),
           // so it is a play tick for the run timer as well.
           this.setPhase('play');
@@ -229,7 +254,7 @@ export class Sim implements SimHost {
         this.playTicks++;
         break;
       case 'dying':
-        if (st.phaseT > DYING_T) {
+        if (this.phaseTicks >= DYING_TICKS) {
           if (this.def.tide) {
             this.setPhase('over');
             this.emit({ type: 'tideOver', summary: this.summary() });
@@ -241,6 +266,8 @@ export class Sim implements SimHost {
       case 'clear':
         break;
     }
+
+    if (st.phase === 'play' && (mask & IN.RETRY) !== 0 && (prev & IN.RETRY) === 0) this.player.kill('retry');
 
     const live = st.phase === 'play';
     if (st.phase !== 'intro') this.player.update(DT, live ? mask : 0, live ? prev : 0);
@@ -325,6 +352,7 @@ export class Sim implements SimHost {
     st.bolts = [];
     for (const e of this.ents) e.onRespawn();
     this.player.reset(st.respawn.x, st.respawn.y);
+    this.firstSpawn = false;
     this.setPhase('intro');
     this.emit({ type: 'respawn', x: st.respawn.x, y: st.respawn.y });
   }

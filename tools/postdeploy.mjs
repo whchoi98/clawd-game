@@ -37,6 +37,31 @@ export function regionFromEnv(env = process.env) {
   return env.AWS_REGION || env.CDK_DEFAULT_REGION || DEFAULT_REGION;
 }
 
+/** Path of the sim contract, relative to the project root. */
+export const SIM_TYPES_PATH = 'src/sim/types.ts';
+
+/**
+ * `{ sim, gen }` from the source of src/sim/types.ts (`export const SIM_VERSION = 2;`
+ * / `GEN_VERSION`). Parsed from the text — the checker is plain JS and must not
+ * depend on a TypeScript loader — and null when either constant is missing.
+ */
+export function versionsFromSource(text) {
+  const grab = (name) => {
+    const m = new RegExp(`export\\s+const\\s+${name}\\s*=\\s*(\\d+)\\s*;`).exec(String(text));
+    return m ? Number(m[1]) : null;
+  };
+  const sim = grab('SIM_VERSION');
+  const gen = grab('GEN_VERSION');
+  return sim === null || gen === null ? null : { sim, gen };
+}
+
+/** The versions the checked-out tree ships, or null when the file cannot be read / parsed. */
+export function readSimVersions(root = process.cwd()) {
+  const path = resolve(root, SIM_TYPES_PATH);
+  if (!existsSync(path)) return null;
+  return versionsFromSource(readFileSync(path, 'utf8'));
+}
+
 /** Arguments to the AWS CLI for the fallback. */
 export function describeStacksArgs({ stackName, region }) {
   return ['cloudformation', 'describe-stacks', '--stack-name', stackName, '--region', region, '--output', 'json'];
@@ -172,10 +197,25 @@ async function main() {
   // 3. API through CloudFront (never cached)
   const health = await get(`${site}/api/health`);
   ok('api health', health.status === 200 && health.text.includes('"ok":true'), `status ${health.status}, x-cache "${health.headers.get('x-cache')}", body ${health.text.slice(0, 80)}`);
+  let healthJson = null;
+  try { healthJson = JSON.parse(health.text); } catch { /* handled below */ }
   const daily = await get(`${site}/api/daily`);
   let dailyJson = null;
   try { dailyJson = JSON.parse(daily.text); } catch { /* handled below */ }
   ok('api daily', daily.status === 200 && dailyJson?.levelId === 'daily' && Number.isInteger(dailyJson?.seed), daily.text.slice(0, 120));
+
+  // 3b. the deployed server verifies with the sim / generator this tree ships
+  const local = readSimVersions();
+  if (!local) {
+    ok('api sim version', false, `${SIM_TYPES_PATH}: SIM_VERSION / GEN_VERSION not found — run from the project root`);
+  } else {
+    ok('api sim version',
+      healthJson?.simVersion === local.sim && healthJson?.genVersion === local.gen,
+      `health sim ${healthJson?.simVersion ?? '?'} gen ${healthJson?.genVersion ?? '?'} · source sim ${local.sim} gen ${local.gen}`);
+    ok('api daily versions',
+      Number.isInteger(dailyJson?.gen) && Number.isInteger(dailyJson?.sim) && dailyJson.gen === local.gen && dailyJson.sim === local.sim,
+      `daily gen ${dailyJson?.gen ?? 'MISSING'} sim ${dailyJson?.sim ?? 'MISSING'}`);
+  }
   const lb = await get(`${site}/api/leaderboard?mode=story&board=t1&limit=3`);
   ok('api leaderboard', lb.status === 200 && lb.text.includes('"entries"'), lb.text.slice(0, 120));
   const bogus = await get(`${site}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"nope":1}' });

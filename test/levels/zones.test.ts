@@ -3,6 +3,7 @@ import { census, validate } from '../../levels/dsl.js';
 import { ZONES } from '../../levels/build.js';
 import { Level } from '../../src/sim/level.js';
 import type { LevelDef } from '../../src/sim/types.js';
+import { hasRawKeyName, hintFor } from '../../src/client/ui/hints.js';
 
 const ORDER = ['t1', 't2', 't3', 's1', 's2', 's3', 'v1', 'v2', 'v3'];
 const PAR: Record<string, number> = { t1: 45, t2: 55, t3: 70, s1: 60, s2: 75, s3: 90, v1: 70, v2: 85, v3: 120 };
@@ -33,6 +34,23 @@ describe('the nine zones', () => {
       expect(z.hint ?? '').not.toMatch(/\n/);
       expect(z.en).toMatch(/^[A-Z' ]+$/);
     }
+  });
+
+  it('hints are device-neutral token templates that render for keyboard, gamepad and touch', () => {
+    for (const z of ZONES) {
+      expect(hasRawKeyName(z.hint ?? ''), `${z.id}: ${z.hint}`).toBe(false);
+      for (const device of ['keyboard', 'gamepad', 'touch'] as const) {
+        const text = hintFor(z, device);
+        expect(text, `${z.id}/${device}`).toMatch(HANGUL);
+        expect(text).not.toMatch(/\{[a-z]+\}/);
+      }
+      expect(hintFor(z, 'touch')).not.toMatch(/Shift|Space|←|→/);
+    }
+    // the zones that teach a control name it through a token
+    expect(byId.t1.hint).toMatch(/\{move\}/);
+    expect(byId.t1.hint).toMatch(/\{jump\}/);
+    expect(byId.t2.hint).toMatch(/\{dash\}/);
+    expect(byId.s3.hint).toMatch(/\{stomp\}/);
   });
 
   for (const id of ORDER) {

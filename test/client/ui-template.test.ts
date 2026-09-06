@@ -1,18 +1,27 @@
+// @vitest-environment happy-dom
 /**
- * Static assertions on the HTML template. The template is served under a CSP
- * without 'unsafe-inline', so no inline scripts, handlers or style attributes
- * may exist; the build replaces the two markers with hashed asset tags.
+ * Static assertions on the HTML template, plus the DOM behaviour of the
+ * surfaces added in Phase 1 (the data notice and the urgent update bar) driven
+ * through the real `UI`. The template is served under a CSP without
+ * 'unsafe-inline', so no inline scripts, handlers or style attributes may
+ * exist; the build replaces the two markers with hashed asset tags.
  */
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
-import type { Screen } from '../../src/client/contracts.js';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Binds, InputPort, MenuAction, Progress, Screen, Settings, TouchState } from '../../src/client/contracts.js';
+import type { LevelDef } from '../../src/sim/types.js';
 import { FONTS_HREF } from '../../src/client/fonts.js';
+import { UI } from '../../src/client/ui/ui.js';
 
-const html = readFileSync(new URL('../../public/index.html', import.meta.url), 'utf8');
-const css = readFileSync(new URL('../../public/styles.css', import.meta.url), 'utf8');
-const svg = readFileSync(new URL('../../public/favicon.svg', import.meta.url), 'utf8');
+// happy-dom replaces the global URL, so the template path is resolved with node:url/path.
+const here = dirname(fileURLToPath(import.meta.url));
+const html = readFileSync(resolve(here, '../../public/index.html'), 'utf8');
+const css = readFileSync(resolve(here, '../../public/styles.css'), 'utf8');
+const svg = readFileSync(resolve(here, '../../public/favicon.svg'), 'utf8');
 
-const SCREENS: Screen[] = ['boot', 'title', 'select', 'daily', 'settings', 'credits', 'play', 'pause', 'result', 'over', 'name'];
+const SCREENS: Screen[] = ['boot', 'title', 'select', 'daily', 'settings', 'credits', 'data', 'play', 'pause', 'result', 'over', 'name'];
 
 describe('public/index.html', () => {
   it('has a section for every Screen id', () => {
@@ -94,6 +103,26 @@ describe('public/index.html', () => {
     }
   });
 
+  it('has the data notice screen, reached from the credits, saying what leaves the device and how to have it removed', () => {
+    const dataAt = html.indexOf('<!-- DATA NOTICE');
+    expect(dataAt).toBeGreaterThan(0);
+    const credits = html.slice(html.indexOf('id="scr-credits"'), dataAt);
+    expect(credits).toMatch(/<button class="menu__item" data-act="openData">데이터 안내/);
+    const data = html.slice(dataAt, html.indexOf('id="upbar"'));
+    expect(data).toMatch(/<section class="screen screen--modal" id="scr-data" aria-label="데이터 안내">/);
+    expect(data).toContain('<h2>데이터 안내</h2>');
+    // collected · not collected · deletion path · the run ids to quote
+    expect(data).toContain('입력 기록(리플레이)');
+    expect(data).toContain('익명 플레이어 id');
+    expect(data).toMatch(/플레이어 id와 이름은 플레이 통계에 절대 넣지 않는다/);
+    expect(data).toMatch(/IP 주소는 서버 기록에도 남기지 않는다/);
+    expect(data).toMatch(/기록 번호를 적어 GitHub 이슈나 이메일로 요청한다/);
+    expect(data).toMatch(/<ul class="data__runs" id="data-runs"><\/ul>/);
+    expect(data).toContain('data-act="close"');
+    expect(css).toMatch(/\.data__runs\b/);
+    expect(css).toMatch(/\.upbar--urgent\b/);
+  });
+
   it('declares the PWA head tags from the contract (manifest, mobile / apple meta, icons)', () => {
     const head = html.slice(0, html.indexOf('</head>'));
     expect(head).toContain('<link rel="manifest" href="/manifest.webmanifest">');
@@ -169,6 +198,26 @@ describe('public/styles.css', () => {
     expect(css).toMatch(/touch-action\s*:\s*none/);
   });
 
+  it('touch buttons rest at 35% opacity, read 90% while pressed, and sit 12px above the pad line', () => {
+    const tbtn = /\n\.tbtn\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(tbtn).toMatch(/(^|;)opacity:\.35(;|$)/);
+    const down = /\.tbtn:active,\.tbtn\.is-down\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(down).toMatch(/opacity:\.9/);
+    const tbtns = /\.tbtns\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(tbtns).toMatch(/translate:0 -12px/);
+  });
+
+  it('result modal has the unlock row and the rank / unlock / card animations respect reduced motion', () => {
+    expect(html).toMatch(/<div class="res__unlock" id="res-unlock"[^>]*hidden>/);
+    expect(css).toMatch(/\.res__rank\.pop\{/);
+    expect(css).toMatch(/@keyframes rankPop/);
+    expect(css).toMatch(/\.card\.is-unlocking\{/);
+    const i = css.indexOf('prefers-reduced-motion');
+    const block = css.slice(i, css.indexOf('\n}\n', i));
+    expect(block).toMatch(/\.res__rank\.pop[^{]*\{animation:none\}/);
+    expect(block).toMatch(/\.card\.is-unlocking/);
+  });
+
   it('has a compact landscape-phone title layout as a media query, not the inert @container rule', () => {
     expect(css).not.toMatch(/@container\s*\(/);
     const i = css.indexOf('@media (max-height:430px)');
@@ -180,8 +229,12 @@ describe('public/styles.css', () => {
     expect(block).toMatch(/\.menu__item small\{display:none\}/);
   });
 
-  it('lifts the HUD hint above the touch pads and styles the queued / PWA states', () => {
-    expect(css).toMatch(/#ui\.is-touch \.hud__hint\{[^}]*bottom:calc\(10rem \+ env\(safe-area-inset-bottom\)\)[^}]*max-width:56vw/);
+  it('parks the touch hint as a plate under the HUD top row and styles the queued / PWA states', () => {
+    // touch: the pads own the bottom of the screen, so the hint anchors to the top (never `bottom`)
+    const touchHint = /#ui\.is-touch \.hud__hint\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(touchHint).toMatch(/top:calc\([0-9.]+rem \+ env\(safe-area-inset-top\)\)/);
+    expect(touchHint).toMatch(/bottom:auto/);
+    expect(touchHint).toMatch(/max-width:\d+vw/);
     expect(css).toMatch(/\.submit--queued\b/);
     expect(css).toMatch(/\.upbar\b/);
     expect(css).toMatch(/\.upbar__btn\b/);
@@ -189,6 +242,128 @@ describe('public/styles.css', () => {
     expect(css).toMatch(/\.title__ios\b/);
     // the bar must be clickable inside the pointer-events:none shell
     expect(css).toMatch(/\.upbar\{[^}]*pointer-events:auto/);
+  });
+});
+
+// ------------------------------------------------------------------ DOM behaviour (real UI over the template)
+function mountTemplate(): void {
+  const body = html.slice(html.indexOf('<body>') + '<body>'.length, html.lastIndexOf('</body>'));
+  document.body.innerHTML = body;
+}
+
+const BINDS: Binds = {
+  left: ['ArrowLeft'], right: ['ArrowRight'], up: ['ArrowUp'], down: ['ArrowDown'], jump: ['Space'], dash: ['ShiftLeft'],
+  pause: ['Escape'], confirm: ['Enter'], cancel: ['Escape'], restart: ['KeyR'],
+};
+function makeSettings(): Settings {
+  return {
+    v: 1, master: 0.8, music: 0.6, sfx: 0.9, shake: 1, bloom: true, grain: true, quality: 'auto', flashes: true, showTimer: true,
+    skin: 'clawd', assist: false, invincible: false, echoSelf: true, echoWorld: false, binds: structuredClone(BINDS),
+  };
+}
+interface FakeInput extends InputPort { queue: MenuAction[] }
+function makeInput(): FakeInput {
+  const touch: TouchState = { active: false, x: 0, y: 0, jump: false, dash: false, jumpPressed: false, dashPressed: false };
+  const fi: FakeInput = {
+    queue: [],
+    poll() {}, held() { return 0; }, takeLatched() { return 0; },
+    takeMenu() { return fi.queue.splice(0); },
+    menuHeld() { return false; },
+    setBinds() {}, capture() {}, reset() {},
+    lastDevice: 'keyboard', touch,
+    keyLabel(code) { return code.replace(/^Key/, ''); },
+  };
+  return fi;
+}
+const LEVELS: LevelDef[] = [
+  { id: 't1', name: '첫 물결', en: 'T1', biome: 'tidepool', par: 45, seed: 1, rows: ['P.G', '###'] },
+  { id: 't2', name: '해초 숲', en: 'T2', biome: 'tidepool', par: 55, seed: 2, rows: ['P.G', '###'] },
+];
+function makeProgress(): Progress {
+  return {
+    v: 1,
+    levels: {
+      t1: { done: true, bestTicks: 5400, bestShards: 20, stars: 3, relics: 1, deaths: 0, runId: 'run-t1-abc' },
+      t2: { done: true, bestTicks: 6000, bestShards: 10, stars: 1, relics: 0, deaths: 2 },
+    },
+    endless: { bestHeight: 0, bestShards: 0, runs: 0 },
+    daily: { '2026-09-05': { bestTicks: 7000, cleared: true, height: 0, seed: 7, runId: 'run-daily-xyz' } },
+    totals: { deaths: 2, shards: 30 }, seen: {}, lastLevel: 't1', player: { id: 'abcdefghij', name: '클로드' },
+  };
+}
+
+describe('UI · data notice (#scr-data)', () => {
+  let ui: UI;
+  let input: FakeInput;
+  let reloads = 0;
+  beforeEach(() => {
+    mountTemplate();
+    input = makeInput();
+    reloads = 0;
+    ui = new UI({ document, input, audio: null, defaultBinds: BINDS, build: 'test', reload: () => { reloads++; } });
+    ui.applySettings(makeSettings());
+    ui.refreshSelect(makeProgress(), LEVELS);
+    ui.show('title');
+  });
+  afterEach(() => { document.body.innerHTML = ''; });
+
+  it('opens from the credits button, lists the submitted run ids, and closes back to the credits', () => {
+    document.querySelector<HTMLElement>('[data-act="openCredits"]')!.click();
+    expect(ui.screen).toBe('credits');
+    document.querySelector<HTMLElement>('#scr-credits [data-act="openData"]')!.click();
+    expect(ui.screen).toBe('data');
+    const scr = document.getElementById('scr-data')!;
+    expect(scr.classList.contains('is-active')).toBe(true);
+    expect(document.getElementById('scr-credits')!.classList.contains('is-active')).toBe(true); // stacked over the credits
+    const rows = [...document.querySelectorAll('#data-runs li')].map((li) => li.textContent);
+    expect(rows).toEqual(['첫 물결run-t1-abc', '데일리 2026-09-05run-daily-xyz']);
+    // the menu cursor is on the notice's close button, and cancel closes it
+    expect(document.querySelector('#scr-data .is-cursor')).not.toBeNull();
+    input.queue.push('cancel');
+    ui.frame(1 / 60, input);
+    expect(ui.screen).toBe('credits');
+    expect(scr.classList.contains('is-active')).toBe(false);
+    expect(document.querySelector('#scr-credits .is-cursor')).not.toBeNull();
+  });
+
+  it('shows a placeholder without any submitted record and closes when another screen is shown', () => {
+    const empty = makeProgress();
+    delete empty.levels.t1.runId;
+    empty.daily = {};
+    ui.refreshSelect(empty, LEVELS);
+    ui.show('credits');
+    ui.show('data');
+    expect([...document.querySelectorAll('#data-runs li')].map((li) => li.textContent)).toEqual(['서버에 올린 기록이 없다']);
+    ui.show('title');
+    expect(ui.screen).toBe('title');
+    expect(document.getElementById('scr-data')!.classList.contains('is-active')).toBe(false);
+  });
+
+  it('the update bar turns urgent when the server sim is newer and reloads without a waiting worker; hidden during play', () => {
+    const bar = document.getElementById('upbar')!;
+    expect(bar.hidden).toBe(true);
+    ui.setVersionBehind(true);
+    expect(bar.hidden).toBe(false);
+    expect(bar.classList.contains('upbar--urgent')).toBe(true);
+    expect(bar.querySelector('span')!.textContent).toContain('새 버전');
+    ui.show('play');
+    expect(bar.hidden).toBe(true);
+    ui.show('title');
+    expect(bar.hidden).toBe(false);
+    document.querySelector<HTMLElement>('[data-act="applyUpdate"]')!.click();
+    expect(reloads).toBe(1);
+    // the page is reloading; should that fail, the bar stays as the way out
+    expect(bar.hidden).toBe(false);
+    // a waiting worker takes precedence over the plain reload
+    let applied = 0;
+    ui.showUpdate(() => { applied++; });
+    document.querySelector<HTMLElement>('[data-act="applyUpdate"]')!.click();
+    expect(applied).toBe(1);
+    expect(reloads).toBe(1);
+    // and turning the flag off with nothing waiting hides the bar again
+    ui.setVersionBehind(false);
+    expect(bar.hidden).toBe(true);
+    expect(bar.classList.contains('upbar--urgent')).toBe(false);
   });
 });
 

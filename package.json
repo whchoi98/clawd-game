@@ -24,8 +24,12 @@
     "start": "node dist/server/index.js",
     "postdeploy:check": "node tools/postdeploy.mjs",
     "postdeploy:smoke": "node tools/postdeploy.mjs --smoke",
+    "release": "node tools/release.mjs",
+    "release:dry": "node tools/release.mjs --dry-run",
+    "stats": "node tools/stats.mjs",
     "icons": "node tools/icons.mjs",
-    "qa:mobile": "tsx tools/qa/mobile.ts"
+    "qa:mobile": "tsx tools/qa/mobile.ts",
+    "qa:readability": "tsx tools/qa/readability.ts"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.700.0",

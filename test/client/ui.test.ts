@@ -15,7 +15,13 @@ import type {
 import type { LevelDef, RunSummary } from '../../src/sim/types.js';
 import { RejectReason } from '../../src/shared/protocol.js';
 import type { LeaderboardResponse } from '../../src/shared/protocol.js';
-import { IOS_HINT_DISMISSED_KEY, NAG_DISMISSED_KEY, REASON_KR, UI, reasonKr } from '../../src/client/ui/ui.js';
+import {
+  HUD_TOPRIGHT_H, HUD_TOPRIGHT_W, IOS_HINT_DISMISSED_KEY, NAG_DISMISSED_KEY, REASON_KR, RESTART_HOLD_S, UI, reasonKr,
+} from '../../src/client/ui/ui.js';
+import {
+  HINT_TOKENS, REHINT_HAZARD, REHINT_PIT, hasRawKeyName, hintFor, renderHint, tokenGlyph,
+} from '../../src/client/ui/hints.js';
+import { LEVELS as REAL_LEVELS } from '../../src/sim/levels.generated.js';
 import { PHONE_MAX_SHORT_SIDE, isPhoneViewport, wantsRotatePrompt } from '../../src/client/ui/touch.js';
 import { renderLeaderboard } from '../../src/client/ui/leaderboard.js';
 import { findBindConflict } from '../../src/client/ui/settings.js';
@@ -89,6 +95,13 @@ function makeProgress(done: string[] = []): Progress {
   };
 }
 
+/** A save with t1 cleared and no zone in progress: the title menu shows neither 이어하기 nor 바로 시작 (탑 오르기 comes first). */
+function settledProgress(): Progress {
+  const p = makeProgress(['t1']);
+  p.lastLevel = null;
+  return p;
+}
+
 function makeHud(over: Partial<HudState> = {}): HudState {
   return {
     hp: 3, maxHp: 3, shards: 0, totalShards: 20, relics: 0, totalRelics: 1, time: 0, showTimer: true,
@@ -116,15 +129,19 @@ function makeLb(): LeaderboardResponse {
   };
 }
 
-function setup(): { ui: UI; input: FakeInput; actions: UIAction[]; settings: Settings } {
+function setup(): { ui: UI; input: FakeInput; actions: UIAction[]; settings: Settings; sounds: string[] } {
   mountTemplate();
   const input = makeInput();
   const actions: UIAction[] = [];
+  const sounds: string[] = [];
   const settings = makeSettings();
-  const ui = new UI({ document, input, defaultBinds: BINDS, skins: { clawd: { name: 'Clawd', kr: '클로드' }, azure: { name: 'Azure', kr: '남빛' } } });
+  const ui = new UI({
+    document, input, defaultBinds: BINDS, skins: { clawd: { name: 'Clawd', kr: '클로드' }, azure: { name: 'Azure', kr: '남빛' } },
+    audio: { ui: (n) => { sounds.push(n); }, init() {} },
+  });
   ui.on((a) => actions.push(a));
   ui.applySettings(settings);
-  return { ui, input, actions, settings };
+  return { ui, input, actions, settings, sounds };
 }
 
 const $ = <T extends Element = HTMLElement>(sel: string): T => {
@@ -184,7 +201,7 @@ describe('UI menu navigation', () => {
 
   it('moves a cursor with takeMenu() edges and confirms by clicking', () => {
     const { ui, input, actions } = setup();
-    ui.refreshSelect(makeProgress(), LEVELS);
+    ui.refreshSelect(settledProgress(), LEVELS);
     ui.show('title');
     const items = [...document.querySelectorAll<HTMLElement>('#title-menu .menu__item')].filter((b) => !b.hidden);
     expect(items[0].classList.contains('is-cursor')).toBe(true);
@@ -255,10 +272,52 @@ describe('UI menu navigation', () => {
     input.queue.push('confirm'); // cursor rests on 계속하기
     ui.frame(1 / 60, input);
     expect(actions.at(-1)).toEqual({ type: 'resume' });
+    // a tap of the restart bind is the sim's IN.RETRY (checkpoint retry): the UI emits nothing
     ui.show('play');
+    const n = actions.length;
     input.queue.push('restart');
     ui.frame(1 / 60, input);
-    expect(actions.at(-1)).toEqual({ type: 'restart' });
+    expect(actions.length).toBe(n);
+  });
+
+  it('holding the restart bind for RESTART_HOLD_S during play restarts the zone exactly once per hold', () => {
+    const { ui, input, actions } = setup();
+    ui.show('play');
+    expect(RESTART_HOLD_S).toBeCloseTo(0.6);
+    input.queue.push('restart');
+    input.heldSet.add('restart');
+    ui.frame(1 / 60, input);
+    ui.frame(0.3, input);
+    expect(actions.filter((a) => a.type === 'restart')).toHaveLength(0);
+    ui.frame(0.3, input);                       // ≥ 0.6 s held
+    expect(actions.filter((a) => a.type === 'restart')).toHaveLength(1);
+    ui.frame(0.5, input);
+    ui.frame(0.5, input);                       // still held: no repeat
+    expect(actions.filter((a) => a.type === 'restart')).toHaveLength(1);
+    input.heldSet.clear();
+    ui.frame(1 / 60, input);                    // release resets
+    input.heldSet.add('restart');
+    ui.frame(0.35, input);
+    ui.frame(0.35, input);
+    expect(actions.filter((a) => a.type === 'restart')).toHaveLength(2);
+    // one stalled frame never counts as a whole hold
+    input.heldSet.clear();
+    ui.frame(1 / 60, input);
+    input.heldSet.add('restart');
+    ui.frame(5, input);
+    expect(actions.filter((a) => a.type === 'restart')).toHaveLength(2);
+    // a short hold never fires, and neither does a hold outside play
+    input.heldSet.clear();
+    ui.frame(1 / 60, input);
+    input.heldSet.add('restart');
+    ui.frame(0.4, input);
+    input.heldSet.clear();
+    ui.frame(1 / 60, input);
+    expect(actions.filter((a) => a.type === 'restart')).toHaveLength(2);
+    ui.show('pause');
+    input.heldSet.add('restart');
+    ui.frame(1, input);
+    expect(actions.filter((a) => a.type === 'restart')).toHaveLength(2);
   });
 
   it('clicking a data-act button emits the mapped action', () => {
@@ -331,6 +390,115 @@ describe('UI HUD', () => {
     expect(fmtTime(65.5)).toBe('1:05.50');
     expect(fmtTime(-3)).toBe('0:00.00');
   });
+
+  it('renders hint templates for the device last used and re-renders when it changes', () => {
+    const { ui, input, settings } = setup();
+    ui.show('play');
+    ui.hint('{move} 이동 · {jump} 점프 · {dash} 대시');
+    const hint = $('#hud-hint');
+    expect(hint.hidden).toBe(false);
+    // the fake keyLabel strips 'Key'; arrows and Space come from binds slot 0
+    expect(hint.textContent).toBe('ArrowLeft ArrowRight 이동 · Space 점프 · Shift 대시');
+    (input as { lastDevice: string }).lastDevice = 'touch';
+    ui.frame(1 / 60, input);
+    expect(hint.textContent).toBe('왼쪽 스틱 이동 · JUMP 점프 · DASH 대시');
+    expect(hint.textContent).not.toMatch(/Shift|Space|←|→/);
+    (input as { lastDevice: string }).lastDevice = 'gamepad';
+    ui.frame(1 / 60, input);
+    expect(hint.textContent).toContain('Ⓐ 점프');
+    expect(hint.textContent).toContain('Ⓧ 대시');
+    // a rebind shows up in the keyboard glyphs
+    (input as { lastDevice: string }).lastDevice = 'keyboard';
+    settings.binds.jump = ['KeyJ'];
+    ui.frame(1 / 60, input);
+    expect(hint.textContent).toContain('J 점프');
+    ui.hint(null);
+    expect(hint.hidden).toBe(true);
+    ui.hint('토큰 없는 힌트');
+    expect(hint.textContent).toBe('토큰 없는 힌트');
+  });
+
+  it('setGoalScreen hides the zone chip only while the goal sits under the HUD\'s top-right block', () => {
+    const { ui } = setup();
+    ui.show('play');
+    ui.hud(makeHud());
+    const level = $('#hud-level');
+    const w = window.innerWidth;
+    expect(w).toBeGreaterThan(HUD_TOPRIGHT_W);
+    expect(level.hidden).toBe(false);
+    ui.setGoalScreen({ x: w - HUD_TOPRIGHT_W / 2, y: HUD_TOPRIGHT_H / 2, onScreen: true });
+    expect(level.hidden).toBe(true);
+    ui.setGoalScreen({ x: w - HUD_TOPRIGHT_W / 2, y: HUD_TOPRIGHT_H + 40, onScreen: true });
+    expect(level.hidden).toBe(false);
+    ui.setGoalScreen({ x: w - HUD_TOPRIGHT_W - 30, y: 20, onScreen: true });
+    expect(level.hidden).toBe(false);
+    ui.setGoalScreen({ x: w - 10, y: 10, onScreen: false });   // off screen: the renderer draws a beacon instead
+    expect(level.hidden).toBe(false);
+    ui.setGoalScreen({ x: w - 10, y: 10, onScreen: true });
+    expect(level.hidden).toBe(true);
+    ui.setGoalScreen(null);
+    expect(level.hidden).toBe(false);
+    // a new run starts with the chip visible
+    ui.setGoalScreen({ x: w - 10, y: 10, onScreen: true });
+    ui.show('title');
+    ui.show('play');
+    expect(level.hidden).toBe(false);
+  });
+});
+
+describe('hint templates (hints.ts)', () => {
+  const DEVICES = ['keyboard', 'gamepad', 'touch'] as const;
+
+  it('hintFor renders every shipped zone for every device; touch never names a key', () => {
+    expect(REAL_LEVELS).toHaveLength(9);
+    for (const def of REAL_LEVELS) {
+      expect(def.hint, def.id).toBeTruthy();
+      expect(hasRawKeyName(def.hint!), `${def.id} hint carries a raw key name`).toBe(false);
+      for (const device of DEVICES) {
+        const text = hintFor(def, device);
+        expect(text, `${def.id}/${device}`).toBeTruthy();
+        expect(text).not.toMatch(/\{(move|jump|dash|stomp|down)\}/);
+        expect(text).toMatch(/[가-힣]/);
+      }
+      expect(hintFor(def, 'touch')).not.toMatch(/Shift|Space|←|→/);
+    }
+    const t1 = REAL_LEVELS[0];
+    expect(hintFor(t1, 'keyboard')).toBe('← → 이동 · Space 점프 · 공중에서 Space 한 번 더 — 2단 점프');
+    expect(hintFor(t1, 'touch')).toBe('왼쪽 스틱 이동 · JUMP 점프 · 공중에서 JUMP 한 번 더 — 2단 점프');
+    expect(hintFor(t1, 'gamepad')).toBe('왼쪽 스틱 이동 · Ⓐ 점프 · 공중에서 Ⓐ 한 번 더 — 2단 점프');
+    expect(hintFor({ hint: undefined }, 'touch')).toBe('');
+  });
+
+  it('keyboard glyphs follow the current binds and the settings labels; modifiers lose their side', () => {
+    const binds: Binds = { ...BINDS, left: ['KeyA'], right: ['KeyD'], jump: ['KeyZ'], dash: ['ControlLeft'], down: ['KeyS'] };
+    const keyLabel = (c: string) => c.replace(/^Key/, '');
+    expect(renderHint('{move}/{jump}/{dash}/{down}/{stomp}', 'keyboard', { binds, keyLabel })).toBe('A D/Z/Ctrl/S/S');
+    expect(tokenGlyph('dash', 'keyboard')).toBe('Shift');
+    expect(tokenGlyph('move', 'keyboard')).toBe('← →');
+    expect(tokenGlyph('stomp', 'gamepad')).toBe('↓');
+    expect(tokenGlyph('down', 'touch')).toBe('스틱 아래');
+    expect(renderHint('{unknown} stays', 'touch')).toBe('{unknown} stays');
+    expect(HINT_TOKENS).toEqual(['move', 'jump', 'dash', 'stomp', 'down']);
+  });
+
+  it('the re-hint templates are token-only 해라체 lines', () => {
+    for (const t of [REHINT_PIT, REHINT_HAZARD]) {
+      expect(hasRawKeyName(t)).toBe(false);
+      expect(t).toMatch(/\{(jump|dash)\}/);
+      expect(renderHint(t, 'touch')).not.toMatch(/Shift|Space|←|→/);
+      expect(t).not.toMatch(/(요|니다|세요)$/);
+    }
+    expect(renderHint(REHINT_PIT, 'keyboard')).toContain('2단 점프');
+  });
+
+  it('hasRawKeyName flags the legacy key spellings and passes token templates', () => {
+    for (const bad of ['← → 이동', 'SHIFT 대시', 'Shift 대시', 'Space 점프', 'A/D 이동', 'R 재시작', '↓ 스톰프']) {
+      expect(hasRawKeyName(bad), bad).toBe(true);
+    }
+    for (const ok of ['{move} 이동 · {jump} 점프', 'DASH 버튼', 'JUMP', '0.4초 — 멈추지 말 것', '수정에서 수정으로 RUN']) {
+      expect(hasRawKeyName(ok), ok).toBe(false);
+    }
+  });
 });
 
 describe('UI zone select', () => {
@@ -378,12 +546,69 @@ describe('UI zone select', () => {
   });
 
   it('updates the title continue entry and the name chip', () => {
-    const { ui } = setup();
+    const { ui, actions } = setup();
     ui.refreshSelect(makeProgress(['t1']), LEVELS);
     const cont = $<HTMLButtonElement>('#title-menu [data-act="continue"]');
     expect(cont.hidden).toBe(false);
+    expect(cont.textContent).toContain('이어하기');
+    expect(cont.textContent).not.toContain('바로 시작');
     expect($('#continue-note').textContent).toContain('첫 물결');
     expect($('#title-name').textContent).toBe('클로드');
+    ui.show('title');
+    cont.click();
+    expect(actions.at(-1)).toEqual({ type: 'start', levelId: 't1' });
+  });
+
+  it('a fresh save starts straight in: the first title entry reads 바로 시작 · <first zone> and one confirm starts it', () => {
+    const { ui, input, actions } = setup();
+    ui.refreshSelect(makeProgress(), LEVELS);           // lastLevel null, nothing done
+    ui.show('title');
+    const cont = $<HTMLButtonElement>('#title-menu [data-act="continue"]');
+    expect(cont.hidden).toBe(false);
+    expect(cont.textContent).toContain('바로 시작 · 첫 물결');
+    expect(cont.classList.contains('is-cursor')).toBe(true);    // the cursor rests on it
+    input.queue.push('confirm');
+    ui.frame(1 / 60, input);
+    expect(actions.at(-1)).toEqual({ type: 'start', levelId: 't1' });
+    expect(ui.screen).toBe('title');                            // select was skipped
+    // once a zone was played (lastLevel set) or cleared, the entry is the plain 이어하기 again
+    const played = makeProgress();
+    played.lastLevel = 't1';
+    ui.refreshSelect(played, LEVELS);
+    expect(cont.textContent).toContain('이어하기');
+    expect(cont.textContent).not.toContain('바로 시작');
+    const cleared = makeProgress(['t1']);
+    cleared.lastLevel = null;
+    ui.refreshSelect(cleared, LEVELS);
+    expect(cont.hidden).toBe(true);
+  });
+
+  it('marks a zone this clear opened: is-unlocking on its card, data-default on it, one unlock sound when select shows', () => {
+    const { ui, sounds } = setup();
+    ui.show('play');
+    ui.refreshSelect(makeProgress(['t1']), LEVELS, new Set(['t2']));
+    const t2 = $('#sel-tiers .card[data-id="t2"]');
+    expect(t2.classList.contains('is-unlocking')).toBe(true);
+    expect(t2.hasAttribute('data-default')).toBe(true);
+    expect($('#sel-tiers .card[data-id="t1"]').classList.contains('is-unlocking')).toBe(false);
+    expect(sounds.filter((s) => s === 'unlock')).toHaveLength(0);   // not while the run is still on screen
+    // the shell rebuilds the tower on the way back to select: the card still animates
+    ui.refreshSelect(makeProgress(['t1']), LEVELS);
+    expect($('#sel-tiers .card[data-id="t2"]').classList.contains('is-unlocking')).toBe(true);
+    ui.show('select');
+    expect(sounds.filter((s) => s === 'unlock')).toHaveLength(1);
+    // subsequent rebuilds and visits are quiet and plain
+    ui.refreshSelect(makeProgress(['t1']), LEVELS);
+    expect($('#sel-tiers .card[data-id="t2"]').classList.contains('is-unlocking')).toBe(false);
+    ui.show('title');
+    ui.show('select');
+    expect(sounds.filter((s) => s === 'unlock')).toHaveLength(1);
+    // opening a zone while already on select sounds right away, once
+    ui.refreshSelect(makeProgress(['t1', 't2']), LEVELS, new Set(['t3']));
+    expect(sounds.filter((s) => s === 'unlock')).toHaveLength(2);
+    expect($('#sel-tiers .card[data-id="t3"]').classList.contains('is-unlocking')).toBe(true);
+    ui.refreshSelect(makeProgress(['t1', 't2']), LEVELS, new Set());
+    expect(sounds.filter((s) => s === 'unlock')).toHaveLength(2);
   });
 
   it('echo toggles mutate settings and emit toggleEcho', () => {
@@ -534,6 +759,21 @@ describe('UI result and over screens', () => {
     ui.show('play');
     ui.showResult(view({ nextLevelId: undefined }));
     expect($<HTMLButtonElement>('#scr-result [data-act="next"]').hidden).toBe(true);
+  });
+
+  it('shows "다음 구역 해금: <name>" only when the clear opened a zone, and pops the rank letter', () => {
+    const { ui } = setup();
+    ui.show('play');
+    ui.showResult(view());
+    const row = $('#res-unlock');
+    expect(row.hidden).toBe(true);
+    expect(row.textContent).toBe('');
+    ui.showResult(view({ unlocked: { levelId: 't2', name: '해초 숲' } }));
+    expect(row.hidden).toBe(false);
+    expect(row.textContent).toBe('다음 구역 해금: 해초 숲');
+    expect($('#res-rank').classList.contains('pop')).toBe(true);
+    ui.showResult(view({ nextLevelId: 't2', unlocked: undefined }));
+    expect(row.hidden).toBe(true);
   });
 
   it('showOver reports the height and best height', () => {
@@ -878,7 +1118,7 @@ describe('UI PWA surfaces', () => {
     const input = makeInput();
     const ui = new UI({ document, input, defaultBinds: BINDS, onInstall: () => { prompts++; } });
     ui.applySettings(makeSettings());
-    ui.refreshSelect(makeProgress(), LEVELS);
+    ui.refreshSelect(settledProgress(), LEVELS);
     ui.show('title');
     const btn = $<HTMLButtonElement>('#title-menu [data-act="install"]');
     expect(btn.hidden).toBe(true);
@@ -965,7 +1205,7 @@ describe('UI with the real input layer', () => {
     const ui = new UI({ document, input, defaultBinds: BINDS });
     ui.on((a) => actions.push(a));
     ui.applySettings(makeSettings());
-    ui.refreshSelect(makeProgress(), LEVELS);
+    ui.refreshSelect(settledProgress(), LEVELS);
     return { ui, actions };
   }
 

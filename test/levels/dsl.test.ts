@@ -225,4 +225,20 @@ describe('validate', () => {
     const d = room(40, 16).ground(0, 39, 14).wall(10, 4, 11, 2).wall(19, 4, 11, 2).ent('P', 2, 13).ent('G', 36, 13).def(META);
     expect(validate(d)).toEqual([]);
   });
+
+  it('rejects hints that name raw keys and accepts token templates', () => {
+    for (const bad of ['← → 이동 · 점프', 'SHIFT 대시', 'Shift 대시', 'Space 점프', 'A/D 이동', 'R 재시작', '↓ 스톰프']) {
+      const errs = validate(flatRoom().def({ ...META, hint: bad }));
+      expect(errs, bad).toHaveLength(1);
+      expect(errs[0]).toMatch(/hint names a raw key/);
+      expect(errs[0]).toMatch(/\{move\} \{jump\} \{dash\} \{stomp\} \{down\}/);
+    }
+    for (const ok of ['{move} 이동 · {jump} 점프 · 공중에서 {jump} 한 번 더', '{dash} 대시', 'DASH 버튼과 JUMP 버튼', '무너지는 발판은 0.4초']) {
+      expect(validate(flatRoom().def({ ...META, hint: ok })), ok).toEqual([]);
+    }
+    // a hint problem is reported alongside geometry problems, and assertValid refuses it
+    const noG = room(40, 14).ground(0, 39, 10).ent('P', 2, 9).def({ ...META, hint: 'Space 점프' });
+    expect(validate(noG).join('\n')).toMatch(/exactly one G[\s\S]*hint names a raw key|hint names a raw key[\s\S]*exactly one G/);
+    expect(() => assertValid(flatRoom().def({ ...META, hint: '← →' }))).toThrow(/hint names a raw key/);
+  });
 });

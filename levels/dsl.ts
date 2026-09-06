@@ -16,6 +16,7 @@ import {
   CRUMBLE, MAX_PIT_TILES, ONE_WAY, SHAFT_WIDTH_TILES, SPAWN_CH, SPIKES,
   SWITCH_A, SWITCH_B, WATER_BODY, WATER_SURFACE,
 } from '../src/sim/legend.js';
+import { hasRawKeyName } from '../src/client/ui/hints.js';
 
 export const EMPTY = '.';
 export const ROCK = '#';
@@ -48,6 +49,8 @@ export interface ZoneMeta {
   spikers?: [number, number][];
   tide?: boolean;
   baseY?: number;
+  /** Geometry revision: bump whenever a shipped zone's cells (terrain or spawns) change. Missing = 0. */
+  rev?: number;
 }
 
 export interface ShaftOpts {
@@ -195,6 +198,7 @@ export class Room {
     if (meta.spikers?.length) d.spikers = meta.spikers.map(([x, y]) => [x, y]);
     if (meta.tide) d.tide = true;
     if (meta.baseY !== undefined) d.baseY = meta.baseY;
+    if (meta.rev !== undefined && meta.rev > 0) d.rev = meta.rev;
     return d;
   }
 }
@@ -264,11 +268,22 @@ function floodFrom(g: Grid, sx: number, sy: number, switchA: boolean): Uint8Arra
  *  - no run of bottomless columns wider than MAX_PIT_TILES
  *  - two rock walls ≥ 5 tall facing each other across an empty interior
  *    form a shaft, which must be 3..5 wide (real shafts are 4)
+ *  - the hint is a token template ({move} {jump} {dash} {stomp} {down}): raw
+ *    key names (Shift, Space, ← →, A/D, R) are wrong on a phone or after a rebind
  */
 export function validate(def: LevelDef): string[] {
+  const id = def.id || '?';
+  const errs = validateGeometry(def, id);
+  if (def.hint && hasRawKeyName(def.hint)) {
+    errs.push(`${id}: hint names a raw key ('${def.hint}') — use {move} {jump} {dash} {stomp} {down} tokens`);
+  }
+  return errs;
+}
+
+/** The grid rules of validate(); the hint rule is checked separately so a bad hint never hides a geometry problem. */
+function validateGeometry(def: LevelDef, id: string): string[] {
   const errs: string[] = [];
   const rows = def.rows;
-  const id = def.id || '?';
   if (!rows || rows.length === 0) return [`${id}: no rows`];
   const w = rows[0].length;
   if (w === 0) return [`${id}: empty rows`];

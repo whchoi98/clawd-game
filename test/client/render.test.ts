@@ -392,4 +392,99 @@ describe('Renderer', () => {
     r.draw(sim, VIEW, FX, [], 1 / 60);
     expect(ctx.__calls.length).toBeGreaterThan(20);
   });
+
+  // ---------------------------------------------------------------- readability pass (P1-6)
+  /**
+   * Replace the fixture's own (one-tile, half-visible) 'z' column with a single
+   * live 12-tile updraft inside VIEW (x 0..512, y -48..240 on the 960x540 stub).
+   */
+  function withUpdraft(sim: SimView): EntityState {
+    sim.state.entities = sim.state.entities.filter((e) => e.kind !== 'updraft');
+    const e: EntityState = { id: 9001, kind: 'updraft', x: 200, y: 100, w: 16, h: 192, alive: true, t: 0, state: 0 };
+    sim.state.entities.push(e);
+    return e;
+  }
+
+  it.each([['high', 60], ['low', 30]] as const)('a live updraft adds >= %s streak particles over 60 frames on quality %s', (quality, min) => {
+    const { r } = makeRenderer();
+    const sim = fakeSim(fixtureDef('voidreef'));
+    withUpdraft(sim);
+    r.applySettings({ ...SETTINGS, quality });
+    r.setLevel(sim, BIOMES.voidreef);
+    expect(r.qualityTier).toBe(quality);
+    const before = r.particles.count;
+    for (let i = 0; i < 60; i++) r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(r.particles.count - before).toBeGreaterThanOrEqual(min);
+  });
+
+  it('does not emit updraft streaks for a column that is off screen', () => {
+    const { r } = makeRenderer();
+    const sim = fakeSim(fixtureDef('voidreef'));
+    const e = withUpdraft(sim);
+    e.x = 2000;
+    r.setLevel(sim, BIOMES.voidreef);
+    for (let i = 0; i < 60; i++) r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(r.particles.count).toBe(0);
+  });
+
+  it('draws the updraft column with edge highlights and a floor glow', () => {
+    const { r, ctx } = makeRenderer();
+    const sim = fakeSim(fixtureDef('voidreef'));
+    withUpdraft(sim);
+    r.setLevel(sim, BIOMES.voidreef);
+    ctx.__calls.length = 0;
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    // two 1 px boundary lines spanning the column height (x, y, 1px, h)
+    const edges = ctx.__calls.filter((c) => c.name === 'fillRect' && Math.abs(Number(c.args[3]) - 192) < 1e-6 && Number(c.args[2]) < 1);
+    expect(edges.length).toBeGreaterThanOrEqual(2);
+    // the floor glow is a radial gradient ellipse sitting on the column base
+    expect(ctx.__calls.some((c) => c.name === 'ellipse' && Math.abs(Number(c.args[1]) - 196) < 1e-6)).toBe(true);
+  });
+
+  it('exposes goalScreen: null before setLevel, on screen over the goal, off screen with a far camera', () => {
+    const { r, ctx } = makeRenderer();
+    expect(r.goalScreen).toBeNull();
+    const sim = fakeSim(fixtureDef('tidepool'));
+    r.setLevel(sim, BIOMES.tidepool);
+    expect(r.goalScreen).toBeNull();
+    const goal = sim.state.entities.find((e) => e.kind === 'goal')!;
+    expect(goal).toBeDefined();
+
+    r.draw(sim, { camX: goal.x, camY: goal.y, zoom: 1 }, FX, [], 1 / 60);
+    expect(r.goalScreen).not.toBeNull();
+    expect(r.goalScreen!.onScreen).toBe(true);
+    // camera on the goal → the projection lands at the canvas centre (960x540 CSS px, dpr 1)
+    expect(Math.abs(r.goalScreen!.x - 480)).toBeLessThan(2);
+    expect(Math.abs(r.goalScreen!.y - 270)).toBeLessThan(40);
+
+    ctx.__sets.fillStyle = [];
+    ctx.__sets.strokeStyle = [];
+    r.draw(sim, { camX: 0, camY: 0, zoom: 1 }, FX, [], 1 / 60);
+    expect(r.goalScreen!.onScreen).toBe(false);
+    expect(r.goalScreen!.x).toBeGreaterThan(960);
+    // and an edge beacon in the biome accent was drawn
+    const styles = [...(ctx.__sets.fillStyle ?? []), ...(ctx.__sets.strokeStyle ?? [])].filter((v): v is string => typeof v === 'string');
+    expect(styles.some((s) => s.toLowerCase() === BIOMES.tidepool.accent.toLowerCase())).toBe(true);
+    // save/restore stay balanced with the beacon on
+    const saves = ctx.__calls.filter((c) => c.name === 'save').length;
+    const restores = ctx.__calls.filter((c) => c.name === 'restore').length;
+    expect(saves).toBe(restores);
+  });
+
+  it('clips spikes to their tile and rims voidreef spikes in the magenta accent', () => {
+    const { r, ctx } = makeRenderer();
+    const sim = fakeSim(fixtureDef('voidreef'));
+    r.setLevel(sim, BIOMES.voidreef);
+    // fixture '^^' at row 4, columns 13-14 → world x 208..240, y 64..80
+    r.draw(sim, { camX: 224, camY: 72, zoom: 1 }, FX, [], 1 / 60);
+    expect(ctx.__calls.filter((c) => c.name === 'clip').length).toBeGreaterThanOrEqual(2);
+    const styles = [...(ctx.__sets.fillStyle ?? []), ...(ctx.__sets.strokeStyle ?? [])].filter((v): v is string => typeof v === 'string');
+    const rgbOf = (hex: string) => {
+      const n = parseInt(hex.slice(1), 16);
+      return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+    };
+    const mentions = (hex: string) => styles.some((s) => s.toLowerCase().includes(hex.toLowerCase()) || s.includes(rgbOf(hex)));
+    expect(mentions(BIOMES.voidreef.accent)).toBe(true);
+    expect(mentions(BIOMES.voidreef.spike.hi)).toBe(true);
+  });
 });

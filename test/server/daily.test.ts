@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { DailyResponse } from '../../src/shared/protocol.js';
+import { GEN_VERSION, SIM_VERSION } from '../../src/sim/types.js';
 import { dailySeed, isFreshDate, nextUtcMidnight, utcDateStr } from '../../src/server/daily.js';
 import { FIXED_NOW, SECRET, TODAY, makeApp } from './fixtures.js';
 
@@ -66,5 +67,12 @@ describe('GET /api/daily', () => {
     expect(body.levelId).toBe('daily');
     expect(body.seed).toBe(dailySeed(TODAY, SECRET).seed);
     expect(body.expiresAt).toBe('2026-09-07T00:00:00.000Z');
+  });
+
+  it('carries the generator and sim versions the server verifies with', async () => {
+    const res = await ctx.app.inject({ method: 'GET', url: '/api/daily' });
+    const body = DailyResponse.parse(res.json());
+    expect(body.gen).toBe(GEN_VERSION);
+    expect(body.sim).toBe(SIM_VERSION);
   });
 });

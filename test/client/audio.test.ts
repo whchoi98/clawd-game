@@ -499,6 +499,61 @@ describe('music', () => {
   });
 });
 
+describe('visibility (P1-7)', () => {
+  class FakeDoc extends EventTarget { hidden = false; }
+  let engine: AudioEngine;
+  let doc: FakeDoc;
+  beforeEach(() => { installFake(); doc = new FakeDoc(); engine = new AudioEngine({ doc }); });
+  afterEach(() => { engine.dispose(); removeFake(); });
+
+  it('stops the scheduler clock while hidden and restarts it, resynced to the audio clock, when visible', () => {
+    engine.init();
+    const ctx = ctxOf();
+    engine.setTrack('tidepool');
+    engine.tick();
+    expect(engine.clockRunning).toBe(true);
+    const [seq] = engine.sequencers();
+    expect(seq).toBeDefined();
+
+    doc.hidden = true;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    expect(engine.clockRunning).toBe(false);
+    expect(ctx.state).toBe('suspended');
+
+    // a long stay in the background: the audio clock ran on, the sequencer did not
+    ctx.currentTime += 45;
+    doc.hidden = false;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    expect(engine.clockRunning).toBe(true);
+    expect(ctx.state).toBe('running');
+    for (const s of engine.sequencers()) expect(s.nextTime).toBeGreaterThanOrEqual(ctx.currentTime);
+    // and the first pass after the return schedules only in the future
+    const before = sources(ctx).length;
+    engine.tick();
+    for (const s of sources(ctx).slice(before)) expect(s.started[0]).toBeGreaterThanOrEqual(ctx.currentTime);
+  });
+
+  it('a user suspend is not undone by a visibility change, and no track means no clock either way', () => {
+    engine.init();
+    const ctx = ctxOf();
+    engine.suspend();
+    doc.hidden = true;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    doc.hidden = false;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    expect(ctx.state).toBe('suspended');
+    expect(engine.running).toBe(false);
+    expect(engine.clockRunning).toBe(false);
+    engine.resume();
+    doc.hidden = true;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    doc.hidden = false;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    expect(engine.clockRunning).toBe(false); // nothing to sequence
+    expect(engine.sequencers()).toEqual([]);
+  });
+});
+
 describe('unlock()', () => {
   let engine: AudioEngine;
   beforeEach(() => { installFake(); engine = new AudioEngine(); });

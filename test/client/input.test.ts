@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IN } from '../../src/sim/types.js';
+import { IN, IN_ALL } from '../../src/sim/types.js';
 import type { BindAction, Binds } from '../../src/client/contracts.js';
 import {
   DEFAULT_BINDS,
@@ -197,6 +197,32 @@ describe('Input — keyboard', () => {
     input.poll();
     expect(input.lastDevice).toBe('keyboard');
   });
+
+  it('the restart bind is a sim input: R sets IN.RETRY in held and latched (a tap latches once)', () => {
+    down('KeyR');
+    input.poll();
+    expect(input.held() & IN.RETRY).toBe(IN.RETRY);
+    expect(input.takeLatched() & IN.RETRY).toBe(IN.RETRY);
+    expect(input.takeMenu()).toEqual(['restart']);
+    expect(input.menuHeld('restart')).toBe(true);
+    // held: still in the mask, latched only once
+    input.poll();
+    expect(input.held() & IN.RETRY).toBe(IN.RETRY);
+    expect(input.takeLatched()).toBe(0);
+    up('KeyR');
+    input.poll();
+    expect(input.held()).toBe(0);
+    expect(input.menuHeld('restart')).toBe(false);
+    // a tap inside one frame is still one press edge for the sim
+    down('KeyR');
+    up('KeyR');
+    input.poll();
+    expect(input.held()).toBe(0);
+    expect(input.takeLatched()).toBe(IN.RETRY);
+    // RETRY is outside the six movement bits and inside IN_ALL
+    expect(IN.RETRY & 0x3f).toBe(0);
+    expect(IN.RETRY & IN_ALL).toBe(IN.RETRY);
+  });
 });
 
 // ------------------------------------------------------------------ menu
@@ -342,22 +368,31 @@ describe('Input — gamepad (fake navigator.getGamepads)', () => {
     expect(input.held() & IN.DASH).toBe(IN.DASH);
   });
 
-  it('start is pause, B is cancel, back is restart — none of them touch the sim mask', () => {
+  it('start is pause, B is cancel — neither touches the sim mask; back is restart and carries IN.RETRY', () => {
     const pad = fakePad();
     pads = [pad];
     pad.buttons[9].pressed = true;
     input.poll();
     expect(input.takeMenu()).toEqual(['pause']);
     expect(input.held()).toBe(0);
+    expect(input.takeLatched()).toBe(0);
     pad.buttons[9].pressed = false;
     pad.buttons[1].pressed = true;
     input.poll();
     expect(input.takeMenu()).toEqual(['cancel']);
+    expect(input.held()).toBe(0);
+    expect(input.takeLatched()).toBe(0);
     pad.buttons[1].pressed = false;
     pad.buttons[8].pressed = true;
     input.poll();
     expect(input.takeMenu()).toEqual(['restart']);
-    expect(input.takeLatched()).toBe(0);
+    expect(input.takeLatched()).toBe(IN.RETRY);
+    expect(input.held()).toBe(IN.RETRY);
+    expect(input.menuHeld('restart')).toBe(true);
+    pad.buttons[8].pressed = false;
+    input.poll();
+    expect(input.held()).toBe(0);
+    expect(input.menuHeld('restart')).toBe(false);
   });
 
   it('tolerates an empty or null pad list', () => {

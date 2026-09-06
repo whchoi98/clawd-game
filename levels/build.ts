@@ -37,6 +37,7 @@ function emitLevel(d: LevelDef): string {
   out.push('  {');
   out.push(`    id: ${q(d.id)}, name: ${q(d.name)}, en: ${q(d.en)}, biome: ${q(d.biome)},`);
   out.push(`    par: ${d.par}, seed: ${d.seed},`);
+  if (d.rev !== undefined) out.push(`    rev: ${d.rev},`);
   if (d.hint !== undefined) out.push(`    hint: ${q(d.hint)},`);
   if (d.tide) out.push('    tide: true,');
   if (d.baseY !== undefined) out.push(`    baseY: ${d.baseY},`);

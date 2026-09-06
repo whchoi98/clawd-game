@@ -99,3 +99,34 @@ the worker, not the app.
 ## Mobile layout QA
 
 `npm run qa:mobile` (`BASE_URL` env, default `http://127.0.0.1:8099`) emulates iPhone 14 landscape (750x340), Galaxy S9+ landscape (658x320), iPad Pro 11 landscape and portrait, plus an iPhone portrait profile, and asserts: zero same-origin console errors, both title menu ends inside the viewport, tap-through to play with the touch pad visible, the HUD hint clear of the DASH/JUMP buttons, no rotate prompt on tablet portrait, and the rotate prompt shown/dismissed/remembered on a phone in portrait. Screenshots land in `tools/qa/out/mobile-*.png`.
+
+## Readability QA
+
+`npx tsx tools/qa/readability.ts` (`BASE_URL` env, default `http://127.0.0.1:8099`)
+checks the P1-6 readability pass at the pixel level, at 1280x800 @1 through the
+`?shot=` harness. Geometry (updraft columns, spike tiles, the renderer's camera
+transform, `renderer.goalScreen`) is read from the live page via `window.__clawd`,
+never re-derived from level sources, so a level edit cannot move a probe off
+target. Screenshots land in `tools/qa/out/readability-*.png`; exit code 1 on any
+failed step or same-origin console error.
+
+| step | capture | assertion |
+|---|---|---|
+| `updraft` | `?shot=v2&frames=60&at=248,384` — Clawd parked on the start yard's edge, the first updraft column (tile 17, rows 13..25) in view with nobody inside it | mean luma (Rec. 709, 0..255) down the column's centre pixel column is **>= 25** above the background sampled 1.5 tiles left and right over the same rows; the column's bottom two tiles are skipped because the neighbours there are pit rock and spikes, not background |
+| `spike` | `?shot=v1&frames=60` — the first spike bed (tiles 13..22, row 19) is in view | in the tip zone of the spike tile nearest the screen centre (3 world units wide, 5 tall from the tallest blade's tip, `SPIKE_TIP_INSET`) the **darkest** pixel has a WCAG contrast **>= 3:1** with the biome `crust` colour, and the brightest pixel is a real highlight (relative luminance >= 0.4); on voidreef the upper 60 % of the tile also holds a pixel within RGB distance 60 of the magenta accent (the rim) |
+| `beacon` | `?shot=v2&frames=60` — from the start, the goal ~1200 units to the right | `renderer.goalScreen` is non-null, `onScreen === false`, `x` beyond the canvas width, and a pixel within RGB distance 24 of the biome accent sits inside the 48 px band along the canvas edges (the chevron is filled opaque in the accent and drawn after the film pass, so no vignette or grain shifts it) |
+
+Why the spike check looks for a *dark* pixel: the voidreef crust `#22E6D2` has a
+relative luminance of 0.62, so no highlight — not even pure white — can reach
+3:1 against it. What separates a cyan blade from a cyan ledge is the dark
+outline and drop shadow around every blade (luminance edge) plus the magenta
+rim (hue edge); the probe asserts both, and separately that the `spike.hi` tip
+highlight exists.
+
+## Readability QA
+
+`npm run qa:readability` (`BASE_URL` env) loads `?shot=` scenes and asserts pixel-level readability: the updraft column centre is at least 25/255 brighter than its background, spike tips keep a >= 3:1 contrast against the crust, and an off-screen goal produces a beacon pixel in the biome accent near the screen edge.
+
+## Telemetry step
+
+The smoke starts t1, quits, and asserts that a `POST /api/events` batch carried `zone_start` and `quit` (and a forced `js_error`), with no player id, name or IP in any batch.

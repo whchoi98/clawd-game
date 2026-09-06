@@ -7,32 +7,38 @@
  * would.
  */
 import { describe, expect, it } from 'vitest';
-import { DT, IN, MAX_TICKS } from '../../src/sim/types.js';
+import { DT, GEN_VERSION, IN, IN_ALL, MAX_TICKS, SIM_VERSION, TILE } from '../../src/sim/types.js';
 import type {
   InputMask, LevelDef, PlayerState, RunSummary, SimEvent,
 } from '../../src/sim/types.js';
 import { Sim } from '../../src/sim/sim.js';
 import { decodeMasks, encodeMasks, verifyReplay } from '../../src/sim/replay.js';
+import { LEVELS as REAL_LEVELS } from '../../src/sim/levels.generated.js';
+import { GUIDE_DELAY, GUIDE_LABEL, GUIDE_T1, guideFor } from '../../src/client/echo/guide.js';
+import { REHINT_HAZARD, REHINT_PIT } from '../../src/client/ui/hints.js';
+import { DEATH_FADE_AT, FADE_IN_HALF } from '../../src/client/fx.js';
 import { PlayerRef, RejectReason } from '../../src/shared/protocol.js';
 import type {
   DailyResponse, GhostResponse, LeaderboardEntry, LeaderboardQuery, LeaderboardResponse, RunResponse, RunSubmit,
 } from '../../src/shared/protocol.js';
 import type {
-  ApiPort, AudioPort, Binds, FxState, GhostView, HudState, InputPort, MenuAction, RendererPort, ResultView,
+  ApiPort, AudioPort, Binds, FxState, GhostView, HudState, InputPort, LevelRecord, MenuAction, Progress, RendererPort, ResultView,
   Screen, Settings, TouchState, UIAction, WorldView,
 } from '../../src/client/contracts.js';
 import { MAX_STEPS_PER_FRAME, TickScheduler, planTicks } from '../../src/client/loop.js';
 import { FxBus } from '../../src/client/fx.js';
 import { Camera } from '../../src/client/camera.js';
 import {
-  DAILY_CACHE_KEY, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, deepMerge, newPlayerId, utcDateStr, type StorageLike,
+  DAILY_CACHE_KEY, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, deepMerge, markEcho, newPlayerId, utcDateStr, type StorageLike,
 } from '../../src/client/save.js';
 import { Api, ApiError } from '../../src/client/net/api.js';
 import { QUEUE_KEY, SubmitQueue } from '../../src/client/net/queue.js';
+import type { TelemetryData, TelemetryPort } from '../../src/client/net/telemetry.js';
+import type { TelemetryName } from '../../src/shared/protocol.js';
 import { ECHO_ALPHA, Echo } from '../../src/client/echo/echo.js';
-import { Scenes, RESULT_DELAY, type ShellUI } from '../../src/client/scenes.js';
+import { Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, type ShellUI } from '../../src/client/scenes.js';
 import { ShotScript, parseShotQuery } from '../../src/client/shot.js';
-import { flatRoom, openRoom, shaftRoom, tideRoom } from '../fixtures/levels.js';
+import { flatRoom, openRoom, pitRoom, shaftRoom, spikeRoom, tideRoom } from '../fixtures/levels.js';
 
 const BINDS: Binds = {
   left: ['ArrowLeft', 'KeyA'], right: ['ArrowRight', 'KeyD'], up: ['ArrowUp', 'KeyW'], down: ['ArrowDown', 'KeyS'],
@@ -110,6 +116,11 @@ interface FakeUI extends ShellUI {
   cbs: ((a: UIAction) => void)[]; shown: Screen[]; result: ResultView | null; over: { summary: RunSummary; best: number } | null;
   huds: HudState[]; hints: (string | null)[]; toasts: string[]; banners: string[];
   dailyCalls: [DailyResponse | null, LeaderboardResponse | null, string][]; selectRefreshes: number;
+  /** The `justUnlocked` set of every refreshSelect call (undefined when the shell passed none). */
+  unlockCalls: (ReadonlySet<string> | undefined)[];
+  goalScreens: ({ x: number; y: number; onScreen: boolean } | null)[];
+  /** Every setVersionBehind() value, in order. */
+  versionBehind: boolean[];
   emit(a: UIAction): void; setScreen(s: Screen): void;
 }
 function fakeUI(): FakeUI {
@@ -117,6 +128,7 @@ function fakeUI(): FakeUI {
   const touch: TouchState = { active: false, x: 0, y: 0, jump: false, dash: false, jumpPressed: false, dashPressed: false };
   const u: FakeUI = {
     cbs: [], shown: [], result: null, over: null, huds: [], hints: [], toasts: [], banners: [], dailyCalls: [], selectRefreshes: 0,
+    unlockCalls: [], goalScreens: [], versionBehind: [],
     on(cb) { u.cbs.push(cb); },
     show(s) { scr = s; u.shown.push(s); },
     get screen() { return scr; },
@@ -125,7 +137,9 @@ function fakeUI(): FakeUI {
     hint(t) { u.hints.push(t); },
     toast(t) { u.toasts.push(t); },
     banner(t) { u.banners.push(t); },
-    refreshSelect() { u.selectRefreshes++; },
+    refreshSelect(_p: Progress, _l: LevelDef[], justUnlocked?: ReadonlySet<string>) { u.selectRefreshes++; u.unlockCalls.push(justUnlocked); },
+    setGoalScreen(g) { u.goalScreens.push(g); },
+    setVersionBehind(on) { u.versionBehind.push(on); },
     setDaily(d, lb, status) { u.dailyCalls.push([d, lb, status]); },
     showResult(v) { u.result = v; scr = 'result'; u.shown.push('result'); },
     updateResult(v) { u.result = v; },
@@ -169,20 +183,28 @@ type StoredEntry = Omit<LeaderboardEntry, 'you'> & { ownerId: string };
 interface FakeApi extends ApiPort {
   submissions: RunSubmit[]; lbQueries: LeaderboardQuery[]; ghosts: Record<string, GhostResponse>; failWith: Error | null;
   levels: Record<string, LevelDef>; board: StoredEntry[];
+  /** Versions the fake server reports (undefined = field absent, like a pre-P1 server). */
+  healthSim?: number; dailySim?: number; dailyGen?: number;
+  healthCalls: number;
 }
 function fakeApi(levels: LevelDef[]): FakeApi {
   const a: FakeApi = {
-    submissions: [], lbQueries: [], ghosts: {}, failWith: null, board: [],
+    submissions: [], lbQueries: [], ghosts: {}, failWith: null, board: [], healthCalls: 0,
     levels: Object.fromEntries(levels.map((l) => [l.id, l])),
     async daily(): Promise<DailyResponse> {
-      return { date: '2026-09-06', seed: 12345, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z' };
+      return {
+        date: '2026-09-06', seed: 12345, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z',
+        ...(a.dailySim !== undefined ? { sim: a.dailySim } : {}), ...(a.dailyGen !== undefined ? { gen: a.dailyGen } : {}),
+      };
     },
     async submitRun(body): Promise<RunResponse> {
       if (a.failWith) throw a.failWith;
       a.submissions.push(body);
+      // the real server refuses another sim / gen version before it replays anything
+      if (body.sim !== SIM_VERSION || (body.mode === 'daily' && body.gen !== GEN_VERSION)) return { accepted: false, reason: 'sim-version' };
       const def = a.levels[body.levelId];
       const masks = decodeMasks(body.masks);
-      const v = verifyReplay(def, { v: 1, levelId: body.levelId, seed: body.seed ?? def.seed, assist: body.assist, masks }, body.claim);
+      const v = verifyReplay(def, { v: SIM_VERSION, levelId: body.levelId, seed: body.seed ?? def.seed, assist: body.assist, masks }, body.claim);
       if (!v.ok) {
         const parsed = RejectReason.safeParse(v.reason);
         return { accepted: false, reason: parsed.success ? parsed.data : 'claim-mismatch' };
@@ -214,25 +236,57 @@ function fakeApi(levels: LevelDef[]): FakeApi {
       if (!g) throw new ApiError('not found', 404, 'not-found');
       return g;
     },
-    async health() { return { ok: true as const, version: 'test', uptime: 1 }; },
+    async health() {
+      a.healthCalls++;
+      return { ok: true as const, version: 'test', uptime: 1, ...(a.healthSim !== undefined ? { simVersion: a.healthSim, genVersion: GEN_VERSION } : {}) };
+    },
   };
   return a;
 }
 
-function makeScenes(levels: LevelDef[], opts: { assist?: boolean; echoWorld?: boolean; echoSelf?: boolean } = {}) {
+/** A telemetry sink that just records what the shell reports. */
+interface FakeTelemetry extends TelemetryPort {
+  events: { t: TelemetryName; d?: TelemetryData }[];
+  screens: string[];
+  flushes: string[];
+  names(): TelemetryName[];
+  of(t: TelemetryName): TelemetryData[];
+}
+function fakeTelemetry(): FakeTelemetry {
+  const f: FakeTelemetry = {
+    events: [], screens: [], flushes: [],
+    track(t, d) { f.events.push(d ? { t, d } : { t }); },
+    screen(name) { f.screens.push(name); f.events.push({ t: 'screen', d: { screen: name } }); },
+    flush(reason) { f.flushes.push(reason ?? 'manual'); },
+    names() { return f.events.map((e) => e.t); },
+    of(t) { return f.events.filter((e) => e.t === t).map((e) => e.d ?? {}); },
+  };
+  return f;
+}
+
+function makeScenes(
+  levels: LevelDef[],
+  opts: { assist?: boolean; echoWorld?: boolean; echoSelf?: boolean; now?: () => number; makeDaily?: (seed: number) => LevelDef } = {},
+) {
   const renderer = fakeRenderer();
   const audio = fakeAudio();
   const ui = fakeUI();
   const input = fakeInput();
   const api = fakeApi(levels);
+  const tele = fakeTelemetry();
+  const newer: (number | null)[] = [];
   const { save, timers } = makeSave();
   save.settings.assist = !!opts.assist;
   save.settings.echoSelf = opts.echoSelf ?? true;
   save.settings.echoWorld = opts.echoWorld ?? false;
   const scenes = new Scenes({
     renderer, audio, ui, input, api, save, levels, build: 'test', randomSeed: () => 777, random: () => 0.5,
+    telemetry: tele, telemetryEnv: { uaFamily: 'desktop', dpr: 2, hwConcurrency: 8 },
+    onServerNewer: (v) => { newer.push(v); },
+    ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.makeDaily ? { makeDaily: opts.makeDaily } : {}),
   });
-  return { scenes, renderer, audio, ui, input, api, save, timers };
+  return { scenes, renderer, audio, ui, input, api, save, timers, tele, newer };
 }
 
 /** Advance frames at 60 Hz until `until()` or the frame budget is spent. Returns frames run. */
@@ -661,9 +715,12 @@ describe('Scenes', () => {
     expect(body.claim.ticks).toBe(summary.ticks);
     expect(body.player.id).toBe(save.progress.player.id);
     expect(body.client.build).toBe('test');
+    // every submission names the sim / generator version it ran (the server refuses a mismatch)
+    expect(body.sim).toBe(SIM_VERSION);
+    expect(body.gen).toBe(GEN_VERSION);
     const masks = decodeMasks(body.masks);
     expect(masks.length).toBeLessThanOrEqual(sim.state.tick);
-    const v = verifyReplay(def, { v: 1, levelId: 'flat', seed: def.seed, assist: false, masks }, body.claim);
+    const v = verifyReplay(def, { v: SIM_VERSION, levelId: 'flat', seed: def.seed, assist: false, masks }, body.claim);
     expect(v.ok).toBe(true);
     expect(ui.result!.submit.state).toBe('accepted');
     expect(ui.result!.submit.rank).toBe(1);
@@ -930,6 +987,213 @@ describe('Scenes', () => {
     expect(run.eligible).toBe(false);
   });
 
+  // ---------------------------------------------------------------- P1-2 free failure
+  it('a death fades to black fast and the fade clears within 20 frames of the respawn', () => {
+    const { scenes, ui, input, renderer } = makeScenes([pitRoom()]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'pit' });
+    expect(DEATH_FADE_AT).toBeCloseTo(0.25);
+    expect(FADE_IN_HALF).toBeCloseTo(0.06);
+    input.heldMask = IN.RIGHT;
+    // run to the fall into the pit
+    runFrames(scenes, () => renderer.events.some((e) => e.type === 'death'));
+    expect(renderer.events.some((e) => e.type === 'death')).toBe(true);
+    expect(scenes.fx.fade).toBeLessThan(0.05);
+    // dying: the fade reaches black before the sim respawns
+    let peak = 0;
+    let respawnAt = -1;
+    for (let f = 0; f < 240 && respawnAt < 0; f++) {
+      scenes.frame(1 / 60);
+      peak = Math.max(peak, scenes.fx.fade);
+      if (renderer.events.some((e) => e.type === 'respawn')) respawnAt = f;
+    }
+    expect(respawnAt).toBeGreaterThanOrEqual(0);
+    expect(peak).toBeGreaterThanOrEqual(0.9);
+    // fading back in: control-clear within 20 frames of the respawn event
+    let clearAfter = -1;
+    for (let f = 1; f <= 20 && clearAfter < 0; f++) {
+      scenes.frame(1 / 60);
+      if (scenes.fx.fade < 0.05) clearAfter = f;
+    }
+    expect(clearAfter).toBeGreaterThan(0);
+    expect(clearAfter).toBeLessThanOrEqual(20);
+  });
+
+  it('a tapped or held restart bind (IN.RETRY) is recorded in the mask log exactly like any other input', () => {
+    const { scenes, ui, input } = makeScenes([openRoom()]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'open' });
+    const run = scenes.run!;
+    runFrames(scenes, () => run.sim.state.phase === 'play');
+    const before = run.masks.length;
+    // a tap: one press edge in the log, on the first tick of the frame only
+    input.latchedMask = IN.RETRY;
+    scenes.frame(1 / 60);
+    const tap = [...run.masks.bytes().slice(before)];
+    expect(tap.length).toBe(2);
+    expect(tap[0] & IN.RETRY).toBe(IN.RETRY);
+    expect(tap[1] & IN.RETRY).toBe(0);
+    // a hold: every tick carries the bit (the sim derives a single edge from it)
+    const mid = run.masks.length;
+    input.heldMask = IN.RETRY | IN.RIGHT;
+    scenes.frame(1 / 60);
+    scenes.frame(1 / 60);
+    input.heldMask = 0;
+    const held = [...run.masks.bytes().slice(mid)];
+    expect(held.length).toBe(4);
+    for (const m of held) expect(m & IN.RETRY).toBe(IN.RETRY);
+    // the recording survives the wire format
+    const back = decodeMasks(encodeMasks(run.masks.bytes()));
+    expect(back[before] & IN.RETRY).toBe(IN.RETRY);
+    expect(IN.RETRY & IN_ALL).toBe(IN.RETRY);
+    // a tap during hitstop is carried to the next frame that runs ticks
+    scenes.fx.stop(0.05);
+    const stopped = run.masks.length;
+    input.latchedMask = IN.RETRY;
+    scenes.frame(1 / 60);
+    expect(run.masks.length).toBe(stopped);
+    runFrames(scenes, () => run.masks.length > stopped, 10);
+    expect(run.masks.bytes()[stopped] & IN.RETRY).toBe(IN.RETRY);
+  });
+
+  // ---------------------------------------------------------------- P1-5 guide echo + re-hints
+  it('the bundled t1 guide replays on the current sim: no deaths, past the first pit, checkpoint reached', () => {
+    const t1 = REAL_LEVELS[0];
+    expect(t1.id).toBe('t1');
+    expect(GUIDE_T1.v).toBe(SIM_VERSION);
+    const masks = guideFor(t1)!;
+    expect(masks).not.toBeNull();
+    expect(masks.length).toBe(GUIDE_T1.ticks);
+    expect(masks.length).toBeLessThan(120 * 16);
+    const sim = new Sim(t1, { seed: t1.seed });
+    let checkpoint = false;
+    for (const m of masks) {
+      sim.step(m);
+      for (const ev of sim.drainEvents()) if (ev.type === 'checkpoint') checkpoint = true;
+    }
+    expect(sim.state.stats.deaths).toBe(0);
+    expect(sim.state.player.hp).toBe(3);
+    expect(sim.state.player.x).toBeGreaterThan(47 * TILE);   // the first lethal pit spans tiles 41–46
+    expect(sim.state.stats.jumps).toBeGreaterThanOrEqual(2);
+    expect(checkpoint).toBe(true);
+    // through the verifier: an intact log for this sim version that simply does not finish the zone
+    const v = verifyReplay(t1, { v: SIM_VERSION, levelId: 't1', seed: t1.seed, assist: false, masks });
+    expect(v.reason).toBe('not-finished');
+    expect(v.summary.deaths).toBe(0);
+    // a stale recording is refused, never shown
+    expect(guideFor({ ...t1, rev: 99 })).toBeNull();
+    expect(guideFor(t1, t1.seed + 1)).toBeNull();
+    expect(guideFor({ id: 'nope', seed: 1 })).toBeNull();
+  });
+
+  it('a first play of t1 gets one 길잡이 echo after GUIDE_DELAY that leaves at the first checkpoint, and never again', () => {
+    const { scenes, ui, input, api, save } = makeScenes(REAL_LEVELS, { echoSelf: true, echoWorld: false });
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 't1' });
+    const run = scenes.run!;
+    expect(run.echoes).toHaveLength(0);
+    runFrames(scenes, () => run.t >= GUIDE_DELAY - 0.2, 400);
+    expect(run.echoes).toHaveLength(0);
+    runFrames(scenes, () => run.echoes.length > 0, 60);
+    expect(run.echoes).toHaveLength(1);
+    expect(run.echoes[0].label).toBe(GUIDE_LABEL);
+    expect(run.guide).toBe(run.echoes[0]);
+    // lockstep with the live sim from the moment it appeared
+    const at = run.sim.state.tick;
+    runFrames(scenes, () => run.sim.state.tick >= at + 60);
+    expect(run.guide!.tick).toBe(run.sim.state.tick - at);
+    expect(run.guide!.view()?.label).toBe(GUIDE_LABEL);
+    // the guide's inputs are its own: the live mask log stays the player's
+    expect(run.masks.bytes().every((m) => m === 0)).toBe(true);
+    // the player reaches the checkpoint (tile 49): the guide is gone
+    scenes.teleport(47 * TILE + 8, 16 * TILE);   // on the far lip of the first pit (tiles 41–46)
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => run.guide === null, 600);
+    expect(run.guide).toBeNull();
+    expect(run.echoes.some((e) => e.label === GUIDE_LABEL)).toBe(false);
+    expect(ui.toasts).toContain('기록 지점');
+    input.heldMask = 0;
+    // a restart of the same zone, or a later visit, shows no guide
+    ui.emit({ type: 'restart' });
+    const again = scenes.run!;
+    runFrames(scenes, () => again.t >= GUIDE_DELAY + 1, 600);
+    expect(again.echoes.some((e) => e.label === GUIDE_LABEL)).toBe(false);
+    expect(save.progress.seen.t1).toBe(true);
+    expect(api.submissions).toHaveLength(0);
+  });
+
+  it('two pit deaths in one checkpoint segment bring the double-jump hint back; spikes bring the dash hint', () => {
+    const { scenes, ui, input, renderer } = makeScenes([pitRoom()]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'pit' });
+    input.heldMask = IN.RIGHT;
+    const deaths = () => renderer.events.filter((e) => e.type === 'death').length;
+    runFrames(scenes, () => deaths() >= 1);
+    runFrames(scenes, () => scenes.run!.sim.state.phase === 'play', 300);
+    expect(ui.hints.filter((h) => h === REHINT_PIT)).toHaveLength(0);
+    runFrames(scenes, () => deaths() >= REHINT_DEATHS);
+    expect(deaths()).toBe(REHINT_DEATHS);
+    let n = 0;
+    runFrames(scenes, () => ++n > (HINT_DELAY + 0.2) * 60, 1000);
+    expect(ui.hints.filter((h) => h === REHINT_PIT)).toHaveLength(1);
+    expect(ui.toasts.filter((t) => t === '심연').length).toBeGreaterThanOrEqual(2);
+
+    const spikes = makeScenes([spikeRoom()]);
+    spikes.scenes.bootSync();
+    spikes.ui.emit({ type: 'start', levelId: 'spikes' });
+    spikes.input.heldMask = IN.RIGHT;
+    const spikeDeaths = () => spikes.renderer.events.filter((e) => e.type === 'death' && e.cause === 'spike').length;
+    runFrames(spikes.scenes, () => spikeDeaths() >= REHINT_DEATHS, 6000);
+    expect(spikeDeaths()).toBe(REHINT_DEATHS);
+    let k = 0;
+    runFrames(spikes.scenes, () => ++k > (HINT_DELAY + 0.2) * 60, 1000);
+    expect(spikes.ui.hints.filter((h) => h === REHINT_HAZARD)).toHaveLength(1);
+    expect(spikes.ui.hints.filter((h) => h === REHINT_PIT)).toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------- P1-4 first clear → the tower
+  it('the very first clear returns to the tower with the next zone reported as unlocked; later clears go straight on', async () => {
+    const first = flatRoom();
+    const second = { ...openRoom(), id: 'second', name: '두 번째' };
+    const { scenes, ui, input } = makeScenes([first, second]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'flat' });
+    expect(scenes.run!.firstEver).toBe(true);
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    expect(ui.result!.nextLevelId).toBe('second');
+    expect(ui.result!.unlocked).toEqual({ levelId: 'second', name: '두 번째' });
+    expect(ui.unlockCalls.at(-1)).toEqual(new Set(['second']));
+    ui.emit({ type: 'next' });
+    expect(scenes.run).toBeNull();
+    expect(ui.screen).toBe('select');
+    await scenes.settle();
+
+    // second clear of the same zone: nothing new opens, and 다음 구역 starts the next zone directly
+    ui.emit({ type: 'start', levelId: 'flat' });
+    expect(scenes.run!.firstEver).toBe(false);
+    runFrames(scenes, () => ui.screen === 'result');
+    expect(ui.result!.unlocked).toBeUndefined();
+    expect(ui.unlockCalls.at(-1)).toEqual(new Set());
+    ui.emit({ type: 'next' });
+    expect(ui.screen).toBe('play');
+    expect(scenes.run!.def.id).toBe('second');
+    await scenes.settle();
+  });
+
+  // ---------------------------------------------------------------- P1-6 goal under the HUD
+  it('forwards the renderer\'s goalScreen to the UI every drawn frame', () => {
+    const { scenes, ui, renderer } = makeScenes([flatRoom()]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'flat' });
+    scenes.frame(1 / 60);
+    expect(ui.goalScreens.at(-1)).toBeNull();
+    const g = { x: 900, y: 40, onScreen: true };
+    (renderer as { goalScreen: typeof g | null }).goalScreen = g;
+    scenes.frame(1 / 60);
+    expect(ui.goalScreens.at(-1)).toBe(g);
+  });
+
   it('applies settings, names and echo toggles from the UI', () => {
     const { scenes, ui, save, timers, input } = makeScenes([flatRoom()]);
     scenes.bootSync();
@@ -1175,5 +1439,326 @@ describe('Scenes daily cache', () => {
     expect(last[2]).toBe('error');
     expect(last[0]?.seed).toBe(12345);
     expect(last[1]).not.toBeNull(); // the board fetched earlier stays on screen
+  });
+});
+
+// ================================================================ Phase 1 shell: versions · telemetry · lifecycle
+describe('Scenes · SIM_VERSION guard (P1-1)', () => {
+  it('a sim-version rejection shows the reason, flags the UI as behind and asks for an update check', async () => {
+    const def = flatRoom();
+    const { scenes, ui, input, api, newer } = makeScenes([def]);
+    scenes.bootSync();
+    // a server that already runs the next sim refuses this build's replays
+    api.submitRun = async (body) => { api.submissions.push(body); return { accepted: false, reason: 'sim-version' }; };
+    ui.emit({ type: 'start', levelId: 'flat' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(api.submissions.length).toBe(1);
+    expect(ui.result!.submit).toEqual({ state: 'rejected', reason: 'sim-version' });
+    expect(ui.versionBehind).toEqual([true]);
+    expect(newer).toEqual([null]);
+  });
+
+  it('boot() compares /api/health.simVersion with the bundle without blocking: newer → update offered, same → nothing', async () => {
+    const hooks = { raf: async () => {}, wait: async () => {} };
+    const same = makeScenes([flatRoom()]);
+    same.api.healthSim = SIM_VERSION;
+    await same.scenes.boot(hooks);
+    await same.scenes.settle();
+    expect(same.api.healthCalls).toBe(1);
+    expect(same.ui.versionBehind).toEqual([]);
+    expect(same.newer).toEqual([]);
+
+    const newer = makeScenes([flatRoom()]);
+    newer.api.healthSim = SIM_VERSION + 1;
+    await newer.scenes.boot(hooks);
+    expect(newer.ui.screen).toBe('title'); // boot never waited on the network
+    await newer.scenes.settle();
+    expect(newer.ui.versionBehind).toEqual([true]);
+    expect(newer.newer).toEqual([SIM_VERSION + 1]);
+
+    // a pre-P1 server (no field) and a failing health check are both silent
+    const legacy = makeScenes([flatRoom()]);
+    await legacy.scenes.boot(hooks);
+    await legacy.scenes.settle();
+    expect(legacy.ui.versionBehind).toEqual([]);
+    const down = makeScenes([flatRoom()]);
+    down.api.health = async () => { throw new ApiError('network error', 0, 'network'); };
+    await down.scenes.boot(hooks);
+    await down.scenes.settle();
+    expect(down.ui.versionBehind).toEqual([]);
+    expect(down.ui.screen).toBe('title');
+  });
+
+  it('a daily issued by a newer sim / generator is not started: the update is offered instead', async () => {
+    const { scenes, ui, api, newer } = makeScenes([flatRoom()]);
+    scenes.bootSync();
+    api.dailySim = SIM_VERSION + 1;
+    ui.emit({ type: 'openDaily' });
+    await scenes.settle();
+    expect(newer).toEqual([SIM_VERSION + 1]);
+    expect(ui.versionBehind).toEqual([true]);
+    ui.emit({ type: 'daily' });
+    expect(scenes.run).toBeNull();
+    expect(ui.toasts.at(-1)).toMatch(/새 버전/);
+    // the generator alone being ahead is the same situation
+    const gen = makeScenes([flatRoom()]);
+    gen.scenes.bootSync();
+    gen.api.dailySim = SIM_VERSION;
+    gen.api.dailyGen = GEN_VERSION + 1;
+    gen.ui.emit({ type: 'openDaily' });
+    await gen.scenes.settle();
+    gen.ui.emit({ type: 'daily' });
+    expect(gen.scenes.run).toBeNull();
+    // matching versions start normally
+    const ok = makeScenes([flatRoom()]);
+    ok.scenes.bootSync();
+    ok.api.dailySim = SIM_VERSION;
+    ok.api.dailyGen = GEN_VERSION;
+    ok.ui.emit({ type: 'openDaily' });
+    await ok.scenes.settle();
+    ok.ui.emit({ type: 'daily' });
+    expect(ok.scenes.run?.mode).toBe('daily');
+    expect(ok.ui.versionBehind).toEqual([]);
+  });
+
+  it('the self echo ignores stored masks from another SIM_VERSION and runs the versioned ones', async () => {
+    const def = flatRoom();
+    const stale = makeScenes([def], { echoSelf: true });
+    stale.scenes.bootSync();
+    stale.save.progress.levels.flat = { done: true, bestTicks: 100, bestShards: 0, stars: 1, relics: 0, deaths: 0, masks: encodeMasks(Uint8Array.from([2, 2, 2])) };
+    stale.ui.emit({ type: 'start', levelId: 'flat' });
+    await stale.scenes.settle();
+    expect(stale.scenes.run!.echoes.length).toBe(0);
+
+    const fresh = makeScenes([def], { echoSelf: true });
+    fresh.scenes.bootSync();
+    const rec: LevelRecord = { done: true, bestTicks: 100, bestShards: 0, stars: 1, relics: 0, deaths: 0 };
+    markEcho(rec, encodeMasks(Uint8Array.from([2, 2, 2])));
+    fresh.save.progress.levels.flat = rec;
+    fresh.ui.emit({ type: 'start', levelId: 'flat' });
+    await fresh.scenes.settle();
+    expect(fresh.scenes.run!.echoes.length).toBe(1);
+    expect(fresh.scenes.run!.echoes[0].label).toBe('나');
+  });
+
+  it('boot counts the UTC play day and reports the retention buckets on the boot event', async () => {
+    let t = Date.UTC(2026, 8, 6, 12);
+    const { scenes, save, tele } = makeScenes([flatRoom()], { now: () => t });
+    scenes.bootSync();
+    expect(save.progress.firstSeen).toBe(t);
+    expect(save.progress.playDays).toBe(1);
+    expect(save.progress.lastPlayDay).toBe('2026-09-06');
+    const boot = tele.of('boot');
+    expect(boot.length).toBe(1);
+    expect(boot[0]).toMatchObject({ uaFamily: 'desktop', dpr: 2, hwConcurrency: 8, daysSinceFirstSeen: '0', daysPlayedBucket: '1' });
+    // the next day, a second boot of the same save is a D1 return
+    t += 86_400_000;
+    const again = new Scenes({
+      renderer: fakeRenderer(), audio: fakeAudio(), ui: fakeUI(), input: fakeInput(), api: fakeApi([flatRoom()]), save,
+      levels: [flatRoom()], telemetry: tele, now: () => t,
+    });
+    again.bootSync();
+    expect(save.progress.playDays).toBe(2);
+    expect(tele.of('boot')[1]).toMatchObject({ daysSinceFirstSeen: '1', daysPlayedBucket: '2-6' });
+  });
+});
+
+describe('Scenes · telemetry hooks (P1-3)', () => {
+  it('reports the funnel of a story run without any identity: screens, zone_start, death{tx,ty,checkpointIdx}, respawn, clear, result_shown, submit_result, quit', async () => {
+    const def = pitRoom();
+    const { scenes, ui, input, renderer, tele, save } = makeScenes([def]);
+    scenes.bootSync();
+    scenes.frame(1 / 60);
+    expect(tele.screens).toEqual(['title']);
+    ui.emit({ type: 'start', levelId: 'pit' });
+    expect(tele.of('zone_start')).toEqual([{ levelId: 'pit', mode: 'story', restart: false }]);
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => renderer.events.some((e) => e.type === 'death'));
+    const deathEv = renderer.events.find((e) => e.type === 'death') as Extract<SimEvent, { type: 'death' }>;
+    const death = tele.of('death');
+    expect(death.length).toBe(1);
+    expect(death[0]).toEqual({
+      levelId: 'pit', cause: 'pit', tx: Math.floor(deathEv.x / TILE), ty: Math.floor(deathEv.y / TILE), checkpointIdx: 0,
+    });
+    runFrames(scenes, () => renderer.events.some((e) => e.type === 'respawn'));
+    const respawn = tele.of('respawn');
+    expect(respawn.length).toBe(1);
+    expect(respawn[0].levelId).toBe('pit');
+    // the death → control gap the player felt, in wall ms (0.6 s of sim = 36 frames at 60 Hz)
+    expect(respawn[0].ms).toBeGreaterThan(400);
+    expect(respawn[0].ms).toBeLessThan(900);
+    expect(tele.screens).toEqual(['title', 'play']);
+    // quit mid-run
+    ui.emit({ type: 'quit' });
+    const quit = tele.of('quit');
+    expect(quit.length).toBe(1);
+    expect(quit[0]).toMatchObject({ levelId: 'pit', mode: 'story', finished: false });
+    expect(typeof quit[0].t).toBe('number');
+    scenes.frame(1 / 60);
+    expect(tele.screens).toEqual(['title', 'play', 'select']);
+
+    // a clear reports the summary and the verdict
+    const flat = flatRoom();
+    const s2 = makeScenes([flat]);
+    s2.scenes.bootSync();
+    s2.ui.emit({ type: 'start', levelId: 'flat' });
+    s2.input.heldMask = IN.RIGHT;
+    runFrames(s2.scenes, () => s2.ui.screen === 'result');
+    await s2.scenes.settle();
+    const clear = s2.tele.of('clear');
+    expect(clear.length).toBe(1);
+    expect(clear[0]).toMatchObject({ levelId: 'flat', deaths: 0 });
+    expect(typeof clear[0].ticks).toBe('number');
+    expect(typeof clear[0].shards).toBe('number');
+    expect(s2.tele.of('result_shown')).toEqual([{ levelId: 'flat', kind: 'clear', mode: 'story' }]);
+    expect(s2.tele.of('submit_result')).toEqual([{ accepted: true, mode: 'story', levelId: 'flat' }]);
+    s2.ui.emit({ type: 'retry' });
+    expect(s2.tele.of('retry')).toEqual([{ levelId: 'flat', mode: 'story', kind: 'retry' }]);
+    expect(s2.tele.of('zone_start').at(-1)).toEqual({ levelId: 'flat', mode: 'story', restart: true });
+    // nothing that identifies the player ever reaches the sink
+    const blob = JSON.stringify(s2.tele.events);
+    expect(blob).not.toContain(s2.save.progress.player.id);
+    expect(blob).not.toContain(s2.save.progress.player.name);
+    expect(blob).not.toContain(save.progress.player.id);
+  });
+
+  it('daily runs report daily_start / daily_over and the submission verdict', async () => {
+    const tide = { ...tideRoom(), id: 'daily' };
+    const { scenes, ui, input, api, tele } = makeScenes([flatRoom()], { makeDaily: () => tide });
+    api.levels.daily = tide;
+    scenes.bootSync();
+    api.dailySim = SIM_VERSION;
+    api.dailyGen = GEN_VERSION;
+    ui.emit({ type: 'openDaily' });
+    await scenes.settle();
+    ui.emit({ type: 'daily' });
+    expect(tele.of('daily_start')).toEqual([{ levelId: 'daily', mode: 'daily', restart: false }]);
+    input.heldMask = 0;
+    runFrames(scenes, () => ui.screen === 'over', 20_000);
+    expect(tele.of('daily_over').length).toBe(1);
+    expect(tele.of('result_shown').at(-1)).toMatchObject({ kind: 'over', mode: 'daily' });
+    await scenes.settle();
+    const sub = tele.of('submit_result');
+    expect(sub.length).toBe(1);
+    expect(sub[0].mode).toBe('daily');
+    if (!sub[0].accepted) expect(typeof sub[0].reason).toBe('string');
+  });
+});
+
+describe('Scenes · lifecycle (P1-7 · SW reload safety)', () => {
+  it('menu screens draw the title backdrop at most 30 times a second', () => {
+    const { scenes, renderer } = makeScenes([flatRoom()]);
+    scenes.bootSync();
+    for (let i = 0; i < 60; i++) scenes.frame(1 / 60);
+    expect(renderer.titleDraws).toBeLessThanOrEqual(31);
+    expect(renderer.titleDraws).toBeGreaterThanOrEqual(29);
+    expect(MENU_FRAME_DT).toBeCloseTo(1 / 30);
+    // a slower display still draws every frame
+    const slow = makeScenes([flatRoom()]);
+    slow.scenes.bootSync();
+    for (let i = 0; i < 30; i++) slow.scenes.frame(1 / 30);
+    expect(slow.renderer.titleDraws).toBe(30);
+  });
+
+  it('a lost gamepad pauses a live run with a toast, and does nothing outside play', () => {
+    const { scenes, ui, input } = makeScenes([flatRoom()]);
+    scenes.bootSync();
+    scenes.gamepadLost();
+    expect(ui.screen).toBe('title');
+    ui.emit({ type: 'start', levelId: 'flat' });
+    runFrames(scenes, () => scenes.run!.sim.state.phase === 'play');
+    const tick = scenes.run!.sim.state.tick;
+    scenes.gamepadLost();
+    expect(ui.screen).toBe('pause');
+    expect(ui.toasts).toContain('게임패드 연결이 끊겼다');
+    input.heldMask = IN.RIGHT;
+    for (let i = 0; i < 10; i++) scenes.frame(1 / 60);
+    expect(scenes.run!.sim.state.tick).toBe(tick);
+    // a second loss while already paused is silent
+    const toasts = ui.toasts.length;
+    scenes.gamepadLost();
+    expect(ui.toasts.length).toBe(toasts);
+  });
+
+  it('the result timer keeps running while a menu is up, so a pause during the clear animation still lands on the result', () => {
+    const { scenes, ui, input } = makeScenes([flatRoom()]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'flat' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => scenes.run!.sim.finished);
+    expect(scenes.run!.resultTimer).toBeGreaterThan(0);
+    ui.show('pause');
+    const before = scenes.run!.resultTimer;
+    scenes.frame(1 / 60);
+    expect(scenes.run!.resultTimer).toBeLessThan(before);
+    runFrames(scenes, () => ui.screen === 'result', Math.ceil(RESULT_DELAY * 60) + 5);
+    expect(ui.screen).toBe('result');
+  });
+
+  it('after a hidden → visible transition the next frame renders once and runs no catch-up ticks', () => {
+    const { scenes, ui, input, renderer } = makeScenes([openRoom()]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'open' });
+    runFrames(scenes, () => scenes.run!.sim.state.phase === 'play');
+    input.heldMask = IN.RIGHT;
+    const tick = scenes.run!.sim.state.tick;
+    const draws = renderer.draws;
+    scenes.visibility(true);
+    scenes.visibility(false);
+    scenes.frame(0.25); // the long gap the rAF loop reports after the tab returns
+    expect(scenes.run!.sim.state.tick).toBe(tick);
+    expect(renderer.draws).toBe(draws + 1);
+    // the frame after that runs normally
+    scenes.frame(1 / 60);
+    expect(scenes.run!.sim.state.tick).toBe(tick + 2);
+    // hidden alone (no return yet) leaves the frame accounting untouched
+    scenes.visibility(true);
+    scenes.frame(1 / 60);
+    expect(scenes.run!.sim.state.tick).toBe(tick + 4);
+  });
+
+  it('isBusy() is true from zone start until the result has settled; onRunEnd fires once per run', async () => {
+    const def = flatRoom();
+    const { scenes, ui, input } = makeScenes([def]);
+    let ends = 0;
+    scenes.onRunEnd(() => { ends++; });
+    scenes.bootSync();
+    expect(scenes.isBusy()).toBe(false);
+    ui.emit({ type: 'start', levelId: 'flat' });
+    expect(scenes.isBusy()).toBe(true);
+    ui.show('pause');
+    expect(scenes.isBusy()).toBe(true); // paused is still a run in progress
+    ui.emit({ type: 'resume' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    // the result is up but the submission is still pending: not yet
+    expect(scenes.run!.view!.submit.state).toBe('pending');
+    expect(scenes.isBusy()).toBe(true);
+    expect(ends).toBe(0);
+    await scenes.settle();
+    expect(scenes.run!.view!.submit.state).toBe('accepted');
+    expect(scenes.isBusy()).toBe(false);
+    expect(ends).toBe(1);
+    ui.emit({ type: 'quit' });
+    expect(ends).toBe(1);
+    expect(scenes.isBusy()).toBe(false);
+    // a quit mid-run ends the run too
+    ui.emit({ type: 'start', levelId: 'flat' });
+    expect(scenes.isBusy()).toBe(true);
+    ui.emit({ type: 'quit' });
+    expect(ends).toBe(2);
+    expect(scenes.isBusy()).toBe(false);
+    // assist runs (never submitted) end when the result shows
+    const assist = makeScenes([def], { assist: true });
+    let aEnds = 0;
+    assist.scenes.onRunEnd(() => { aEnds++; });
+    assist.scenes.bootSync();
+    assist.ui.emit({ type: 'start', levelId: 'flat' });
+    assist.input.heldMask = IN.RIGHT;
+    runFrames(assist.scenes, () => assist.ui.screen === 'result');
+    expect(aEnds).toBe(1);
+    expect(assist.scenes.isBusy()).toBe(false);
   });
 });

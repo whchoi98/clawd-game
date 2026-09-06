@@ -138,10 +138,55 @@ describe('registerServiceWorker', () => {
     expect(waiting.messages).toEqual([{ type: 'skip-waiting' }]);
   });
 
-  it('a controlled page reloads once when another tab switched the worker', async () => {
+  it('a controllerchange this tab did not request re-offers the update instead of reloading; its apply reloads once', async () => {
     const { win, sw, nav } = env({ controlled: true });
-    await registerServiceWorker({ win, nav, onUpdateReady: () => {} });
+    const applies: (() => void)[] = [];
+    await registerServiceWorker({ win, nav, onUpdateReady: (a) => { applies.push(a); } });
+    // another tab (or the browser) switched the worker under this page
     sw.dispatchEvent(new Event('controllerchange'));
+    expect(win.location.reloads).toBe(0);
+    expect(applies.length).toBe(1);
+    sw.dispatchEvent(new Event('controllerchange'));
+    expect(applies.length).toBe(1); // offered once
+    applies[0]();
+    applies[0]();
+    expect(win.location.reloads).toBe(1);
+  });
+
+  it('defers the reload while isBusy() (a run in play) and performs it once when onRunEnd fires', async () => {
+    const { win, sw, nav } = env({ controlled: true });
+    let busy = true;
+    const runEnd: (() => void)[] = [];
+    let apply: (() => void) | null = null;
+    await registerServiceWorker({
+      win, nav, onUpdateReady: (a) => { apply = a; }, isBusy: () => busy, onRunEnd: (cb) => { runEnd.push(cb); },
+    });
+    const w = sw.reg.found();
+    w.setState('installed');
+    apply!();
+    expect(w.messages).toEqual([{ type: 'skip-waiting' }]);
+    sw.dispatchEvent(new Event('controllerchange'));
+    expect(win.location.reloads).toBe(0); // the run is still going
+    sw.dispatchEvent(new Event('controllerchange'));
+    expect(win.location.reloads).toBe(0);
+    busy = false;
+    for (const cb of runEnd) cb();
+    expect(win.location.reloads).toBe(1);
+    for (const cb of runEnd) cb();
+    sw.dispatchEvent(new Event('controllerchange'));
+    expect(win.location.reloads).toBe(1);
+  });
+
+  it('a run end without a pending reload does nothing, and an idle page still reloads immediately on its own apply', async () => {
+    const { win, sw, nav } = env({ controlled: true });
+    const runEnd: (() => void)[] = [];
+    let apply: (() => void) | null = null;
+    await registerServiceWorker({ win, nav, onUpdateReady: (a) => { apply = a; }, isBusy: () => false, onRunEnd: (cb) => { runEnd.push(cb); } });
+    for (const cb of runEnd) cb();
+    expect(win.location.reloads).toBe(0);
+    const w = sw.reg.found();
+    w.setState('installed');
+    apply!();
     sw.dispatchEvent(new Event('controllerchange'));
     expect(win.location.reloads).toBe(1);
   });

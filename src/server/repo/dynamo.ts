@@ -6,6 +6,9 @@
  *   Run / ghost        RUN#<runId>         META
  *   Player best        PLAYER#<playerId>   BEST#<mode>#<board>
  *
+ * where <board> is `boardKey(mode, board)`: the date for daily boards and
+ * `<levelId>#s<SIM_VERSION>r<rev>` for story boards (e.g. LB#story#t1#s2r0).
+ *
  * The LB sort key orders a board fastest first with more shards winning ties
  * (spec §3.5); `rankOf` compares `sk < <score 12 digits>` so it counts exactly
  * the strictly better scores, which is what competition ranking needs.
@@ -25,6 +28,7 @@
  */
 import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import type { Mode } from '../../shared/protocol.js';
+import { boardKey } from '../boards.js';
 import type { Repo, StoredRun } from './types.js';
 
 export const SCORE_DIGITS = 12;
@@ -42,13 +46,19 @@ export function padShards(shards: number): string {
   return String(SHARD_CEIL - n).padStart(SHARD_DIGITS, '0');
 }
 
+/**
+ * Key builders. `board` is the wire-level board (levelId / date); story boards
+ * are suffixed with `#s<SIM_VERSION>r<rev>` by `boardKey` (see boards.ts), so
+ * a sim bump or a zone's geometry change opens a fresh board and the PLAYER
+ * best of the previous version cannot shadow a new run.
+ */
 export const KEY = {
-  lbPk: (mode: Mode, board: string) => `LB#${mode}#${board}`,
+  lbPk: (mode: Mode, board: string) => `LB#${mode}#${boardKey(mode, board)}`,
   lbSk: (score: number, shards: number, runId: string) => `${padScore(score)}#${padShards(shards)}#${runId}`,
   runPk: (runId: string) => `RUN#${runId}`,
   RUN_SK: 'META',
   playerPk: (playerId: string) => `PLAYER#${playerId}`,
-  bestSk: (mode: Mode, board: string) => `BEST#${mode}#${board}`,
+  bestSk: (mode: Mode, board: string) => `BEST#${mode}#${boardKey(mode, board)}`,
 } as const;
 
 /** Structural subset of DynamoDBDocumentClient so tests can inject a fake. */

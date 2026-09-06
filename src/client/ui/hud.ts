@@ -101,7 +101,13 @@ export class Hud {
     this.last = {};
     this.livePending = null;
     this.hint(null);
+    this.setLevelHidden(false);
     if (this.dash) this.dash.classList.remove('show');
+  }
+
+  /** Hide the zone name chip while the goal is drawn under it (the renderer reports goalScreen). */
+  setLevelHidden(on: boolean): void {
+    if (this.level && this.level.hidden !== on) this.level.hidden = on;
   }
 
   update(h: HudState): void {

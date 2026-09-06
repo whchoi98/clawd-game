@@ -109,7 +109,9 @@ class ReplayVerifier {
 
   constructor(def: LevelDef, private readonly replay: Replay, private readonly claim?: RunClaim) {
     this.sim = new Sim(def, { seed: replay.seed, assist: replay.assist });
-    if (replay.levelId !== def.id) this.early = 'bad-level';
+    // A log from another sim version cannot be reproduced: refuse before any tick is stepped.
+    if (replay.v !== SIM_VERSION) this.early = 'sim-version';
+    else if (replay.levelId !== def.id) this.early = 'bad-level';
     else if (replay.masks.length > MAX_TICKS) this.early = 'too-long';
   }
 

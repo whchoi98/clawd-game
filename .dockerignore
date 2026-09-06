@@ -8,6 +8,7 @@ node_modules
 dist
 cdk.out
 .git
+.claude
 .gitignore
 docs
 test
@@ -16,6 +17,8 @@ tools/dev.mjs
 tools/qa
 tools/postdeploy.*
 tools/icons.*
+tools/release.*
+tools/stats.*
 infra
 cdk.json
 cdk.context.json

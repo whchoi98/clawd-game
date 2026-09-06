@@ -15,7 +15,7 @@
  * `ui.screen === 'play'`, and `resume` / `restart` / `quit` come back as actions.
  */
 import type {
-  AudioPort, Binds, HudState, InputPort, MenuAction, Progress, ResultView, Screen, Settings, TouchState,
+  AudioPort, Binds, Device, HudState, InputPort, MenuAction, Progress, ResultView, Screen, Settings, TouchState,
   UIAction, UIPort, UiSound,
 } from '../contracts.js';
 import type { LevelDef, RunSummary } from '../../sim/types.js';
@@ -24,12 +24,19 @@ import type { Biome } from '../../shared/biomes.js';
 import { BIOMES, BIOME_ORDER } from '../../shared/biomes.js';
 import { DEFAULT_BINDS } from '../input/binds.js';
 import {
-  MODAL_SCREENS, Navigator, ScreenStack, el, lockSvg, starSvg, validateName, NAME_MAX,
+  LEAVE_MS, MODAL_SCREENS, Navigator, ScreenStack, el, lockSvg, replay, starSvg, validateName, NAME_MAX,
 } from './screens.js';
 import { Hud, fmtTicks, fmtTime } from './hud.js';
+import { renderHint } from './hints.js';
 import { SettingsPanel, type PortraitPainter } from './settings.js';
 import { TouchControls, wantsRotatePrompt } from './touch.js';
 import { renderLeaderboard, type LbStatus } from './leaderboard.js';
+
+/** Seconds the restart bind must stay held during play to restart the whole zone (a tap is a checkpoint retry inside the sim). */
+export const RESTART_HOLD_S = 0.6;
+/** The HUD's top-right block (CSS px from the canvas's top-right corner) where the zone name sits; the goal under it hides the name. */
+export const HUD_TOPRIGHT_W = 220;
+export const HUD_TOPRIGHT_H = 90;
 
 export interface UIOptions {
   /** Defaults to the global document. */
@@ -48,6 +55,8 @@ export interface UIOptions {
   now?: () => number;
   /** "홈 화면에 추가": show the browser's deferred install prompt (src/client/pwa.ts). */
   onInstall?: () => void;
+  /** Reload the page (the update bar's button when no service worker switch is pending). Default: location.reload(). */
+  reload?: () => void;
 }
 
 /**
@@ -65,7 +74,7 @@ export const REASON_KR: Readonly<Record<RejectReason, string>> = {
   'bad-masks': '입력 기록이 손상됐다',
   'rate-limited': '요청이 너무 잦다. 잠시 후 다시',
   duplicate: '이미 접수된 기록이다',
-  'sim-version': '새 버전이 나왔다. 새로고침 후 다시 제출된다',
+  'sim-version': '새 버전이 나왔다. 새로고침 후 다시 도전한다',
 };
 /** Transport-level reasons the API client produces (ApiError.reason) when there is no server verdict. */
 const TRANSPORT_REASON_KR: Readonly<Record<string, string>> = {
@@ -143,6 +152,22 @@ export class UI implements UIPort {
   private iosHintDismissed = false;
   /** Set by showUpdate(); the bar stays until the player applies the update. */
   private updateApply: (() => void) | null = null;
+  /** The server runs a newer sim than this bundle (setVersionBehind): the bar is urgent and reloads even without a waiting worker. */
+  private versionBehind = false;
+  private readonly reload: () => void;
+  /** The data notice (#scr-data) is an overlay on top of the modal stack; true while it is open. */
+  private dataOpen = false;
+  /** The hint template on screen (tokens unresolved) and the device it was rendered for. */
+  private hintTemplate: string | null = null;
+  private hintDevice: Device | null = null;
+  /** Seconds the restart bind has been held during play, and whether this hold already restarted. */
+  private restartHold = 0;
+  private restartFired = false;
+  /** Zones opened by the latest clear: their cards animate and the unlock sound plays when select comes up. */
+  private unlocking = new Set<string>();
+  private unlockSoundPending = false;
+  /** What the title's first entry starts: the last zone, or the first zone on a fresh save. */
+  private continueId: string | null = null;
 
   constructor(opts: UIOptions = {}) {
     this.doc = opts.document ?? document;
@@ -153,6 +178,7 @@ export class UI implements UIPort {
     this.defaultBinds = opts.defaultBinds ?? DEFAULT_BINDS;
     this.now = opts.now ?? (() => Date.now());
     this.onInstall = opts.onInstall ?? null;
+    this.reload = opts.reload ?? (() => { try { this.win?.location.reload(); } catch { /* unloading */ } });
     this.nagDismissed = this.readNagDismissed();
     this.iosHintDismissed = this.readFlag(IOS_HINT_DISMISSED_KEY);
 
@@ -201,11 +227,17 @@ export class UI implements UIPort {
   // ================================================================ UIPort
   on(cb: (a: UIAction) => void): void { this.listeners.push(cb); }
 
-  get screen(): Screen { return this.screens.top; }
+  get screen(): Screen { return this.dataOpen ? 'data' : this.screens.top; }
 
   show(screen: Screen): void {
+    // The data notice lives outside the screen stack (ScreenStack does not
+    // register it): it is an overlay opened here and closed by any other show().
+    if (screen === 'data') { this.openData(); return; }
+    if (this.dataOpen) this.closeData();
     const baseChanged = this.screens.show(screen);
-    if (screen === 'play' && baseChanged) this.hudCtl.reset();
+    if (screen === 'play' && baseChanged) { this.hudCtl.reset(); this.hintTemplate = null; }
+    this.restartHold = 0;
+    this.restartFired = false;
     this.afterShow();
   }
 
@@ -222,8 +254,22 @@ export class UI implements UIPort {
     const top = this.screens.top;
     if (top === 'boot') return;
     if (top === 'play') {
-      if (actions.has('pause')) this.pause();
-      else if (actions.has('restart')) this.emit({ type: 'restart' });
+      if (this.hintTemplate !== null && input.lastDevice !== this.hintDevice) this.paintHint();
+      if (actions.has('pause')) { this.pause(); return; }
+      // A tap of the restart bind is IN.RETRY inside the sim (instant checkpoint
+      // retry, recorded in the replay); only a hold restarts the whole zone, once.
+      if (input.menuHeld('restart')) {
+        // A stalled frame (tab switch) must not count as a long hold.
+        this.restartHold += Math.min(step, 0.5);
+        if (this.restartHold >= RESTART_HOLD_S && !this.restartFired) {
+          this.restartFired = true;
+          this.sound('confirm');
+          this.emit({ type: 'restart' });
+        }
+      } else {
+        this.restartHold = 0;
+        this.restartFired = false;
+      }
       return;
     }
     if (top === 'pause' && (actions.has('pause') || actions.has('cancel'))) {
@@ -245,9 +291,42 @@ export class UI implements UIPort {
     this.hudCtl.update(h);
   }
 
-  hint(text: string | null): void { this.hudCtl.hint(text); }
+  /**
+   * Show a hint template ({move} {jump} {dash} {stomp} {down} tokens) rendered
+   * for the device the player used last; re-rendered when the device changes.
+   */
+  hint(text: string | null): void {
+    this.hintTemplate = text && text !== '' ? text : null;
+    this.paintHint();
+  }
+
+  private paintHint(): void {
+    const t = this.hintTemplate;
+    if (t === null) { this.hudCtl.hint(null); this.hintDevice = null; return; }
+    const device: Device = this.input?.lastDevice ?? (this.touchCtl.coarse ? 'touch' : 'keyboard');
+    this.hintDevice = device;
+    this.hudCtl.hint(renderHint(t, device, {
+      binds: this.settings?.binds,
+      keyLabel: (code) => this.input?.keyLabel(code) ?? code,
+    }));
+  }
 
   toast(text: string): void { this.hudCtl.toast(text); }
+
+  /**
+   * Where the renderer drew the goal (canvas CSS px) after the last frame, or
+   * null: the zone name chip hides while the goal sits under the HUD's
+   * top-right block so the two never overlap.
+   */
+  setGoalScreen(g: { x: number; y: number; onScreen: boolean } | null): void {
+    let hide = false;
+    if (g && g.onScreen) {
+      const canvas = this.doc.getElementById('world');
+      const w = (canvas && (canvas as HTMLElement).clientWidth) || this.win?.innerWidth || 0;
+      hide = w > 0 && g.x >= w - HUD_TOPRIGHT_W && g.y <= HUD_TOPRIGHT_H && g.x <= w && g.y >= 0;
+    }
+    this.hudCtl.setLevelHidden(hide);
+  }
 
   /** Big centred banner (zone name at start, "끝없는 등반" …). Not part of UIPort but handy for the shell. */
   banner(text: string): void { this.hudCtl.banner(text); }
@@ -260,10 +339,19 @@ export class UI implements UIPort {
     if (hint && label) hint.textContent = label;
   }
 
-  refreshSelect(progress: Progress, levels: LevelDef[]): void {
+  /**
+   * Rebuild the tower. `justUnlocked` names zones this call opens: their cards
+   * get `is-unlocking` and the unlock sound plays once — now when the select
+   * screen is up, otherwise the moment it next appears.
+   */
+  refreshSelect(progress: Progress, levels: LevelDef[], justUnlocked?: Iterable<string>): void {
     this.progress = progress;
     this.levels = levels;
     this.playerName = progress.player.name;
+    if (justUnlocked) {
+      for (const id of justUnlocked) this.unlocking.add(id);
+      if (this.unlocking.size) this.unlockSoundPending = true;
+    }
     const host = this.doc.getElementById('sel-tiers');
     if (host) {
       host.replaceChildren();
@@ -309,7 +397,19 @@ export class UI implements UIPort {
     }
     this.refreshTitle();
     this.renderDailyMine();
-    if (this.screens.top === 'select') this.nav.refresh(this.screens.el('select'));
+    if (this.screens.top === 'select') {
+      this.nav.refresh(this.screens.el('select'));
+      this.revealUnlocks();
+    }
+  }
+
+  /** The select screen is visible with the freshly opened cards: sound once, then forget them. */
+  private revealUnlocks(): void {
+    if (this.unlockSoundPending) {
+      this.unlockSoundPending = false;
+      this.sound('unlock');
+    }
+    this.unlocking.clear();
   }
 
   setDaily(daily: DailyResponse | null, lb: LeaderboardResponse | null, status: 'loading' | 'ok' | 'error'): void {
@@ -348,10 +448,19 @@ export class UI implements UIPort {
       for (let i = 0; i < 3; i++) stars.appendChild(starSvg(d, view.stars > i));
       stars.setAttribute('aria-label', `별 ${view.stars} / 3`);
     }
+    const unlock = d.getElementById('res-unlock');
+    if (unlock) {
+      const u = view.unlocked;
+      unlock.hidden = !u;
+      if (u) unlock.replaceChildren('다음 구역 해금: ', el(d, 'b', {}, u.name));
+      else unlock.replaceChildren();
+    }
     const next = d.querySelector<HTMLElement>('#scr-result [data-act="next"]');
     if (next) next.hidden = !view.nextLevelId;
     this.paintSubmission('res-submit', 'res-lb', view);
     this.show('result');
+    // the rank letter pops once the modal has landed (CSS keyframes; reduced motion disables them)
+    if (rank) replay(rank, 'pop');
   }
 
   updateResult(view: ResultView): void {
@@ -433,19 +542,35 @@ export class UI implements UIPort {
     this.doc.getElementById('ui')?.classList.toggle('is-offline', on);
   }
 
+  /**
+   * The server runs a newer sim (health / daily version, or a 'sim-version'
+   * rejection): the update bar shows urgently on every screen but play, and
+   * its button reloads even when no waiting worker has been found yet.
+   */
+  setVersionBehind(on: boolean): void {
+    if (this.versionBehind === on) return;
+    this.versionBehind = on;
+    this.syncUpdateBar();
+  }
+
   private syncUpdateBar(): void {
     const bar = this.doc.getElementById('upbar');
     if (!bar) return;
-    bar.hidden = !this.updateApply || this.screens.top === 'play';
+    const pending = !!this.updateApply || this.versionBehind;
+    bar.hidden = !pending || this.screens.top === 'play';
+    bar.classList.toggle('upbar--urgent', this.versionBehind);
+    const label = bar.querySelector('span');
+    if (label) label.textContent = this.versionBehind ? '새 버전이 나왔다 · 새로고침이 필요하다' : '새 버전이 준비됐다';
   }
 
   private applyUpdate(): void {
     const apply = this.updateApply;
-    if (!apply) return;
+    if (!apply && !this.versionBehind) return;
     this.updateApply = null;
     this.syncUpdateBar();
     this.sound('confirm');
-    apply();
+    if (apply) apply();
+    else this.reload();
   }
 
   private dismissIosHint(): void {
@@ -477,6 +602,7 @@ export class UI implements UIPort {
     const top = this.screens.top;
     switch (top) {
       case 'title': this.refreshTitle(); break;
+      case 'select': this.revealUnlocks(); break;
       case 'pause': this.fillPause(); break;
       case 'name': this.prepName(); break;
       case 'daily': this.renderDaily(); break;
@@ -485,9 +611,51 @@ export class UI implements UIPort {
     }
     this.updateTouchVisibility();
     this.syncUpdateBar();
-    const root = top === 'play' || top === 'boot' ? null : this.screens.el(top);
+    const root = this.dataOpen ? this.doc.getElementById('scr-data') : top === 'play' || top === 'boot' ? null : this.screens.el(top);
     this.nav.refresh(root);
     if (top !== 'name' && this.doc.activeElement === this.nameInput()) this.nameInput()?.blur();
+  }
+
+  // ================================================================ data notice
+  private openData(): void {
+    const e = this.doc.getElementById('scr-data');
+    if (!e) return;
+    this.renderData();
+    this.dataOpen = true;
+    e.classList.remove('is-leaving');
+    e.classList.add('is-active');
+    this.nav.refresh(e);
+  }
+
+  private closeData(): void {
+    this.dataOpen = false;
+    const e = this.doc.getElementById('scr-data');
+    if (!e || !e.classList.contains('is-active')) return;
+    e.classList.remove('is-active');
+    e.classList.add('is-leaving');
+    const timer = this.win?.setTimeout ?? setTimeout;
+    timer(() => e.classList.remove('is-leaving'), LEAVE_MS);
+  }
+
+  /** The run ids of this player's accepted bests — what a deletion request has to quote (the player tag cannot be computed here). */
+  private renderData(): void {
+    const host = this.doc.getElementById('data-runs');
+    if (!host) return;
+    const d = this.doc;
+    const rows: HTMLElement[] = [];
+    const prog = this.progress;
+    if (prog) {
+      for (const lv of this.levels) {
+        const runId = prog.levels[lv.id]?.runId;
+        if (runId) rows.push(el(d, 'li', {}, el(d, 'span', {}, lv.name), el(d, 'b', {}, runId)));
+      }
+      for (const date of Object.keys(prog.daily).sort()) {
+        const runId = prog.daily[date]?.runId;
+        if (runId) rows.push(el(d, 'li', {}, el(d, 'span', {}, `데일리 ${date}`), el(d, 'b', {}, runId)));
+      }
+    }
+    if (!rows.length) rows.push(el(d, 'li', {}, el(d, 'span', { class: 'data__none' }, '서버에 올린 기록이 없다')));
+    host.replaceChildren(...rows);
   }
 
   private pause(): void {
@@ -498,6 +666,13 @@ export class UI implements UIPort {
 
   /** Back / Escape: pop a modal or return to the title; the shell hears `back` either way. */
   private goBack(): void {
+    if (this.dataOpen) {
+      this.sound('cancel');
+      this.closeData();
+      this.afterShow();
+      this.emit({ type: 'back' });
+      return;
+    }
     const top = this.screens.top;
     if (top === 'pause') { this.emit({ type: 'resume' }); return; }
     if (top === 'result' || top === 'over' || top === 'boot' || top === 'title' || top === 'play') return;
@@ -564,7 +739,7 @@ export class UI implements UIPort {
         break;
       }
       case 'continue': {
-        const id = this.progress?.lastLevel;
+        const id = this.continueId;
         if (id) { this.sound('confirm'); this.emit({ type: 'start', levelId: id }); }
         break;
       }
@@ -579,6 +754,7 @@ export class UI implements UIPort {
       case 'openDaily': this.sound('confirm'); this.show('daily'); this.emit({ type: 'openDaily' }); break;
       case 'openSettings': this.sound('confirm'); this.show('settings'); this.emit({ type: 'openSettings' }); break;
       case 'openCredits': this.sound('confirm'); this.show('credits'); this.emit({ type: 'openCredits' }); break;
+      case 'openData': this.sound('confirm'); this.show('data'); break;
       case 'back':
       case 'close': this.goBack(); break;
       case 'pause': this.pause(); break;
@@ -677,14 +853,31 @@ export class UI implements UIPort {
   }
 
   // ================================================================ title
+  /**
+   * The title's first entry. With a zone in progress it reads 이어하기; on a
+   * fresh save (nothing played, nothing cleared) it reads '바로 시작 · <first
+   * zone>' and starts that zone directly, so the first Enter is already play —
+   * the tower and its eight locked cards wait until the first clear.
+   */
   private refreshTitle(): void {
     const cont = this.doc.querySelector<HTMLElement>('#title-menu [data-act="continue"]');
     const note = this.doc.getElementById('continue-note');
-    const last = this.progress?.lastLevel;
+    const prog = this.progress;
+    const last = prog?.lastLevel;
     const lv = last ? this.levels.find((l) => l.id === last) : undefined;
+    const fresh = !!prog && !lv && !this.levels.some((l) => prog.levels[l.id]?.done);
+    const first = fresh ? this.levels[0] : undefined;
+    const target = lv ?? first;
+    this.continueId = target?.id ?? null;
     if (cont) {
-      cont.hidden = !lv;
-      if (lv && note) note.textContent = `${BIOMES[lv.biome].kr} · ${lv.name}`;
+      cont.hidden = !target;
+      if (target) {
+        const label = first ? `바로 시작 · ${first.name}` : '이어하기';
+        const text = cont.firstChild;
+        if (text && text.nodeType === 3) text.textContent = label;
+        else cont.insertBefore(this.doc.createTextNode(label), cont.firstChild);
+        if (note) note.textContent = first ? `${BIOMES[first.biome].kr} · 첫 구역 · 조작을 배운다` : `${BIOMES[target.biome].kr} · ${target.name}`;
+      }
     }
     const chip = this.doc.getElementById('title-name');
     if (chip) chip.textContent = this.playerName || '—';
@@ -699,6 +892,7 @@ export class UI implements UIPort {
       'aria-label': `${lv.name}${unlocked ? '' : ' (잠김)'}`,
     });
     if (!unlocked) { card.disabled = true; card.setAttribute('aria-disabled', 'true'); }
+    if (unlocked && this.unlocking.has(lv.id)) card.classList.add('is-unlocking');
     card.append(el(d, 'div', { class: 'card__sky' }), el(d, 'div', { class: 'card__ridge' }));
     const stars = el(d, 'div', { class: 'card__stars' });
     for (let s = 0; s < 3; s++) stars.appendChild(starSvg(d, (rec?.stars ?? 0) > s));

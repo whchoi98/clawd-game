@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { HealthResponse } from '../../src/shared/protocol.js';
+import { GEN_VERSION, SIM_VERSION } from '../../src/sim/types.js';
 import { makeApp } from './fixtures.js';
 
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
@@ -23,6 +24,14 @@ describe('health routes', () => {
     expect(body.ok).toBe(true);
     expect(body.version).toBe('v-test');
     expect(body.uptime).toBeGreaterThanOrEqual(0);
+  });
+
+  it('GET /api/health reports the sim and generator versions this build verifies against', async () => {
+    const res = await ctx.app.inject({ method: 'GET', url: '/api/health' });
+    const body = HealthResponse.parse(res.json());
+    expect(body.simVersion).toBe(SIM_VERSION);
+    expect(body.genVersion).toBe(GEN_VERSION);
+    expect(body.simVersion).toBe(2);
   });
 
   it('API responses are marked no-store', async () => {
