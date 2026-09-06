@@ -504,7 +504,7 @@ describe('hint templates (hints.ts)', () => {
 describe('UI zone select', () => {
   beforeEach(() => { document.body.innerHTML = ''; });
 
-  it('renders three tiers and locks zones whose predecessor is not done', () => {
+  it('renders three tiers; clearing a zone opens the next two within the tier, the next tier stays locked', () => {
     const { ui } = setup();
     ui.refreshSelect(makeProgress(['t1']), LEVELS);
     expect(document.querySelectorAll('#sel-tiers .tier')).toHaveLength(3);
@@ -513,12 +513,34 @@ describe('UI zone select', () => {
     const byId = Object.fromEntries(cards.map((c) => [c.dataset.id, c]));
     expect(byId.t1.disabled).toBe(false);
     expect(byId.t2.disabled).toBe(false);
-    expect(byId.t3.disabled).toBe(true);
+    expect(byId.t3.disabled).toBe(false);
     expect(byId.s1.disabled).toBe(true);
-    expect(byId.t3.querySelector('.card__lock')).not.toBeNull();
+    expect(byId.s1.querySelector('.card__lock')).not.toBeNull();
+    expect(byId.t3.querySelector('.card__lock')).toBeNull();
     expect(byId.t1.querySelector('.card__lock')).toBeNull();
     expect(byId.t1.querySelectorAll('.star.on')).toHaveLength(3);
     expect($('#sel-progress').textContent).toContain('1 / 9');
+    expect($('#sel-progress').textContent).toContain('3 해금');
+    // the cursor's default is the next challenge: the first open zone not yet cleared
+    expect(byId.t2.hasAttribute('data-default')).toBe(true);
+  });
+
+  it('P2-6 · t3 done opens s1 and s2 (the tier boundary needs the previous zone itself); a fresh save opens t1 only', () => {
+    const { ui } = setup();
+    ui.refreshSelect(makeProgress(['t1', 't2', 't3']), LEVELS);
+    const disabled = (id: string) => $<HTMLButtonElement>(`#sel-tiers .card[data-id="${id}"]`).disabled;
+    expect(disabled('s1')).toBe(false);
+    expect(disabled('s2')).toBe(false);
+    expect(disabled('s3')).toBe(true);
+    expect(disabled('v1')).toBe(true);
+    // only t2 cleared (t3 not): s1 waits for t3 even though it is two steps past t2
+    ui.refreshSelect(makeProgress(['t1', 't2']), LEVELS);
+    expect(disabled('t3')).toBe(false);
+    expect(disabled('s1')).toBe(true);
+    ui.refreshSelect(makeProgress(), LEVELS);
+    expect(disabled('t1')).toBe(false);
+    expect(disabled('t2')).toBe(true);
+    expect(disabled('t3')).toBe(true);
   });
 
   it('a click on an unlocked card starts that zone; locked cards do nothing', () => {
@@ -1272,5 +1294,276 @@ describe('webfont loader', () => {
     expect(link!.href).toBe(FONTS_HREF);
     expect(loadFonts(document)).toBe(link);
     expect(document.head.querySelectorAll('link[rel="stylesheet"]')).toHaveLength(1);
+  });
+});
+
+// ------------------------------------------------------------------ P2-2 game-over comeback loop
+describe('UI game-over comeback (P2-2)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+  const over = (height: number, levelId = 'endless') => makeSummary({ cleared: false, height, levelId, shards: 4, time: 33 });
+
+  it('the progress bar toward the personal best: --pct = h / best and 신기록까지 N칸', () => {
+    const { ui } = setup();
+    ui.show('play');
+    ui.showOver(over(40), 50);
+    const bar = $('#over-bar');
+    expect(bar.style.getPropertyValue('--pct')).toBe('0.8');
+    expect(bar.getAttribute('aria-valuenow')).toBe('80');
+    expect(bar.classList.contains('is-best')).toBe(false);
+    // a tie is one tile short of a record
+    expect($('#over-bar-text').textContent).toBe('신기록까지 11칸');
+    ui.showOver(over(50.9), 50);
+    expect($('#over-bar').style.getPropertyValue('--pct')).toBe('1');
+    expect($('#over-bar-text').textContent).toBe('신기록까지 1칸');
+    // beaten: full bar, gold, 신기록!
+    ui.showOver(over(64.2), 63.8);
+    expect($('#over-bar').style.getPropertyValue('--pct')).toBe('1');
+    expect($('#over-bar').classList.contains('is-best')).toBe(true);
+    expect($('#over-bar-text').textContent).toBe('신기록!');
+    // no best yet and no climb: an empty bar
+    ui.showOver(over(0.4), 0);
+    expect($('#over-bar').style.getPropertyValue('--pct')).toBe('0');
+    expect($('#over-bar-text').textContent).toBe('신기록까지 1칸');
+  });
+
+  it('endless (sameTowerAvailable) offers 같은 탑 다시 / 새 탑 instead of 다시 도전, and both emit', () => {
+    const { ui, actions } = setup();
+    ui.show('play');
+    ui.showOver(over(40), 50, { sameTowerAvailable: true });
+    const same = $<HTMLButtonElement>('#scr-over [data-act="sameTower"]');
+    const fresh = $<HTMLButtonElement>('#scr-over [data-act="newTower"]');
+    const retry = $<HTMLButtonElement>('#scr-over [data-act="retry"]');
+    expect(same.hidden).toBe(false);
+    expect(fresh.hidden).toBe(false);
+    expect(retry.hidden).toBe(true);
+    // the cursor starts on the primary (same tower) entry
+    expect(same.classList.contains('is-cursor')).toBe(true);
+    same.click();
+    expect(actions.at(-1)).toEqual({ type: 'sameTower' });
+    fresh.click();
+    expect(actions.at(-1)).toEqual({ type: 'newTower' });
+    // a daily game over keeps the single 다시 도전 (the same tower by definition)
+    ui.showOver(over(40, 'daily'), 50);
+    expect(same.hidden).toBe(true);
+    expect(fresh.hidden).toBe(true);
+    expect(retry.hidden).toBe(false);
+    expect(retry.classList.contains('is-cursor')).toBe(true);
+  });
+
+  it('a daily game over shows the 내 최고 높이 · 세계 최고 row, also when the board arrives later', () => {
+    const { ui } = setup();
+    ui.show('play');
+    ui.showOver(over(40, 'daily'), 63, { worldBest: 120.7 });
+    const row = $('#over-best');
+    expect(row.querySelector('span')!.textContent).toBe('내 최고 높이 · 세계 최고');
+    expect(row.querySelector('b')!.textContent).toBe('63 · 120');
+    // without a world best the row is the plain personal best …
+    ui.showOver(over(70, 'daily'), 63);
+    expect($('#over-best span').textContent).toBe('최고 높이');
+    expect($('#over-best b').textContent).toBe('70');
+    // … until updateResult brings the board (its top height is the world best)
+    const lb = makeLb();
+    lb.entries[0] = { ...lb.entries[0], cleared: false, height: 95.2 };
+    ui.updateResult({ summary: over(70, 'daily'), levelName: '데일리', personalBest: true, stars: 0, submit: { state: 'accepted', rank: 2, total: 41 }, leaderboard: lb });
+    expect($('#over-best span').textContent).toBe('내 최고 높이 · 세계 최고');
+    expect($('#over-best b').textContent).toBe('70 · 95');
+    expect($('#over-submit').textContent).toContain('세계 2위');
+  });
+});
+
+// ------------------------------------------------------------------ P2-3 daily streak · 7-day strip · yesterday
+describe('UI daily streak and yesterday (P2-3)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+  const TODAY = { date: '2026-09-06', seed: 0xdeadbeef, levelId: 'daily' as const, expiresAt: '2026-09-07T00:00:00.000Z' };
+  function streakProgress(): Progress {
+    const p = makeProgress();
+    p.daily['2026-09-04'] = { bestTicks: 0, cleared: false, height: 31, seed: 4 };
+    p.daily['2026-09-05'] = { bestTicks: 5200, cleared: true, height: 0, seed: 5, rank: 7 };
+    p.daily['2026-09-06'] = { bestTicks: 4100, cleared: true, height: 150, seed: 0xdeadbeef };
+    p.daily['2026-08-30'] = { bestTicks: 0, cleared: false, height: 3, seed: 1 };   // outside the strip
+    return p;
+  }
+
+  it('renders a 7-day strip, oldest → today, with 미도전 / 도전 / 클리어 states, the rank when known, and the streak badge', () => {
+    const { ui } = setup();
+    ui.refreshSelect(streakProgress(), LEVELS);
+    ui.show('daily');
+    ui.setDaily(TODAY, makeLb(), 'ok');
+    const cells = [...document.querySelectorAll<HTMLElement>('.daily__week .daily__day')];
+    expect(cells).toHaveLength(7);
+    expect(cells.map((c) => c.dataset.date)).toEqual(['2026-08-31', '2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04', '2026-09-05', '2026-09-06']);
+    expect(cells.map((c) => c.dataset.state)).toEqual(['none', 'none', 'none', 'none', 'tried', 'cleared', 'cleared']);
+    expect(cells[6].classList.contains('is-today')).toBe(true);
+    expect(cells.filter((c) => c.classList.contains('is-today'))).toHaveLength(1);
+    expect(cells[6].querySelector('small')!.textContent).toBe('오늘');
+    expect(cells[4].querySelector('small')!.textContent).toBe('4');
+    // ranks: the stored one on the 5th, today's from the live board (yours = 2위)
+    expect(cells[5].querySelector('b')!.textContent).toBe('7위');
+    expect(cells[6].querySelector('b')!.textContent).toBe('2위');
+    expect(cells[4].querySelector('b')!.textContent).toBe('·');
+    expect(cells[0].querySelector('b')!.textContent).toBe('');
+    expect(cells[5].getAttribute('aria-label')).toBe('9월 5일 · 클리어 · 세계 7위');
+    const badge = $('#daily-streak');
+    expect(badge.hidden).toBe(false);
+    expect(badge.textContent).toBe('3일 연속');
+    expect($('#daily-mine').textContent).toContain(fmtTime(4100 / 120));
+    // no streak → no badge; no attempt today
+    const fresh = makeProgress();
+    ui.refreshSelect(fresh, LEVELS);
+    expect($('#daily-streak').hidden).toBe(true);
+    expect($('#daily-mine').textContent).toBe('오늘 미도전');
+    expect(document.querySelectorAll('.daily__week .daily__day[data-state="none"]')).toHaveLength(7);
+  });
+
+  it("shows 어제의 탑 · 세계 N위 / M명 when our row exists, the 재도전 entry when the seed is known, 확정 once the board is closed", () => {
+    const { ui, actions } = setup();
+    ui.refreshSelect(streakProgress(), LEVELS);
+    ui.show('daily');
+    ui.setDaily(TODAY, null, 'ok');
+    const row = $('#daily-yday');
+    const btn = $<HTMLButtonElement>('#scr-daily [data-act="retryYesterday"]');
+    expect(row.hidden).toBe(true);
+    expect(btn.hidden).toBe(true);
+    const ylb = makeLb();
+    ylb.board = '2026-09-05';
+    ylb.yours = { ...ylb.yours!, rank: 12 };
+    ylb.total = 300;
+    ui.setYesterday({ date: '2026-09-05', seed: 5, lb: ylb });
+    expect(row.hidden).toBe(false);
+    expect(row.textContent).toBe('어제의 탑 · 세계 12위 / 300명');
+    expect(row.querySelector('.daily__badge--final')).toBeNull();
+    expect(btn.hidden).toBe(false);
+    btn.click();
+    expect(actions.at(-1)).toEqual({ type: 'retryYesterday' });
+    // the strip's yesterday cell now reads the live rank
+    expect($('.daily__week .daily__day[data-date="2026-09-05"] b').textContent).toBe('12위');
+    // no row of ours on the board: still a row (we did not climb), no seed → no retry entry
+    ui.setYesterday({ date: '2026-09-05', seed: null, lb: { ...ylb, yours: undefined } });
+    expect(row.textContent).toContain('어제의 탑');
+    expect(row.textContent).toContain('300명');
+    expect(btn.hidden).toBe(true);
+    // two days old (the app stayed open past midnight): 확정, and no retry
+    ui.setDaily({ ...TODAY, date: '2026-09-07' }, null, 'ok');
+    ui.setYesterday({ date: '2026-09-05', seed: 5, lb: ylb });
+    expect(row.textContent).toContain('9월 5일의 탑 · 세계 12위 / 300명');
+    expect(row.querySelector('.daily__badge--final')!.textContent).toBe('확정');
+    expect(btn.hidden).toBe(true);
+    ui.setYesterday(null);
+    expect(row.hidden).toBe(true);
+  });
+
+  it('the title 데일리 타워 subtitle is dynamic: 오늘 미도전 · N일 연속 / 오늘 클리어 · 세계 N위 / 오늘 높이 N', () => {
+    const { ui } = setup();
+    const note = $('#daily-note');
+    ui.refreshSelect(makeProgress(), LEVELS);
+    expect(note.textContent).toBe('매일 바뀌는 탑 · 세계 순위');
+    const p = streakProgress();
+    ui.setDaily(TODAY, null, 'ok');
+    delete p.daily['2026-09-06'];
+    ui.refreshSelect(p, LEVELS);
+    expect(note.textContent).toBe('오늘 미도전 · 2일 연속');
+    p.daily['2026-09-06'] = { bestTicks: 0, cleared: false, height: 42.7, seed: 0xdeadbeef };
+    ui.refreshSelect(p, LEVELS);
+    expect(note.textContent).toBe('오늘 높이 42 · 3일 연속');
+    p.daily['2026-09-06'] = { bestTicks: 4100, cleared: true, height: 150, seed: 0xdeadbeef };
+    ui.refreshSelect(p, LEVELS);
+    expect(note.textContent).toBe('오늘 클리어 · 3일 연속');
+    ui.setDaily(TODAY, makeLb(), 'ok');   // our row: 2위
+    expect(note.textContent).toBe('오늘 클리어 · 세계 2위');
+  });
+});
+
+// ------------------------------------------------------------------ P2-5 inline name prompt
+describe('UI inline name prompt (P2-5)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+  const resultView = (): ResultView => ({ summary: makeSummary(), levelName: '첫 물결', personalBest: true, stars: 2, submit: { state: 'pending' }, nextLevelId: 't2' });
+
+  it('sits inside the result modal, hides the submission line, and resolves with a confirmed valid name', async () => {
+    const { ui } = setup();
+    ui.refreshSelect(makeProgress(), LEVELS);
+    ui.show('play');
+    ui.showResult(resultView());
+    const p = ui.askNameInline();
+    const box = $('#scr-result #name-inline');
+    expect(box.closest('.modal')).toBe($('#scr-result .modal'));
+    expect($('#res-submit').hidden).toBe(true);
+    const inp = $<HTMLInputElement>('#name-inline-input');
+    expect(document.activeElement).toBe(inp);
+    inp.value = 'x<y';
+    $('#name-inline [data-act="nameInlineOk"]').click();
+    expect($('#name-inline-err').hidden).toBe(false);
+    expect(document.getElementById('name-inline')).not.toBeNull();
+    inp.value = ' 바다거북 ';
+    $('#name-inline [data-act="nameInlineOk"]').click();
+    await expect(p).resolves.toBe('바다거북');
+    expect(document.getElementById('name-inline')).toBeNull();
+    expect($('#res-submit').hidden).toBe(false);      // the pending line is back
+    expect($('#title-name').textContent).toBe('바다거북');
+    expect(ui.screen).toBe('result');
+  });
+
+  it('건너뛰기, Escape, and leaving the screen resolve null; Enter in the field confirms', async () => {
+    const { ui, input } = setup();
+    ui.refreshSelect(makeProgress(), LEVELS);
+    ui.show('play');
+    ui.showResult(resultView());
+    const skip = ui.askNameInline();
+    $('#name-inline [data-act="nameInlineSkip"]').click();
+    await expect(skip).resolves.toBeNull();
+    // Escape inside the field
+    const esc = ui.askNameInline();
+    $<HTMLInputElement>('#name-inline-input').dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true, cancelable: true }));
+    await expect(esc).resolves.toBeNull();
+    // a menu confirm edge while the field has focus submits the typed name
+    const enter = ui.askNameInline();
+    $<HTMLInputElement>('#name-inline-input').value = '거북';
+    input.queue.push('confirm');
+    ui.frame(1 / 60, input);
+    await expect(enter).resolves.toBe('거북');
+    // retrying (the shell shows play) while the prompt is up is a skip
+    const gone = ui.askNameInline();
+    ui.show('play');
+    await expect(gone).resolves.toBeNull();
+    expect(document.getElementById('name-inline')).toBeNull();
+    // and on the game-over modal it works the same way
+    ui.showOver(makeSummary({ cleared: false, height: 12, levelId: 'daily' }), 0);
+    const overP = ui.askNameInline();
+    expect($('#scr-over #name-inline')).not.toBeNull();
+    $('#name-inline [data-act="nameInlineSkip"]').click();
+    await expect(overP).resolves.toBeNull();
+    // without a result / over modal on top there is nothing to ask in
+    ui.show('title');
+    await expect(ui.askNameInline()).resolves.toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------ P2-6 assist offer
+describe('UI assist offer (P2-6)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  it('offerAssist opens the modal over play with the zone name and the three answers emit their actions', () => {
+    const { ui, actions, input } = setup();
+    ui.refreshSelect(makeProgress(), LEVELS);
+    ui.show('play');
+    ui.offerAssist('해초 숲');
+    expect(ui.screen).toBe('assist');
+    expect(active('play')).toBe(true);
+    expect($('#assist-lead').textContent).toContain('해초 숲');
+    expect($('#assist-lead').textContent).toContain('보조 모드로 이 구역을 다시 시작할까? 기록은 순위표에 오르지 않는다 · 설정에서 언제든 끈다');
+    expect($('#scr-assist [data-act="assistAccept"]').classList.contains('is-cursor')).toBe(true);
+    $('#scr-assist [data-act="assistAccept"]').click();
+    expect(actions.at(-1)).toEqual({ type: 'assistAccept' });
+    $('#scr-assist [data-act="assistDecline"]').click();
+    expect(actions.at(-1)).toEqual({ type: 'assistDecline', never: false });
+    $('#scr-assist [data-act="assistNever"]').click();
+    expect(actions.at(-1)).toEqual({ type: 'assistDecline', never: true });
+    // cancel (Escape / B) is 이번엔 괜찮다
+    input.queue.push('cancel');
+    ui.frame(1 / 60, input);
+    expect(actions.at(-1)).toEqual({ type: 'assistDecline', never: false });
+    // the shell answers by showing play again
+    ui.show('play');
+    expect(ui.screen).toBe('play');
+    expect(active('assist')).toBe(false);
   });
 });

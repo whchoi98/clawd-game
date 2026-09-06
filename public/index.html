@@ -65,7 +65,8 @@
     <nav class="menu" id="title-menu" aria-label="메인 메뉴">
       <button class="menu__item" data-act="continue" hidden>이어하기<small id="continue-note"></small></button>
       <button class="menu__item" data-act="openSelect">탑 오르기<small>스토리 · 3개 층 · 9개 구역</small></button>
-      <button class="menu__item" data-act="openDaily">데일리 타워<small>매일 바뀌는 탑 · 세계 순위</small></button>
+      <!-- The subtitle is dynamic: 오늘 미도전 · N일 연속 / 오늘 클리어 · 세계 N위 (src/client/ui/ui.ts refreshTitle). -->
+      <button class="menu__item" data-act="openDaily">데일리 타워<small id="daily-note">매일 바뀌는 탑 · 세계 순위</small></button>
       <button class="menu__item" data-act="endless">끝없는 등반<small>차오르는 조류 · 개인 기록</small></button>
       <button class="menu__item" data-act="openSettings">설정<small>조작 · 사운드 · 접근성</small></button>
       <button class="menu__item" data-act="openCredits">만든 것들<small>기술 노트</small></button>
@@ -116,12 +117,23 @@
         <dl class="daily__stats">
           <div><dt>시드</dt><dd class="mono" id="daily-seed">—</dd></div>
           <div><dt>남은 시간</dt><dd class="mono" id="daily-expires">—</dd></div>
-          <div><dt>내 기록</dt><dd class="mono" id="daily-mine">—</dd></div>
         </dl>
+        <!-- The last 7 UTC days (oldest → today): 미도전 / 도전 / 클리어, the world rank when known, the streak badge,
+             and yesterday's tower row ("어제의 탑 · 세계 N위 / M명", 확정 once its board is closed). -->
+        <div class="daily__streak">
+          <div class="daily__streak-head">
+            <span id="daily-mine">—</span>
+            <b class="daily__badge" id="daily-streak" hidden>0일 연속</b>
+          </div>
+          <div class="daily__week" id="daily-week" role="list" aria-label="최근 7일 도전 기록"></div>
+          <p class="daily__yday" id="daily-yday" role="status" hidden></p>
+        </div>
         <p class="daily__lead">서버가 발행한 시드로 세워진 탑. 오늘 하루 모두에게 같은 탑이 주어지고, 검증된 기록만 순위표에 오른다.</p>
         <div class="echo-toggles" id="daily-echoes" aria-label="메아리 표시"></div>
         <nav class="menu menu--compact">
           <button class="menu__item menu__item--primary" data-act="daily">오르기 시작</button>
+          <!-- Yesterday's board stays open until the end of today (UTC): shown once the server sent yesterday's seed. -->
+          <button class="menu__item" data-act="retryYesterday" hidden>어제의 탑 재도전<small>어제 날짜로 접수된다 · 오늘 자정(UTC)까지</small></button>
         </nav>
       </div>
       <div class="daily__board">
@@ -210,9 +222,14 @@
       <div class="modal__kicker">TIDE OVER</div>
       <h2 id="over-title">조류에 잠겼다</h2>
       <div class="res__rows" id="over-rows"></div>
+      <!-- Progress toward the personal best: --pct = min(1, height / best); reads 신기록까지 N칸 or 신기록! -->
+      <div class="over__bar" id="over-bar" role="progressbar" aria-label="최고 높이까지" aria-valuemin="0" aria-valuemax="100"><i></i><span id="over-bar-text"></span></div>
       <div class="submit" id="over-submit" role="status" hidden></div>
       <div class="lb lb--compact" id="over-lb" hidden></div>
       <nav class="menu menu--compact">
+        <!-- Endless: the same seed (with the best climb's echo) or a fresh one. Daily: the plain retry is the same tower. -->
+        <button class="menu__item menu__item--primary" data-act="sameTower" hidden>같은 탑 다시<small>같은 시드 · 내 최고 기록의 메아리와 함께</small></button>
+        <button class="menu__item" data-act="newTower" hidden>새 탑<small>새 시드</small></button>
         <button class="menu__item menu__item--primary" data-act="retry">다시 도전</button>
         <button class="menu__item" data-act="quit">나가기</button>
       </nav>
@@ -234,6 +251,20 @@
       <nav class="menu menu--compact">
         <button class="menu__item menu__item--primary" data-act="nameOk">확인</button>
         <button class="menu__item" data-act="close">취소</button>
+      </nav>
+    </div>
+  </section>
+
+  <!-- ASSIST OFFER (stuck detector: many deaths in one zone; the Sim takes assist in its constructor, so accepting restarts the zone) -->
+  <section class="screen screen--modal" id="scr-assist" aria-label="보조 모드 제안">
+    <div class="modal">
+      <div class="modal__kicker">ASSIST</div>
+      <h2>보조 모드로 다시 시작할까?</h2>
+      <p class="modal__lead" id="assist-lead">보조 모드로 이 구역을 다시 시작할까? 기록은 순위표에 오르지 않는다 · 설정에서 언제든 끈다</p>
+      <nav class="menu menu--compact">
+        <button class="menu__item menu__item--primary" data-act="assistAccept">다시 시작<small>중력 완화 · 3단 점프 · 짧은 대시 쿨다운</small></button>
+        <button class="menu__item" data-act="assistDecline">이번엔 괜찮다</button>
+        <button class="menu__item" data-act="assistNever">다시 묻지 않기<small>이 구역에서는 더 묻지 않는다</small></button>
       </nav>
     </div>
   </section>

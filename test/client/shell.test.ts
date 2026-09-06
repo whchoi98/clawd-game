@@ -17,7 +17,7 @@ import { LEVELS as REAL_LEVELS } from '../../src/sim/levels.generated.js';
 import { GUIDE_DELAY, GUIDE_LABEL, GUIDE_T1, guideFor } from '../../src/client/echo/guide.js';
 import { REHINT_HAZARD, REHINT_PIT } from '../../src/client/ui/hints.js';
 import { DEATH_FADE_AT, FADE_IN_HALF } from '../../src/client/fx.js';
-import { PlayerRef, RejectReason } from '../../src/shared/protocol.js';
+import { MAX_MASKS_B64, PlayerRef, RejectReason } from '../../src/shared/protocol.js';
 import type {
   DailyResponse, GhostResponse, LeaderboardEntry, LeaderboardQuery, LeaderboardResponse, RunResponse, RunSubmit,
 } from '../../src/shared/protocol.js';
@@ -29,14 +29,18 @@ import { MAX_STEPS_PER_FRAME, TickScheduler, planTicks } from '../../src/client/
 import { FxBus } from '../../src/client/fx.js';
 import { Camera } from '../../src/client/camera.js';
 import {
-  DAILY_CACHE_KEY, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, deepMerge, markEcho, newPlayerId, utcDateStr, type StorageLike,
+  DAILY_CACHE_KEY, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, deepMerge, fallbackName, markEcho, newPlayerId, streakFor, utcDateStr,
+  type StorageLike,
 } from '../../src/client/save.js';
 import { Api, ApiError } from '../../src/client/net/api.js';
 import { QUEUE_KEY, SubmitQueue } from '../../src/client/net/queue.js';
 import type { TelemetryData, TelemetryPort } from '../../src/client/net/telemetry.js';
 import type { TelemetryName } from '../../src/shared/protocol.js';
 import { ECHO_ALPHA, Echo } from '../../src/client/echo/echo.js';
-import { Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, type ShellUI } from '../../src/client/scenes.js';
+import {
+  ASSIST_OFFER_DEATHS, NAME_ASKED_KEY, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, assistSeenKey,
+  type ShellUI, type YesterdayInfo,
+} from '../../src/client/scenes.js';
 import { ShotScript, parseShotQuery } from '../../src/client/shot.js';
 import { flatRoom, openRoom, pitRoom, shaftRoom, spikeRoom, tideRoom } from '../fixtures/levels.js';
 
@@ -112,8 +116,10 @@ function fakeAudio(): FakeAudio & { setMuffle(on: boolean): void } {
   return a;
 }
 
+type OverExtra = { worldBest?: number; sameTowerAvailable?: boolean };
 interface FakeUI extends ShellUI {
-  cbs: ((a: UIAction) => void)[]; shown: Screen[]; result: ResultView | null; over: { summary: RunSummary; best: number } | null;
+  cbs: ((a: UIAction) => void)[]; shown: Screen[]; result: ResultView | null;
+  over: { summary: RunSummary; best: number; extra: OverExtra | undefined } | null;
   huds: HudState[]; hints: (string | null)[]; toasts: string[]; banners: string[];
   dailyCalls: [DailyResponse | null, LeaderboardResponse | null, string][]; selectRefreshes: number;
   /** The `justUnlocked` set of every refreshSelect call (undefined when the shell passed none). */
@@ -121,6 +127,12 @@ interface FakeUI extends ShellUI {
   goalScreens: ({ x: number; y: number; onScreen: boolean } | null)[];
   /** Every setVersionBehind() value, in order. */
   versionBehind: boolean[];
+  /** Zone names of every offerAssist() call; the fake shows the 'assist' screen like the real UI. */
+  offers: string[];
+  /** askNameInline(): how often it was asked and what the fake answers (null = 건너뛰기). */
+  nameAsks: number; nameAnswer: string | null;
+  /** Every setYesterday() value, in order. */
+  yesterdays: (YesterdayInfo | null)[];
   emit(a: UIAction): void; setScreen(s: Screen): void;
 }
 function fakeUI(): FakeUI {
@@ -128,7 +140,10 @@ function fakeUI(): FakeUI {
   const touch: TouchState = { active: false, x: 0, y: 0, jump: false, dash: false, jumpPressed: false, dashPressed: false };
   const u: FakeUI = {
     cbs: [], shown: [], result: null, over: null, huds: [], hints: [], toasts: [], banners: [], dailyCalls: [], selectRefreshes: 0,
-    unlockCalls: [], goalScreens: [], versionBehind: [],
+    unlockCalls: [], goalScreens: [], versionBehind: [], offers: [], nameAsks: 0, nameAnswer: null, yesterdays: [],
+    offerAssist(name) { u.offers.push(name); scr = 'assist'; u.shown.push('assist'); },
+    askNameInline() { u.nameAsks++; return Promise.resolve(u.nameAnswer); },
+    setYesterday(info) { u.yesterdays.push(info); },
     on(cb) { u.cbs.push(cb); },
     show(s) { scr = s; u.shown.push(s); },
     get screen() { return scr; },
@@ -143,7 +158,7 @@ function fakeUI(): FakeUI {
     setDaily(d, lb, status) { u.dailyCalls.push([d, lb, status]); },
     showResult(v) { u.result = v; scr = 'result'; u.shown.push('result'); },
     updateResult(v) { u.result = v; },
-    showOver(s, best) { u.over = { summary: s, best }; scr = 'over'; u.shown.push('over'); },
+    showOver(s, best, extra) { u.over = { summary: s, best, extra }; scr = 'over'; u.shown.push('over'); },
     applySettings() {},
     touch,
     setPortraitPainter() {},
@@ -275,7 +290,7 @@ function makeScenes(
   const api = fakeApi(levels);
   const tele = fakeTelemetry();
   const newer: (number | null)[] = [];
-  const { save, timers } = makeSave();
+  const { save, timers, storage } = makeSave();
   save.settings.assist = !!opts.assist;
   save.settings.echoSelf = opts.echoSelf ?? true;
   save.settings.echoWorld = opts.echoWorld ?? false;
@@ -286,7 +301,7 @@ function makeScenes(
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.makeDaily ? { makeDaily: opts.makeDaily } : {}),
   });
-  return { scenes, renderer, audio, ui, input, api, save, timers, tele, newer };
+  return { scenes, renderer, audio, ui, input, api, save, timers, storage, tele, newer };
 }
 
 /** Advance frames at 60 Hz until `until()` or the frame budget is spent. Returns frames run. */
@@ -1760,5 +1775,408 @@ describe('Scenes · lifecycle (P1-7 · SW reload safety)', () => {
     runFrames(assist.scenes, () => assist.ui.screen === 'result');
     expect(aEnds).toBe(1);
     expect(assist.scenes.isBusy()).toBe(false);
+  });
+});
+
+// ================================================================ Phase 2 (P2-2 · P2-3 · P2-5 · P2-6)
+/** After the intro, hold jump for `holdFrames` frames (0 = a bare tap), then wait for the tide. Returns the summary. */
+function hopOver(scenes: Scenes, ui: FakeUI, input: FakeInput, holdFrames: number): RunSummary {
+  runFrames(scenes, () => scenes.run!.sim.state.phase === 'play');
+  input.latchedMask = IN.JUMP;
+  input.heldMask = holdFrames > 0 ? IN.JUMP : 0;
+  let n = 0;
+  runFrames(scenes, () => ++n > holdFrames, holdFrames + 1);
+  input.heldMask = 0;
+  runFrames(scenes, () => ui.screen === 'over', 6000);
+  return scenes.run!.summary!;
+}
+
+const TODAY = '2026-09-06';
+const YESTERDAY = '2026-09-05';
+const Y_SEED = 777;
+
+/** Endless and daily both generate the tiny tide room; endless seeds count up from 1000 so 새 탑 really differs. */
+function tideShell(opts: { yesterday?: boolean; name?: string; echoWorld?: boolean } = {}) {
+  const tide = tideRoom();
+  const ui = fakeUI();
+  const input = fakeInput();
+  const api = fakeApi([flatRoom()]);
+  api.levels.daily = { ...tide, id: 'daily' };
+  if (opts.yesterday) {
+    api.daily = async () => ({ date: TODAY, seed: 12345, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z', yesterday: { date: YESTERDAY, seed: Y_SEED } });
+  }
+  const { save, timers, storage } = makeSave();
+  save.settings.echoWorld = opts.echoWorld ?? false;
+  if (opts.name) save.progress.player.name = opts.name;
+  let n = 0;
+  const scenes = new Scenes({
+    renderer: fakeRenderer(), audio: fakeAudio(), ui, input, api, save, levels: [flatRoom()], build: 'test',
+    makeDaily: () => ({ ...tide, id: 'daily' }), makeEndless: () => ({ ...tide, id: 'endless' }), randomSeed: () => 1000 + n++,
+    now: () => Date.parse('2026-09-06T12:00:00.000Z'),
+  });
+  scenes.bootSync();
+  return { scenes, ui, input, api, save, timers, storage };
+}
+
+describe('Scenes · game-over comeback loop (P2-2)', () => {
+  it('같은 탑 다시 keeps the seed and runs the best climb as the self echo; 새 탑 draws a fresh seed', async () => {
+    const { scenes, ui, input, save, timers, storage } = tideShell();
+    ui.emit({ type: 'endless' });
+    const seed = scenes.run!.seed;
+    expect(seed).toBe(1000);
+    const full = hopOver(scenes, ui, input, 20);
+    expect(Math.floor(full.height)).toBeGreaterThan(0);
+    // the game-over screen of an endless run offers both ways back, no world best
+    expect(ui.over!.extra).toEqual({ sameTowerAvailable: true });
+    expect(ui.over!.best).toBe(0);
+    // the best climb's replay is kept with its seed and sim version
+    const e = save.progress.endless;
+    expect(e.bestHeight).toBe(Math.floor(full.height));
+    expect(e.bestMasks).toBeTruthy();
+    expect(e.bestSeed).toBe(seed);
+    expect(e.bestSim).toBe(SIM_VERSION);
+    expect(e.bestMasks!.length).toBeLessThanOrEqual(MAX_MASKS_B64);
+    expect(decodeMasks(e.bestMasks!).length).toBeGreaterThan(0);
+    timers.fire();
+    const reloaded = new Save({ storage, defaultBinds: BINDS, schedule: () => 0, cancel: () => {} });
+    expect(reloaded.progress.endless.bestSeed).toBe(seed);
+    expect(reloaded.progress.endless.bestMasks).toBe(e.bestMasks);
+
+    // 같은 탑 다시: the same seed, one self echo in lockstep, and the previous best on the over screen
+    ui.emit({ type: 'sameTower' });
+    expect(ui.screen).toBe('play');
+    const same = scenes.run!;
+    expect(same.mode).toBe('endless');
+    expect(same.seed).toBe(seed);
+    expect(same.sim.seed).toBe(seed);
+    expect(same.prevBestHeight).toBe(Math.floor(full.height));
+    await scenes.settle();
+    expect(same.echoes).toHaveLength(1);
+    expect(same.echoes[0].label).toBe('나');
+    runFrames(scenes, () => same.sim.state.tick >= 200);
+    expect(same.echoes[0].tick).toBe(same.sim.state.tick);
+    // a lower climb on the same tower is no record: the replay stays
+    input.latchedMask = 0;
+    runFrames(scenes, () => ui.screen === 'over', 6000);
+    expect(scenes.run!.view!.personalBest).toBe(false);
+    expect(save.progress.endless.bestMasks).toBe(e.bestMasks);
+
+    // 새 탑: a different seed, and the best replay does not fit it → no self echo
+    ui.emit({ type: 'newTower' });
+    const fresh = scenes.run!;
+    expect(fresh.seed).not.toBe(seed);
+    expect(fresh.seed).toBe(1001);
+    await scenes.settle();
+    expect(fresh.echoes).toHaveLength(0);
+    expect(save.progress.endless.runs).toBe(3);
+  });
+
+  it('a stale (other SIM_VERSION) or oversized endless replay is not kept as the self echo', async () => {
+    const { scenes, ui, input, save } = tideShell();
+    save.progress.endless = { bestHeight: 0, bestShards: 0, runs: 0, bestMasks: encodeMasks(Uint8Array.from([16, 16, 16])), bestSeed: 1000, bestSim: SIM_VERSION - 1 };
+    ui.emit({ type: 'endless' });
+    expect(scenes.run!.seed).toBe(1000);
+    await scenes.settle();
+    expect(scenes.run!.echoes).toHaveLength(0);
+    // a record climb replaces the stale entry with the current version
+    hopOver(scenes, ui, input, 20);
+    expect(save.progress.endless.bestSim).toBe(SIM_VERSION);
+    expect(save.progress.endless.bestSeed).toBe(1000);
+  });
+
+  it('a daily game over carries the world best from the board and keeps the single retry (the same tower)', async () => {
+    const { scenes, ui, input, api } = tideShell();
+    api.board = [{
+      rank: 1, runId: 'run-x', ownerId: 'someone-else-1', playerTag: 'bbbbbbbbbbbb', name: '라이벌', score: 1, ticks: 9000,
+      shards: 2, deaths: 0, cleared: false, height: 120.6, createdAt: '2026-09-06T00:00:00.000Z',
+    }];
+    ui.emit({ type: 'openDaily' });
+    await scenes.settle();
+    expect(scenes.dailyLb?.entries[0]?.height).toBe(120.6);
+    ui.emit({ type: 'daily' });
+    hopOver(scenes, ui, input, 20);
+    expect(ui.over!.extra).toEqual({ sameTowerAvailable: false, worldBest: 120 });
+    // sameTower on a daily is the same daily
+    const before = scenes.run!;
+    ui.emit({ type: 'sameTower' });
+    expect(scenes.run).not.toBe(before);
+    expect(scenes.run!.mode).toBe('daily');
+    expect(scenes.run!.daily).toEqual(before.daily);
+    await scenes.settle();
+  });
+});
+
+describe('Scenes · daily streak and yesterday\'s tower (P2-3)', () => {
+  it("fetches yesterday's board once per day (boot / daily screen), 재도전 climbs yesterday's seed and submits under yesterday's date", async () => {
+    const { scenes, ui, input, api, save } = tideShell({ yesterday: true });
+    ui.emit({ type: 'openDaily' });
+    await scenes.settle();
+    expect(scenes.daily?.date).toBe(TODAY);
+    expect(scenes.yesterday).toMatchObject({ date: YESTERDAY, seed: Y_SEED });
+    expect(scenes.yesterday!.lb).not.toBeNull();
+    const yq = api.lbQueries.filter((q) => q.board === YESTERDAY);
+    expect(yq).toHaveLength(1);
+    expect(yq[0]).toMatchObject({ mode: 'daily', limit: 1, playerId: save.progress.player.id });
+    expect(ui.yesterdays.at(-1)).toMatchObject({ date: YESTERDAY, seed: Y_SEED });
+    // opening the screen again the same day does not ask again
+    ui.emit({ type: 'openDaily' });
+    await scenes.settle();
+    expect(api.lbQueries.filter((q) => q.board === YESTERDAY)).toHaveLength(1);
+
+    ui.emit({ type: 'retryYesterday' });
+    expect(ui.screen).toBe('play');
+    const run = scenes.run!;
+    expect(run.mode).toBe('daily');
+    expect(run.daily).toEqual({ date: YESTERDAY, seed: Y_SEED });
+    expect(run.sim.seed).toBe(Y_SEED);
+    expect(run.eligible).toBe(true);
+    expect(scenes.daily?.date).toBe(TODAY);                 // today's daily is untouched
+    expect(save.progress.daily[YESTERDAY]).toBeTruthy();    // starting is already a 도전
+    expect(save.progress.daily[YESTERDAY].seed).toBe(Y_SEED);
+    // a restart mid-climb stays on yesterday's tower
+    ui.emit({ type: 'restart' });
+    expect(scenes.run!.daily).toEqual({ date: YESTERDAY, seed: Y_SEED });
+    expect(scenes.daily?.date).toBe(TODAY);
+    hopOver(scenes, ui, input, 20);
+    await scenes.settle();
+    const sub = api.submissions.at(-1)!;
+    expect(sub.mode).toBe('daily');
+    expect(sub.date).toBe(YESTERDAY);
+    expect(sub.seed).toBe(Y_SEED);
+    expect(scenes.run!.view!.submit.state).toBe('accepted');
+    // the board that came back is yesterday's: it lands on the yesterday row, not on today's board
+    expect(scenes.dailyLb?.board).toBe(TODAY);
+    expect(scenes.yesterday!.lb?.board).toBe(YESTERDAY);
+    expect(save.progress.daily[YESTERDAY].rank).toBe(1);
+    expect(ui.yesterdays.at(-1)!.lb?.board).toBe(YESTERDAY);
+
+    // today's climb: the streak now spans both days
+    ui.emit({ type: 'quit' });
+    expect(ui.screen).toBe('daily');
+    ui.emit({ type: 'daily' });
+    expect(scenes.run!.daily).toEqual({ date: TODAY, seed: 12345 });
+    hopOver(scenes, ui, input, 0);
+    await scenes.settle();
+    expect(streakFor(save.progress.daily, TODAY)).toBe(2);
+    expect(api.submissions.at(-1)!.date).toBe(TODAY);
+  });
+
+  it('boot() loads yesterday in the background; without a seed 재도전 only explains itself', async () => {
+    const booted = tideShell({ yesterday: true });
+    await booted.scenes.boot({ raf: async () => {}, wait: async () => {} });
+    expect(booted.ui.screen).toBe('title');
+    await booted.scenes.settle();
+    expect(booted.scenes.daily?.date).toBe(TODAY);
+    expect(booted.scenes.yesterday).toMatchObject({ date: YESTERDAY, seed: Y_SEED });
+    expect(booted.api.lbQueries.filter((q) => q.board === YESTERDAY)).toHaveLength(1);
+    // opening the daily screen afterwards reuses it
+    booted.ui.emit({ type: 'openDaily' });
+    await booted.scenes.settle();
+    expect(booted.api.lbQueries.filter((q) => q.board === YESTERDAY)).toHaveLength(1);
+
+    // a pre-P2 server sends no yesterday: the date is still known (local UTC), the seed is not, so nothing starts
+    const legacy = tideShell();
+    legacy.ui.emit({ type: 'openDaily' });
+    await legacy.scenes.settle();
+    expect(legacy.scenes.yesterday).toMatchObject({ date: YESTERDAY, seed: null });
+    legacy.ui.emit({ type: 'retryYesterday' });
+    expect(legacy.scenes.run).toBeNull();
+    expect(legacy.ui.toasts.at(-1)).toContain('어제의 탑');
+  });
+});
+
+describe('Scenes · inline name onboarding (P2-5)', () => {
+  it('the first eligible clear with the default name asks for a name on the result screen before submitting, and the body carries it', async () => {
+    const def = flatRoom();
+    const { scenes, ui, input, api, save } = makeScenes([def]);
+    let askedAtSubmissions = -1;
+    ui.askNameInline = async () => { ui.nameAsks++; askedAtSubmissions = api.submissions.length; return ' 바다거북 '; };
+    scenes.bootSync();
+    expect(save.progress.player.name).toBe(DEFAULT_NAME);
+    ui.emit({ type: 'start', levelId: 'flat' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => scenes.run!.sim.finished);
+    // nothing goes out during the clear animation: the run waits for the prompt
+    expect(api.submissions).toHaveLength(0);
+    expect(scenes.run!.pendingSubmit).toBeTruthy();
+    expect(ui.nameAsks).toBe(0);
+    runFrames(scenes, () => ui.screen === 'result', 200);
+    expect(ui.nameAsks).toBe(1);
+    expect(scenes.run!.view!.submit.state).toBe('pending');
+    expect(scenes.isBusy()).toBe(true);
+    await scenes.settle();
+    expect(askedAtSubmissions).toBe(0);
+    expect(api.submissions).toHaveLength(1);
+    expect(api.submissions[0].player.name).toBe('바다거북');
+    expect(save.progress.player.name).toBe('바다거북');
+    expect(save.progress.seen[NAME_ASKED_KEY]).toBe(true);
+    expect(ui.result!.submit.state).toBe('accepted');
+    expect(scenes.isBusy()).toBe(false);
+  });
+
+  it('건너뛰기 stores and submits 클로드 #xxxx (stable hash of the id); the second eligible clear does not ask again', async () => {
+    const def = flatRoom();
+    const { scenes, ui, input, api, save, timers, storage } = makeScenes([def]);
+    ui.nameAnswer = null;
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'flat' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.nameAsks).toBe(1);
+    const name = save.progress.player.name;
+    expect(name).toMatch(/^클로드 #[0-9a-f]{4}$/);
+    expect(name).toBe(fallbackName(save.progress.player.id));
+    expect(api.submissions[0].player.name).toBe(name);
+    expect(ui.result!.submit.state).toBe('accepted');
+    timers.fire();
+    expect((JSON.parse(storage.getItem(PROGRESS_KEY)!) as Progress).player.name).toBe(name);
+    expect((JSON.parse(storage.getItem(PROGRESS_KEY)!) as Progress).seen[NAME_ASKED_KEY]).toBe(true);
+    // the next eligible clear goes straight out
+    ui.emit({ type: 'retry' });
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.nameAsks).toBe(1);
+    expect(api.submissions).toHaveLength(2);
+    expect(api.submissions[1].player.name).toBe(name);
+
+    // a player who already chose a name is never asked; an ineligible (assist) run neither
+    const named = makeScenes([def]);
+    named.save.progress.player.name = '새이름';
+    named.scenes.bootSync();
+    named.ui.emit({ type: 'start', levelId: 'flat' });
+    named.input.heldMask = IN.RIGHT;
+    runFrames(named.scenes, () => named.ui.screen === 'result');
+    await named.scenes.settle();
+    expect(named.ui.nameAsks).toBe(0);
+    expect(named.api.submissions[0].player.name).toBe('새이름');
+    const assist = makeScenes([def], { assist: true });
+    assist.scenes.bootSync();
+    assist.ui.emit({ type: 'start', levelId: 'flat' });
+    assist.input.heldMask = IN.RIGHT;
+    runFrames(assist.scenes, () => assist.ui.screen === 'result');
+    await assist.scenes.settle();
+    expect(assist.ui.nameAsks).toBe(0);
+    expect(assist.save.progress.player.name).toBe(DEFAULT_NAME);
+    expect(assist.save.progress.seen[NAME_ASKED_KEY]).toBeUndefined();
+  });
+
+  it('a UI without the prompt, or an invalid answer, falls back to the hashed default name; a daily game over asks too', async () => {
+    const bare = makeScenes([flatRoom()]);
+    delete (bare.ui as Partial<FakeUI>).askNameInline;
+    bare.scenes.bootSync();
+    bare.ui.emit({ type: 'start', levelId: 'flat' });
+    bare.input.heldMask = IN.RIGHT;
+    runFrames(bare.scenes, () => bare.ui.screen === 'result');
+    await bare.scenes.settle();
+    expect(bare.api.submissions[0].player.name).toBe(fallbackName(bare.save.progress.player.id));
+
+    const bad = makeScenes([flatRoom()]);
+    bad.ui.nameAnswer = 'x<y';
+    bad.scenes.bootSync();
+    bad.ui.emit({ type: 'start', levelId: 'flat' });
+    bad.input.heldMask = IN.RIGHT;
+    runFrames(bad.scenes, () => bad.ui.screen === 'result');
+    await bad.scenes.settle();
+    expect(bad.api.submissions[0].player.name).toBe(fallbackName(bad.save.progress.player.id));
+
+    // the daily's tide-over is an eligible submission as well
+    const daily = tideShell();
+    daily.ui.nameAnswer = '조류';
+    daily.ui.emit({ type: 'openDaily' });
+    await daily.scenes.settle();
+    daily.ui.emit({ type: 'daily' });
+    hopOver(daily.scenes, daily.ui, daily.input, 20);
+    expect(daily.ui.nameAsks).toBe(1);
+    await daily.scenes.settle();
+    expect(daily.api.submissions[0].player.name).toBe('조류');
+    expect(daily.save.progress.player.name).toBe('조류');
+  });
+});
+
+describe('Scenes · stuck detector → assist offer (P2-6)', () => {
+  it(`the ${ASSIST_OFFER_DEATHS}th death in a zone offers assist once; the next death and a restart do not; 다시 묻지 않기 marks the zone`, () => {
+    const { scenes, ui, input, renderer, save } = makeScenes([pitRoom()]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'pit' });
+    input.heldMask = IN.RIGHT;
+    const deaths = () => renderer.events.filter((e) => e.type === 'death').length;
+    runFrames(scenes, () => ui.offers.length >= 1, 30_000);
+    expect(ui.offers).toEqual(['테스트 pit']);
+    expect(deaths()).toBe(ASSIST_OFFER_DEATHS);
+    expect(save.progress.levels.pit.sessionDeaths).toBe(ASSIST_OFFER_DEATHS);
+    expect(ui.screen).toBe('assist');
+    // the run is frozen under the offer
+    const tick = scenes.run!.sim.state.tick;
+    scenes.frame(1 / 60);
+    expect(scenes.run!.sim.state.tick).toBe(tick);
+    ui.emit({ type: 'assistDecline', never: false });
+    expect(ui.screen).toBe('play');
+    expect(save.progress.seen[assistSeenKey('pit')]).toBeUndefined();
+    expect(save.settings.assist).toBe(false);
+    runFrames(scenes, () => deaths() >= ASSIST_OFFER_DEATHS + 2, 5000);
+    expect(ui.offers).toHaveLength(1);
+    // a restart keeps the install's count: no re-offer
+    ui.emit({ type: 'restart' });
+    expect(scenes.run!.sim.state.tick).toBe(0);
+    renderer.events.length = 0;
+    runFrames(scenes, () => deaths() >= 3, 5000);
+    expect(ui.offers).toHaveLength(1);
+    expect(save.progress.levels.pit.sessionDeaths).toBe(ASSIST_OFFER_DEATHS + 5);
+    // the next multiple asks again; 다시 묻지 않기 ends it for this zone
+    save.progress.levels.pit.sessionDeaths = 2 * ASSIST_OFFER_DEATHS - 1;
+    runFrames(scenes, () => ui.offers.length >= 2, 5000);
+    expect(ui.offers).toHaveLength(2);
+    ui.emit({ type: 'assistDecline', never: true });
+    expect(save.progress.seen[assistSeenKey('pit')]).toBe(true);
+    expect(ui.screen).toBe('play');
+    save.progress.levels.pit.sessionDeaths = 3 * ASSIST_OFFER_DEATHS - 1;
+    runFrames(scenes, () => (save.progress.levels.pit.sessionDeaths ?? 0) >= 3 * ASSIST_OFFER_DEATHS + 1, 5000);
+    expect(ui.offers).toHaveLength(2);
+  });
+
+  it('다시 시작 turns assist on, saves it and restarts the zone in assist mode (no longer eligible); with assist already on nothing is offered', async () => {
+    const { scenes, ui, input, renderer, save, timers, storage } = makeScenes([pitRoom()]);
+    scenes.bootSync();
+    save.progress.levels.pit = { done: false, bestTicks: 0, bestShards: 0, stars: 0, relics: 0, deaths: 0, sessionDeaths: ASSIST_OFFER_DEATHS - 1 };
+    ui.emit({ type: 'start', levelId: 'pit' });
+    const before = scenes.run!;
+    expect(before.eligible).toBe(true);
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.offers.length >= 1, 5000);
+    expect(renderer.events.filter((e) => e.type === 'death')).toHaveLength(1);
+    ui.emit({ type: 'assistAccept' });
+    expect(save.settings.assist).toBe(true);
+    timers.fire();
+    expect((JSON.parse(storage.getItem(SETTINGS_KEY)!) as Settings).assist).toBe(true);
+    const after = scenes.run!;
+    expect(after).not.toBe(before);
+    expect(after.def.id).toBe('pit');
+    expect(after.sim.assist).toBe(true);
+    expect(after.sim.state.tick).toBe(0);
+    expect(after.eligible).toBe(false);
+    expect(after.echoSafe).toBe(false);
+    expect(ui.screen).toBe('play');
+    // deaths keep counting, but assist is on: no second offer
+    save.progress.levels.pit.sessionDeaths = 2 * ASSIST_OFFER_DEATHS - 1;
+    runFrames(scenes, () => (save.progress.levels.pit.sessionDeaths ?? 0) >= 2 * ASSIST_OFFER_DEATHS, 5000);
+    expect(ui.offers).toHaveLength(1);
+
+    const assisted = makeScenes([pitRoom()], { assist: true });
+    assisted.scenes.bootSync();
+    assisted.save.progress.levels.pit = { done: false, bestTicks: 0, bestShards: 0, stars: 0, relics: 0, deaths: 0, sessionDeaths: ASSIST_OFFER_DEATHS - 1 };
+    assisted.ui.emit({ type: 'start', levelId: 'pit' });
+    assisted.input.heldMask = IN.RIGHT;
+    runFrames(assisted.scenes, () => (assisted.save.progress.levels.pit.sessionDeaths ?? 0) >= ASSIST_OFFER_DEATHS, 5000);
+    expect(assisted.ui.offers).toHaveLength(0);
+    // deaths outside story (the daily) never count
+    const daily = tideShell();
+    daily.ui.emit({ type: 'openDaily' });
+    await daily.scenes.settle();
+    daily.ui.emit({ type: 'daily' });
+    hopOver(daily.scenes, daily.ui, daily.input, 0);
+    expect(daily.ui.offers).toHaveLength(0);
+    expect(daily.save.progress.levels.daily).toBeUndefined();
+    await daily.scenes.settle();
   });
 });

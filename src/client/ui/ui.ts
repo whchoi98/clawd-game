@@ -23,6 +23,7 @@ import type { DailyResponse, LeaderboardResponse, RejectReason } from '../../sha
 import type { Biome } from '../../shared/biomes.js';
 import { BIOMES, BIOME_ORDER } from '../../shared/biomes.js';
 import { DEFAULT_BINDS } from '../input/binds.js';
+import { MS_PER_DAY, streakFor, unlockedZones, utcDateStr } from '../save.js';
 import {
   LEAVE_MS, MODAL_SCREENS, Navigator, ScreenStack, el, lockSvg, replay, starSvg, validateName, NAME_MAX,
 } from './screens.js';
@@ -94,6 +95,23 @@ export function reasonKr(reason: string | undefined): string {
     ?? reason;
 }
 
+/** Yesterday's tower as the shell reports it (see Scenes.loadYesterday): date, seed (null = not climbable) and its board. */
+export interface YesterdayView {
+  date: string;
+  seed: number | null;
+  lb: LeaderboardResponse | null;
+}
+
+/** The inline name prompt while it is open on the result / game-over modal. */
+interface InlineName {
+  root: HTMLElement;
+  input: HTMLInputElement;
+  err: HTMLElement;
+  /** The modal it was inserted into; leaving that screen is a skip. */
+  screen: Screen;
+  resolve: (name: string | null) => void;
+}
+
 /** sessionStorage key: the player chose to keep playing in portrait. */
 export const NAG_DISMISSED_KEY = 'clawd-echo.nag-dismissed';
 /** localStorage key: the iOS "share → add to home screen" hint was closed. */
@@ -144,6 +162,11 @@ export class UI implements UIPort {
   private dailyLb: LeaderboardResponse | null = null;
   private dailyStatus: LbStatus = 'loading';
   private dailyClock = 0;
+  private yesterday: YesterdayView | null = null;
+  /** The inline name prompt, while open. */
+  private inlineName: InlineName | null = null;
+  /** Whole-tile best height the game-over screen shows (rewritten with the world best when the board arrives). */
+  private overBest = 0;
   private portrait: PortraitPainter | null = null;
   private resetArmed = false;
   private playerName = '';
@@ -253,6 +276,14 @@ export class UI implements UIPort {
     if (this.settingsPanel.capturing) return;
     const top = this.screens.top;
     if (top === 'boot') return;
+    // The inline name field has focus: Enter confirms, Escape skips, up / down leave the field for the buttons.
+    const inline = this.inlineName;
+    if (inline && this.doc.activeElement === inline.input) {
+      if (actions.has('confirm')) { this.confirmInlineName(); return; }
+      if (actions.has('cancel')) { this.skipInlineName(); return; }
+      if (actions.has('up') || actions.has('down')) { try { inline.input.blur(); } catch { /* best-effort */ } }
+      else return;
+    }
     if (top === 'play') {
       if (this.hintTemplate !== null && input.lastDevice !== this.hintDevice) this.paintHint();
       if (actions.has('pause')) { this.pause(); return; }
@@ -355,12 +386,12 @@ export class UI implements UIPort {
     const host = this.doc.getElementById('sel-tiers');
     if (host) {
       host.replaceChildren();
-      const unlocked = new Set<string>();
-      levels.forEach((lv, i) => {
-        if (i === 0 || progress.levels[levels[i - 1].id]?.done) unlocked.add(lv.id);
-      });
+      // Clearing zone N opens N+1 and N+2 within the tier; a tier's first zone still needs the previous one cleared.
+      const unlocked = unlockedZones(levels, progress);
       let done = 0;
       let lastUnlocked: HTMLElement | null = null;
+      // The cursor rests on the next challenge: the first open zone not yet cleared (else the last open one).
+      let nextUp: HTMLElement | null = null;
       const tiers = BIOME_ORDER
         .map((b) => ({ biome: BIOMES[b], levels: levels.filter((l) => l.biome === b) }))
         .filter((t) => t.levels.length > 0);
@@ -372,7 +403,10 @@ export class UI implements UIPort {
           if (rec?.done) { done++; tierDone++; }
           const isOpen = unlocked.has(lv.id);
           const card = this.card(lv, i, rec, isOpen, t.biome);
-          if (isOpen) lastUnlocked = card;
+          if (isOpen) {
+            lastUnlocked = card;
+            if (!rec?.done && !nextUp) nextUp = card;
+          }
           grid.appendChild(card);
         });
         const tier = el(this.doc, 'section', { class: 'tier', 'aria-label': `${ti + 1}층 ${t.biome.kr}` },
@@ -391,12 +425,13 @@ export class UI implements UIPort {
         tier.style.setProperty('--tier-d', t.biome.ridge[2]);
         host.appendChild(tier);
       });
-      if (lastUnlocked) (lastUnlocked as HTMLElement).setAttribute('data-default', '');
+      const cursorCard = (nextUp ?? lastUnlocked) as HTMLElement | null;
+      if (cursorCard) cursorCard.setAttribute('data-default', '');
       const prog = this.doc.getElementById('sel-progress');
       if (prog) prog.textContent = `${done} / ${levels.length} 구역 돌파 · ${unlocked.size} 해금`;
     }
     this.refreshTitle();
-    this.renderDailyMine();
+    this.renderDailyStrip();
     if (this.screens.top === 'select') {
       this.nav.refresh(this.screens.el('select'));
       this.revealUnlocks();
@@ -466,11 +501,25 @@ export class UI implements UIPort {
   updateResult(view: ResultView): void {
     this.result = view;
     const top = this.screens.top;
-    if (top === 'over' || this.screens.isActive('over')) this.paintSubmission('over-submit', 'over-lb', view);
+    const over = top === 'over' || this.screens.isActive('over');
+    if (over) this.paintSubmission('over-submit', 'over-lb', view);
     else this.paintSubmission('res-submit', 'res-lb', view);
+    // The daily board arrived after the game-over screen: its top height is the 세계 최고 of the best-height row.
+    if (over && view.leaderboard) {
+      let world = -1;
+      for (const e of view.leaderboard.entries) world = Math.max(world, Math.floor(e.height));
+      if (view.leaderboard.yours) world = Math.max(world, Math.floor(view.leaderboard.yours.height));
+      if (world >= 0) this.paintOverBest(world);
+    }
   }
 
-  showOver(summary: RunSummary, bestHeight: number): void {
+  /**
+   * Game over (tide modes). `extra.sameTowerAvailable` swaps the single 다시 도전
+   * for 같은 탑 다시 / 새 탑 (endless); `extra.worldBest` adds the daily's world
+   * best to the best-height row. The bar below the rows fills toward the
+   * personal best (--pct) and reads 신기록까지 N칸, or 신기록! once beaten.
+   */
+  showOver(summary: RunSummary, bestHeight: number, extra: { worldBest?: number; sameTowerAvailable?: boolean } = {}): void {
     const d = this.doc;
     // Heights are whole tiles everywhere the player reads them, so compare
     // floors: a sub-tile climb that displays as 0 is never a record, and a
@@ -478,20 +527,139 @@ export class UI implements UIPort {
     const h = Math.max(0, Math.floor(summary.height));
     const prevBest = Math.max(0, Math.floor(bestHeight));
     const best = h > 0 && h > prevBest;
+    this.overBest = Math.max(prevBest, h);
     const rows = d.getElementById('over-rows');
     if (rows) {
+      const bestRow = this.resRow('최고 높이', String(this.overBest));
+      bestRow.id = 'over-best';
       rows.replaceChildren(
         this.resRow(best ? '도달 높이 · 신기록!' : '도달 높이', String(h), best),
-        this.resRow('최고 높이', String(Math.max(prevBest, h))),
+        bestRow,
         this.resRow('파편', String(summary.shards)),
         this.resRow('버틴 시간', fmtTime(summary.time)),
       );
     }
+    if (extra.worldBest !== undefined) this.paintOverBest(extra.worldBest);
+    const bar = d.getElementById('over-bar');
+    if (bar) {
+      const pct = best ? 1 : prevBest > 0 ? Math.min(1, h / prevBest) : h > 0 ? 1 : 0;
+      bar.style.setProperty('--pct', String(Math.round(pct * 10_000) / 10_000));
+      bar.setAttribute('aria-valuenow', String(Math.round(pct * 100)));
+      bar.classList.toggle('is-best', best);
+      const text = d.getElementById('over-bar-text');
+      if (text) text.textContent = best ? '신기록!' : `신기록까지 ${prevBest - h + 1}칸`;
+    }
+    const twoWay = !!extra.sameTowerAvailable;
+    const same = d.querySelector<HTMLElement>('#scr-over [data-act="sameTower"]');
+    const fresh = d.querySelector<HTMLElement>('#scr-over [data-act="newTower"]');
+    const retry = d.querySelector<HTMLElement>('#scr-over [data-act="retry"]');
+    if (same) same.hidden = !twoWay;
+    if (fresh) fresh.hidden = !twoWay;
+    if (retry) retry.hidden = twoWay;
     const submit = d.getElementById('over-submit');
     if (submit) submit.hidden = true;
     const lb = d.getElementById('over-lb');
     if (lb) { lb.hidden = true; lb.replaceChildren(); }
     this.show('over');
+  }
+
+  /** The game-over best row with the world's best next to ours: "내 최고 높이 · 세계 최고 — 63 · 120". */
+  private paintOverBest(worldBest: number): void {
+    const row = this.doc.getElementById('over-best');
+    if (!row) return;
+    const label = row.querySelector('span');
+    const value = row.querySelector('b');
+    if (label) label.textContent = '내 최고 높이 · 세계 최고';
+    if (value) value.textContent = `${this.overBest} · ${Math.max(0, Math.floor(worldBest))}`;
+  }
+
+  // ================================================================ stuck detector
+  /** "보조 모드로 이 구역을 다시 시작할까?" — a modal over the run; the answer comes back as assistAccept / assistDecline. */
+  offerAssist(zoneName: string): void {
+    const lead = this.doc.getElementById('assist-lead');
+    if (lead) lead.textContent = `${zoneName}에서 자꾸 쓰러진다. 보조 모드로 이 구역을 다시 시작할까? 기록은 순위표에 오르지 않는다 · 설정에서 언제든 끈다`;
+    this.sound('toggle');
+    this.show('assist');
+  }
+
+  // ================================================================ inline name prompt
+  /**
+   * Ask for a display name inside the result / game-over modal (before the
+   * first eligible submission). Resolves with the confirmed name, or null
+   * for 건너뛰기 — also when the player leaves the screen. The submission line
+   * stays hidden meanwhile; the shell paints it once the run goes out.
+   */
+  askNameInline(): Promise<string | null> {
+    this.resolveInlineName(null);
+    const top = this.screens.top;
+    const modal = top === 'result' || top === 'over' ? this.screens.el(top)?.querySelector<HTMLElement>('.modal') ?? null : null;
+    if (!modal) return Promise.resolve(null);
+    const d = this.doc;
+    const input = el(d, 'input', {
+      class: 'name__input', id: 'name-inline-input', type: 'text', maxlength: String(NAME_MAX), autocomplete: 'off',
+      spellcheck: 'false', enterkeyhint: 'done', 'aria-label': '이름', placeholder: '이름',
+    });
+    const count = el(d, 'span', { class: 'name__count mono' }, `0 / ${NAME_MAX}`);
+    const err = el(d, 'p', { class: 'name__err', id: 'name-inline-err', role: 'alert', hidden: true });
+    const form = el(d, 'form', { class: 'name', autocomplete: 'off' }, input, count);
+    const root = el(d, 'div', { class: 'name-inline', id: 'name-inline', role: 'group', 'aria-label': '이름 정하기' },
+      el(d, 'p', { class: 'name-inline__lead' },
+        '순위표에 올릴 이름을 정하자. 1–12자, 한글도 좋다. 건너뛰면 ', el(d, 'b', {}, '클로드 #····'), '로 오른다.'),
+      form, err,
+      el(d, 'div', { class: 'name-inline__btns' },
+        el(d, 'button', { class: 'chip chip--primary', type: 'button', 'data-act': 'nameInlineOk', 'data-default': '' }, '이 이름으로'),
+        el(d, 'button', { class: 'chip', type: 'button', 'data-act': 'nameInlineSkip' }, '건너뛰기')));
+    input.addEventListener('input', () => {
+      count.textContent = `${input.value.trim().length} / ${NAME_MAX}`;
+      err.hidden = true;
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.code === 'Escape' || e.key === 'Escape') { e.preventDefault(); this.skipInlineName(); }
+    });
+    form.addEventListener('submit', (e) => { e.preventDefault(); this.confirmInlineName(); });
+    const submitLine = modal.querySelector<HTMLElement>('.submit');
+    if (submitLine) { modal.insertBefore(root, submitLine); submitLine.hidden = true; } else modal.appendChild(root);
+    return new Promise<string | null>((resolve) => {
+      this.inlineName = { root, input, err, screen: top, resolve };
+      this.nav.refresh(this.screens.el(top));
+      try { input.focus(); } catch { /* focus is best-effort */ }
+    });
+  }
+
+  private confirmInlineName(): void {
+    const p = this.inlineName;
+    if (!p) return;
+    const problem = validateName(p.input.value);
+    if (problem) {
+      p.err.textContent = problem;
+      p.err.hidden = false;
+      this.sound('error');
+      return;
+    }
+    const name = p.input.value.trim();
+    this.playerName = name;
+    if (this.progress) this.progress.player.name = name;
+    this.sound('confirm');
+    this.resolveInlineName(name);
+    this.refreshTitle();
+  }
+
+  private skipInlineName(): void {
+    if (!this.inlineName) return;
+    this.sound('cancel');
+    this.resolveInlineName(null);
+  }
+
+  /** Tear the prompt down and answer the shell; the submission line it hid comes back with the current result. */
+  private resolveInlineName(name: string | null): void {
+    const p = this.inlineName;
+    if (!p) return;
+    this.inlineName = null;
+    if (this.doc.activeElement === p.input) { try { p.input.blur(); } catch { /* detached */ } }
+    p.root.remove();
+    if (this.result) this.updateResult(this.result);
+    if (this.screens.top === p.screen) this.nav.refresh(this.screens.el(p.screen), true);
+    p.resolve(name);
   }
 
   applySettings(s: Settings): void {
@@ -600,6 +768,8 @@ export class UI implements UIPort {
   // ================================================================ screens
   private afterShow(): void {
     const top = this.screens.top;
+    // Leaving the modal the inline name prompt sits on is a skip (the run still goes out under the fallback name).
+    if (this.inlineName && top !== this.inlineName.screen) this.resolveInlineName(null);
     switch (top) {
       case 'title': this.refreshTitle(); break;
       case 'select': this.revealUnlocks(); break;
@@ -675,6 +845,8 @@ export class UI implements UIPort {
     }
     const top = this.screens.top;
     if (top === 'pause') { this.emit({ type: 'resume' }); return; }
+    // Backing out of the assist offer is 이번엔 괜찮다: the shell resumes the run.
+    if (top === 'assist') { this.sound('cancel'); this.emit({ type: 'assistDecline', never: false }); return; }
     if (top === 'result' || top === 'over' || top === 'boot' || top === 'title' || top === 'play') return;
     this.sound('cancel');
     if (MODAL_SCREENS.has(top)) {
@@ -750,6 +922,14 @@ export class UI implements UIPort {
       case 'quit': this.sound('cancel'); this.emit({ type: 'quit' }); break;
       case 'next': this.sound('confirm'); this.emit({ type: 'next' }); break;
       case 'retry': this.sound('confirm'); this.emit({ type: 'retry' }); break;
+      case 'sameTower': this.sound('confirm'); this.emit({ type: 'sameTower' }); break;
+      case 'newTower': this.sound('confirm'); this.emit({ type: 'newTower' }); break;
+      case 'retryYesterday': this.sound('confirm'); this.emit({ type: 'retryYesterday' }); break;
+      case 'assistAccept': this.sound('confirm'); this.emit({ type: 'assistAccept' }); break;
+      case 'assistDecline': this.sound('cancel'); this.emit({ type: 'assistDecline', never: false }); break;
+      case 'assistNever': this.sound('cancel'); this.emit({ type: 'assistDecline', never: true }); break;
+      case 'nameInlineOk': this.confirmInlineName(); break;
+      case 'nameInlineSkip': this.skipInlineName(); break;
       case 'openSelect': this.sound('confirm'); this.show('select'); this.emit({ type: 'openSelect' }); break;
       case 'openDaily': this.sound('confirm'); this.show('daily'); this.emit({ type: 'openDaily' }); break;
       case 'openSettings': this.sound('confirm'); this.show('settings'); this.emit({ type: 'openSettings' }); break;
@@ -881,7 +1061,35 @@ export class UI implements UIPort {
     }
     const chip = this.doc.getElementById('title-name');
     if (chip) chip.textContent = this.playerName || '—';
+    this.refreshDailyNote();
     if (this.screens.top === 'title') this.nav.refresh(this.screens.el('title'), true);
+  }
+
+  /** Today's UTC date: the server's when the daily was fetched, else the device clock. */
+  private todayStr(): string {
+    return this.daily?.date ?? utcDateStr(this.now());
+  }
+
+  /** Our world rank on a daily board when known: a live board's `yours` row (today / yesterday) first, else the record's. */
+  private rankFor(date: string, rec: Progress['daily'][string] | undefined): number | undefined {
+    if (this.dailyLb?.board === date && this.dailyLb.yours) return this.dailyLb.yours.rank;
+    if (this.yesterday?.date === date && this.yesterday.lb?.yours) return this.yesterday.lb.yours.rank;
+    return rec?.rank || undefined;
+  }
+
+  /** The 데일리 타워 subtitle: 오늘 미도전 · 3일 연속 / 오늘 클리어 · 세계 12위 / 오늘 높이 63 · 2일 연속. */
+  private refreshDailyNote(): void {
+    const note = this.doc.getElementById('daily-note');
+    const prog = this.progress;
+    if (!note || !prog) return;
+    const today = this.todayStr();
+    const rec = prog.daily[today];
+    const streak = streakFor(prog.daily, today);
+    const rank = this.rankFor(today, rec);
+    const tail = rank ? `세계 ${rank}위` : streak > 0 ? `${streak}일 연속` : null;
+    if (!rec) note.textContent = streak > 0 ? `오늘 미도전 · ${streak}일 연속` : '매일 바뀌는 탑 · 세계 순위';
+    else if (rec.cleared) note.textContent = `오늘 클리어${tail ? ` · ${tail}` : ''}`;
+    else note.textContent = `오늘 높이 ${Math.floor(rec.height)}${tail ? ` · ${tail}` : ''}`;
   }
 
   // ================================================================ select
@@ -1013,19 +1221,97 @@ export class UI implements UIPort {
     }
     const start = d.querySelector<HTMLButtonElement>('#scr-daily [data-act="daily"]');
     if (start) start.disabled = !daily;
-    this.renderDailyMine();
+    this.renderDailyStrip();
     this.renderDailyExpires();
     const host = d.getElementById('daily-lb');
     if (host) renderLeaderboard(host, this.dailyLb, { status: this.dailyStatus });
+    this.refreshDailyNote();
     if (this.screens.top === 'daily') this.nav.refresh(this.screens.el('daily'), true);
   }
 
-  private renderDailyMine(): void {
-    const mine = this.doc.getElementById('daily-mine');
-    if (!mine) return;
-    const rec = this.daily ? this.progress?.daily[this.daily.date] : undefined;
-    if (!rec) { mine.textContent = '—'; return; }
-    mine.textContent = rec.cleared ? fmtTicks(rec.bestTicks) : `높이 ${Math.floor(rec.height)}`;
+  /** Yesterday's tower (the shell fetched its board once today): the row under the strip and the 재도전 entry. */
+  setYesterday(info: YesterdayView | null): void {
+    this.yesterday = info;
+    this.renderDailyStrip();
+    this.refreshDailyNote();
+    if (this.screens.top === 'daily') this.nav.refresh(this.screens.el('daily'), true);
+  }
+
+  /** Our record for a date as a short cell / row text: the clear time, or the height reached. */
+  private recordText(rec: Progress['daily'][string]): string {
+    return rec.cleared ? fmtTicks(rec.bestTicks) : `높이 ${Math.floor(rec.height)}`;
+  }
+
+  /**
+   * The last seven UTC days, oldest → today: 미도전 / 도전 / 클리어 per cell with
+   * the world rank when known, today's record and the streak badge above,
+   * yesterday's tower below.
+   */
+  private renderDailyStrip(): void {
+    const d = this.doc;
+    const prog = this.progress;
+    const today = this.todayStr();
+    const todayMs = Date.parse(`${today}T00:00:00.000Z`);
+    const week = d.getElementById('daily-week');
+    if (week && Number.isFinite(todayMs)) {
+      week.replaceChildren();
+      for (let k = 6; k >= 0; k--) {
+        const date = utcDateStr(todayMs - k * MS_PER_DAY);
+        const rec = prog?.daily[date];
+        const state = rec ? (rec.cleared ? 'cleared' : 'tried') : 'none';
+        const rank = rec ? this.rankFor(date, rec) : undefined;
+        const stateKr = state === 'cleared' ? '클리어' : state === 'tried' ? '도전' : '미도전';
+        const label = `${Number(date.slice(5, 7))}월 ${Number(date.slice(8, 10))}일 · ${stateKr}${rank ? ` · 세계 ${rank}위` : ''}`;
+        week.appendChild(el(d, 'div', {
+          class: `daily__day is-${state}${k === 0 ? ' is-today' : ''}`, role: 'listitem',
+          'data-date': date, 'data-state': state, 'aria-label': label, title: label,
+        },
+        el(d, 'small', {}, k === 0 ? '오늘' : String(Number(date.slice(8, 10)))),
+        el(d, 'b', {}, rank ? `${rank}위` : state === 'cleared' ? '✓' : state === 'tried' ? '·' : '')));
+      }
+    }
+    const badge = d.getElementById('daily-streak');
+    if (badge) {
+      const n = prog ? streakFor(prog.daily, today) : 0;
+      badge.hidden = n <= 0;
+      badge.textContent = `${n}일 연속`;
+    }
+    const mine = d.getElementById('daily-mine');
+    if (mine) {
+      const rec = prog?.daily[today];
+      mine.textContent = rec ? `오늘 ${this.recordText(rec)}` : '오늘 미도전';
+    }
+    this.renderYesterday(today);
+  }
+
+  /** "어제의 탑 · 세계 N위 / M명" (확정 once the board is closed, i.e. the date is 2+ days old) and the 재도전 entry. */
+  private renderYesterday(today: string): void {
+    const d = this.doc;
+    const row = d.getElementById('daily-yday');
+    const btn = d.querySelector<HTMLElement>('#scr-daily [data-act="retryYesterday"]');
+    const y = this.yesterday;
+    if (!y) {
+      if (row) { row.hidden = true; row.replaceChildren(); }
+      if (btn) btn.hidden = true;
+      return;
+    }
+    const age = Math.round((Date.parse(`${today}T00:00:00.000Z`) - Date.parse(`${y.date}T00:00:00.000Z`)) / MS_PER_DAY);
+    const final = age >= 2;
+    const name = final ? `${Number(y.date.slice(5, 7))}월 ${Number(y.date.slice(8, 10))}일의 탑` : '어제의 탑';
+    const rec = this.progress?.daily[y.date];
+    const yours = y.lb?.yours;
+    const total = y.lb ? Math.max(y.lb.total, y.lb.entries.length).toLocaleString('ko-KR') : '';
+    let parts: (string | Node)[] | null = null;
+    if (yours) parts = [`${name} · 세계 `, el(d, 'b', {}, `${yours.rank}위`), ` / ${total}명`];
+    else if (y.lb && rec) parts = [`${name} · `, el(d, 'b', {}, this.recordText(rec)), ` · ${total}명 참가`];
+    else if (y.lb) parts = [`${name} · 미도전 · ${total}명 참가`];
+    else if (rec) parts = [`${name} · `, el(d, 'b', {}, this.recordText(rec))];
+    if (row) {
+      row.hidden = !parts;
+      row.replaceChildren(...(parts ?? []));
+      if (parts && final) row.appendChild(el(d, 'b', { class: 'daily__badge daily__badge--final' }, '확정'));
+    }
+    if (btn) btn.hidden = y.seed === null || final;
   }
 
   private renderDailyExpires(): void {

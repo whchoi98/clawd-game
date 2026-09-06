@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { DailyResponse } from '../../src/shared/protocol.js';
 import { GEN_VERSION, SIM_VERSION } from '../../src/sim/types.js';
-import { dailySeed, isFreshDate, nextUtcMidnight, utcDateStr } from '../../src/server/daily.js';
-import { FIXED_NOW, SECRET, TODAY, makeApp } from './fixtures.js';
+import { dailySeed, freshDates, isFreshDate, nextUtcMidnight, utcDateStr } from '../../src/server/daily.js';
+import { FIXED_NOW, SECRET, TODAY, YESTERDAY, dailyBody, makeApp, postRun } from './fixtures.js';
 
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
 
@@ -74,5 +74,39 @@ describe('GET /api/daily', () => {
     const body = DailyResponse.parse(res.json());
     expect(body.gen).toBe(GEN_VERSION);
     expect(body.sim).toBe(SIM_VERSION);
+  });
+
+  // ---------------------------------------------------------------- P2-3 어제의 탑
+  it("carries yesterday's date and seed (the previous UTC day's dailySeed)", async () => {
+    const res = await ctx.app.inject({ method: 'GET', url: '/api/daily' });
+    const body = DailyResponse.parse(res.json());
+    expect(freshDates(FIXED_NOW)).toEqual([TODAY, YESTERDAY]);
+    expect(body.yesterday).toEqual({ date: YESTERDAY, seed: dailySeed(YESTERDAY, SECRET).seed });
+    expect(body.yesterday!.seed).not.toBe(body.seed);
+    // the rollover: at 00:00Z the day before becomes yesterday
+    const midnight = await makeApp({ now: new Date('2026-09-07T00:00:00.000Z') });
+    try {
+      const r2 = DailyResponse.parse((await midnight.app.inject({ method: 'GET', url: '/api/daily' })).json());
+      expect(r2.date).toBe('2026-09-07');
+      expect(r2.yesterday).toEqual({ date: TODAY, seed: dailySeed(TODAY, SECRET).seed });
+    } finally {
+      await midnight.app.close();
+    }
+  });
+
+  it("a submission for yesterday's tower (yesterday's date + seed) is accepted; two days ago is stale-date", async () => {
+    const daily = DailyResponse.parse((await ctx.app.inject({ method: 'GET', url: '/api/daily' })).json());
+    const y = daily.yesterday!;
+    const ok = await postRun(ctx.app, dailyBody(y.seed, { date: y.date }));
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().accepted).toBe(true);
+    // today's seed on yesterday's date is not yesterday's tower
+    const wrong = await postRun(ctx.app, dailyBody(daily.seed, { date: y.date }));
+    expect(wrong.statusCode).toBe(422);
+    expect(wrong.json().reason).toBe('bad-seed');
+    const twoAgo = '2026-09-04';
+    const stale = await postRun(ctx.app, dailyBody(dailySeed(twoAgo, SECRET).seed, { date: twoAgo }));
+    expect(stale.statusCode).toBe(422);
+    expect(stale.json().reason).toBe('stale-date');
   });
 });
