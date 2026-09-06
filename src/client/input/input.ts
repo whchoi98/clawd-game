@@ -17,11 +17,11 @@ import {
   PAD_DEADZONE,
   PAD_MAP,
   PAD_TRIGGER,
-  TOUCH_THRESHOLD,
   cloneBinds,
   isOwnedCode,
   keyLabel,
 } from './binds.js';
+import { snapStick } from './stick.js';
 
 // ---------------------------------------------------------------- types
 export interface GamepadButtonLike {
@@ -474,8 +474,11 @@ export class Input implements InputPort {
     prev.jump = t.jump;
     prev.dash = t.dash;
 
-    const dx = t.active ? dirOf(t.x, TOUCH_THRESHOLD) : 0;
-    const dy = t.active ? dirOf(t.y, TOUCH_THRESHOLD) : 0;
+    // The stick snaps to eight sectors (see stick.ts): a diagonal is exactly
+    // two bits, so a dash edge on the same tick aims where the thumb points.
+    const snap = t.active ? snapStick(t.x, t.y) : { dx: 0 as Dir, dy: 0 as Dir };
+    const dx: Dir = snap.dx;
+    const dy: Dir = snap.dy;
     if (dx !== 0) {
       const bit = dx < 0 ? IN.LEFT : IN.RIGHT;
       mask |= bit;

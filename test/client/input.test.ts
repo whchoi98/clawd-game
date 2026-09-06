@@ -7,11 +7,17 @@ import {
   Input,
   PAD_DEADZONE,
   PAD_MAP,
+  STICK_DEADZONE,
+  STICK_Y_DEADZONE,
   isOwnedCode,
   keyLabel,
   makeTouchState,
+  snapStick,
+  stickMask,
   type GamepadLike,
 } from '../../src/client/input/index.js';
+import { Sim } from '../../src/sim/sim.js';
+import { openRoom } from '../fixtures/levels.js';
 
 // ------------------------------------------------------------------ helpers
 function key(type: 'keydown' | 'keyup', code: string, init: KeyboardEventInit = {}): KeyboardEvent {
@@ -610,5 +616,104 @@ describe('initial device on finger-first hardware', () => {
     } finally {
       (window as unknown as { matchMedia: unknown }).matchMedia = orig;
     }
+  });
+});
+
+// ------------------------------------------------------------------ stick sectors · dash aim (P3-7)
+describe('Input — virtual stick sectors and the 8-way dash aim (P3-7)', () => {
+  /** A full deflection at `d` degrees (0 = right, 90 = down on screen). */
+  const deg = (d: number, r = 1): [number, number] => [r * Math.cos((d * Math.PI) / 180), r * Math.sin((d * Math.PI) / 180)];
+
+  it('snapStick: a radial dead zone, then ±22.5° sectors around the eight directions', () => {
+    expect(snapStick(0, 0)).toEqual({ dx: 0, dy: 0 });
+    expect(snapStick(0.2, 0.2)).toEqual({ dx: 0, dy: 0 });        // r ≈ 0.28 < STICK_DEADZONE
+    expect(STICK_DEADZONE).toBe(0.35);
+    // pure directions (y down on screen)
+    expect(snapStick(...deg(0))).toEqual({ dx: 1, dy: 0 });
+    expect(snapStick(...deg(90))).toEqual({ dx: 0, dy: 1 });
+    expect(snapStick(...deg(180))).toEqual({ dx: -1, dy: 0 });
+    expect(snapStick(...deg(-90))).toEqual({ dx: 0, dy: -1 });
+    // inside the horizontal sector nothing vertical leaks (a raised thumb while running)
+    expect(snapStick(...deg(20))).toEqual({ dx: 1, dy: 0 });
+    expect(snapStick(...deg(-22))).toEqual({ dx: 1, dy: 0 });
+    // diagonals: 22.5° .. 67.5° snap to exactly two bits
+    expect(snapStick(...deg(45))).toEqual({ dx: 1, dy: 1 });
+    expect(snapStick(...deg(30))).toEqual({ dx: 1, dy: 1 });
+    expect(snapStick(...deg(60))).toEqual({ dx: 1, dy: 1 });
+    expect(snapStick(...deg(-45))).toEqual({ dx: 1, dy: -1 });
+    expect(snapStick(...deg(135))).toEqual({ dx: -1, dy: 1 });
+    expect(snapStick(...deg(-135))).toEqual({ dx: -1, dy: -1 });
+    // near vertical: the horizontal never leaks
+    expect(snapStick(...deg(80))).toEqual({ dx: 0, dy: 1 });
+    expect(snapStick(...deg(-100))).toEqual({ dx: 0, dy: -1 });
+    expect(snapStick(Number.NaN, 0.5)).toEqual({ dx: 0, dy: 0 });
+  });
+
+  it('the vertical guard: |y| under STICK_Y_DEADZONE collapses a diagonal to the run and a shallow vertical to neutral', () => {
+    expect(STICK_Y_DEADZONE).toBe(0.45);
+    // 45° at r = 0.5: y = 0.35 — a run, not a run-and-look-up
+    expect(snapStick(0.354, -0.354)).toEqual({ dx: 1, dy: 0 });
+    // the same angle pushed further: a proper diagonal
+    expect(snapStick(0.6, -0.6)).toEqual({ dx: 1, dy: -1 });
+    // mostly vertical but shallow (r ≥ dead zone, |y| < guard, |x| < dead zone): nothing, never a sideways run
+    expect(snapStick(0.14, -0.4)).toEqual({ dx: 0, dy: 0 });
+    // a deliberate stomp needs a real push down
+    expect(snapStick(0, 0.44)).toEqual({ dx: 0, dy: 0 });
+    expect(snapStick(0, 0.46)).toEqual({ dx: 0, dy: 1 });
+    expect(stickMask(0.7, 0.7)).toBe(IN.RIGHT | IN.DOWN);
+    expect(stickMask(-0.7, -0.7)).toBe(IN.LEFT | IN.UP);
+    expect(stickMask(0.9, 0)).toBe(IN.RIGHT);
+  });
+
+  it('the Input reads the stick through the sectors: a diagonal is two bits with two edges, a shallow one is a run', () => {
+    const t = input.touch;
+    t.active = true;
+    t.x = 0.6; t.y = -0.6;
+    input.poll();
+    expect(input.held()).toBe(IN.RIGHT | IN.UP);
+    expect(input.takeLatched()).toBe(IN.RIGHT | IN.UP);
+    t.x = 0.8; t.y = -0.2;          // thumb drifted flat: still running, the look-up released
+    input.poll();
+    expect(input.held()).toBe(IN.RIGHT);
+    expect(input.takeLatched()).toBe(0);
+    t.x = 0.2; t.y = 0.2;           // inside the dead zone
+    input.poll();
+    expect(input.held()).toBe(0);
+  });
+
+  it('dash aim: a DASH tap with the stick up-right dashes diagonally; with the stick neutral it dashes along the facing', () => {
+    const def = openRoom();
+    const runDash = (stick: [number, number] | null): { dx: number; dy: number } => {
+      const own = new Input({ target: null });
+      const sim = new Sim(def);
+      for (let i = 0; i < 80; i++) sim.step(0);          // through the intro, on the floor
+      expect(sim.state.phase).toBe('play');
+      const t = own.touch;
+      if (stick) { t.active = true; t.x = stick[0]; t.y = stick[1]; }
+      t.dashPressed = true;                                 // the UI's press edge, consumed by the next poll
+      own.poll();
+      const held = own.held();
+      const latched = own.takeLatched();
+      expect(latched & IN.DASH).toBe(IN.DASH);
+      // the game loop: the latched bits ride on the first tick with whatever is held
+      let dash: { dx: number; dy: number } | null = null;
+      for (let i = 0; i < 6 && !dash; i++) {
+        sim.step(i === 0 ? held | latched : held);
+        for (const ev of sim.drainEvents()) if (ev.type === 'dash') dash = { dx: ev.dx, dy: ev.dy };
+      }
+      own.dispose();
+      expect(dash).not.toBeNull();
+      return dash!;
+    };
+    const diag = runDash([0.6, -0.6]);
+    expect(diag.dx).toBeGreaterThan(0.5);
+    expect(diag.dy).toBeLessThan(-0.5);                     // up-right, both components (normalised)
+    expect(Math.abs(diag.dx) - Math.abs(diag.dy)).toBeCloseTo(0, 5);
+    const flat = runDash(null);
+    expect(flat).toEqual({ dx: 1, dy: 0 });                 // facing right at spawn, nothing held
+    const up = runDash([0.05, -0.9]);
+    expect(up).toEqual({ dx: 0, dy: -1 });
+    const shallow = runDash([0.7, -0.3]);                   // under the vertical guard: a horizontal dash
+    expect(shallow).toEqual({ dx: 1, dy: 0 });
   });
 });

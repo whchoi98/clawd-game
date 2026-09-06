@@ -128,6 +128,75 @@ export function setEchoWorldMode(s: Settings, mode: EchoWorldMode): void {
   (s as Settings & SettingsExtra).echoWorldMode = mode;
 }
 
+// ---------------------------------------------------------------- touch layout (P3-7)
+/**
+ * The virtual pad's layout: a size and opacity scale, per-side offsets in CSS
+ * px (positive = toward the screen centre / up), and the floating stick (the
+ * pad appears wherever the thumb lands on the left half). Every value is
+ * clamped to these limits on load; a save from before the field gets the
+ * defaults. The idle opacity default matches the stylesheet's resting value.
+ */
+export type TouchLayout = NonNullable<Settings['touch']>;
+export const TOUCH_LIMITS = {
+  scale: { min: 0.8, max: 1.4, step: 0.05 },
+  opacity: { min: 0.2, max: 0.8, step: 0.05 },
+  offset: { min: -80, max: 80, step: 4 },
+} as const;
+export const DEFAULT_TOUCH: Readonly<TouchLayout> = Object.freeze({
+  scale: 1, opacity: 0.35, leftX: 0, leftY: 0, rightX: 0, rightY: 0, floating: false,
+});
+
+/** A valid TouchLayout from anything: clamped numbers, booleans coerced, defaults for the rest. */
+export function repairTouch(raw: unknown): TouchLayout {
+  const r = isObj(raw) ? raw : {};
+  const L = TOUCH_LIMITS;
+  return {
+    scale: num(r.scale, L.scale.min, L.scale.max, DEFAULT_TOUCH.scale),
+    opacity: num(r.opacity, L.opacity.min, L.opacity.max, DEFAULT_TOUCH.opacity),
+    leftX: num(r.leftX, L.offset.min, L.offset.max, 0),
+    leftY: num(r.leftY, L.offset.min, L.offset.max, 0),
+    rightX: num(r.rightX, L.offset.min, L.offset.max, 0),
+    rightY: num(r.rightY, L.offset.min, L.offset.max, 0),
+    floating: bool(r.floating, false),
+  };
+}
+
+/**
+ * The settings' touch layout. A settings object that predates the field (or a
+ * test fixture) gets the defaults attached on first read, so the layout editor
+ * always edits the object the settings document persists.
+ */
+export function touchLayout(s: Settings): TouchLayout {
+  return s.touch ?? (s.touch = repairTouch(undefined));
+}
+
+// ---------------------------------------------------------------- mute (P3-7)
+/**
+ * The HUD mute chip: master volume 0 is "muted"; the volume it had before is
+ * kept as an extra field so unmuting restores it. Both persist with the
+ * settings document like every other change.
+ */
+export interface MuteExtra { masterBeforeMute?: number }
+export const UNMUTE_FALLBACK_MASTER = 0.8;
+
+export function isMuted(s: Settings): boolean {
+  return !(s.master > 0);
+}
+
+/** Flip the mute state in place; returns the new muted flag. */
+export function toggleMute(s: Settings): boolean {
+  const x = s as Settings & MuteExtra;
+  if (isMuted(s)) {
+    const back = typeof x.masterBeforeMute === 'number' && x.masterBeforeMute > 0 ? Math.min(1, x.masterBeforeMute) : UNMUTE_FALLBACK_MASTER;
+    s.master = back;
+    delete x.masterBeforeMute;
+    return false;
+  }
+  x.masterBeforeMute = s.master;
+  s.master = 0;
+  return true;
+}
+
 // ---------------------------------------------------------------- segment bests (P2-4)
 /**
  * Best time (ticks) per checkpoint segment of a story zone on this install:
@@ -236,6 +305,7 @@ export function defaultSettings(binds: Binds = DEFAULT_BINDS): Settings {
     invincible: false,
     echoSelf: true, echoWorld: true,
     echoWorldMode: DEFAULT_ECHO_WORLD_MODE,
+    touch: { ...DEFAULT_TOUCH },
     binds: cloneBinds(binds),
   };
   return s;
@@ -342,6 +412,12 @@ export function repairSettings(raw: unknown, defaults: Settings): Settings {
   setEchoWorldMode(s, echoWorldMode(s));
   // Haptics: a boolean the player chose, or absent (the Save seeds the device default at boot).
   if (typeof s.haptics !== 'boolean') delete s.haptics;
+  // Touch layout (P3-7): every field clamped, a v1 save gets the defaults, the player's values survive.
+  s.touch = repairTouch(isObj(raw) ? raw.touch : undefined);
+  // The pre-mute volume only makes sense as a positive number while muted.
+  const mx = s as Settings & MuteExtra;
+  if (typeof mx.masterBeforeMute !== 'number' || !(mx.masterBeforeMute > 0) || s.master > 0) delete mx.masterBeforeMute;
+  else mx.masterBeforeMute = Math.min(1, mx.masterBeforeMute);
   if (!QUALITIES.has(s.quality as string)) s.quality = 'auto';
   if (typeof s.skin !== 'string' || !s.skin) s.skin = defaults.skin;
   s.binds = repairBinds(isObj(raw) ? raw.binds : undefined, defaults.binds);

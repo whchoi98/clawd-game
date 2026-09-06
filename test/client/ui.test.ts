@@ -10,14 +10,17 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
-  Binds, HudState, InputPort, MenuAction, Progress, ResultView, Settings, TouchState, UIAction,
+  Binds, Device, HudState, InputPort, MenuAction, Progress, ResultView, Settings, TouchState, UIAction,
 } from '../../src/client/contracts.js';
 import type { LevelDef, RunSummary } from '../../src/sim/types.js';
 import { RejectReason } from '../../src/shared/protocol.js';
 import type { LeaderboardResponse } from '../../src/shared/protocol.js';
 import {
-  HUD_TOPRIGHT_H, HUD_TOPRIGHT_W, IOS_HINT_DISMISSED_KEY, NAG_DISMISSED_KEY, REASON_KR, RESTART_HOLD_S, UI, reasonKr,
+  GAMEPAD_HIDE_S, HUD_TOPRIGHT_H, HUD_TOPRIGHT_W, IOS_HINT_DISMISSED_KEY, MUTE_KR, NAG_DISMISSED_KEY, REASON_KR, RESTART_HOLD_S, UI, reasonKr,
 } from '../../src/client/ui/ui.js';
+import { LAYOUT_VARS, MIN_HIT_PX, MIN_LABEL_PX, touchHitPx, type TouchElementKind } from '../../src/client/ui/touch.js';
+import { TOUCH_KR, TOUCH_SLIDERS } from '../../src/client/ui/settings.js';
+import { DEFAULT_TOUCH } from '../../src/client/save.js';
 import {
   HINT_TOKENS, REHINT_HAZARD, REHINT_PIT, hasRawKeyName, hintFor, renderHint, tokenGlyph,
 } from '../../src/client/ui/hints.js';
@@ -1214,6 +1217,238 @@ describe('UI PWA surfaces', () => {
     expect($('#daily-date').textContent).toContain('2026년 9월 6일');
     expect($('#daily-status').textContent).toContain('오프라인');
     expect($<HTMLButtonElement>('#scr-daily [data-act="daily"]').disabled).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------------ P3-7 touch layout · gamepad auto-hide · mute chip
+describe('UI touch layout, gamepad auto-hide and the mute chip (P3-7)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  /** A touch-first device: the first real touch flips the controls to coarse. */
+  function coarse(): void { document.dispatchEvent(new Event('touchstart', { bubbles: true })); }
+
+  it('applySettings pushes the layout to #hud-touch as CSS variables and the floating class (CSSOM only, no style on the buttons)', () => {
+    const { ui, settings } = setup();
+    const root = $('#hud-touch');
+    expect(root.style.getPropertyValue(LAYOUT_VARS.scale)).toBe('1');
+    expect(root.style.getPropertyValue(LAYOUT_VARS.opacity)).toBe(String(DEFAULT_TOUCH.opacity));
+    settings.touch = { scale: 1.2, opacity: 0.5, leftX: 16, leftY: -8, rightX: -24, rightY: 40, floating: true };
+    ui.applySettings(settings);
+    expect(root.style.getPropertyValue('--tscale')).toBe('1.2');
+    expect(root.style.getPropertyValue('--topacity')).toBe('0.5');
+    expect(root.style.getPropertyValue('--tleft-x')).toBe('16px');
+    expect(root.style.getPropertyValue('--tleft-y')).toBe('-8px');
+    expect(root.style.getPropertyValue('--tright-x')).toBe('-24px');
+    expect(root.style.getPropertyValue('--tright-y')).toBe('40px');
+    expect(root.classList.contains('is-floating')).toBe(true);
+    // no stylesheet was written and no style attribute landed on the buttons themselves
+    expect(document.querySelectorAll('style')).toHaveLength(0);
+    for (const b of document.querySelectorAll<HTMLElement>('#hud-touch .tbtn')) expect(b.getAttribute('style')).toBeNull();
+    settings.touch.floating = false;
+    ui.applySettings(settings);
+    expect(root.classList.contains('is-floating')).toBe(false);
+  });
+
+  it('audit: every .tbtn / .tpad hit box is at least 44×44 CSS px at scale 0.8 (stylesheet-derived boxes)', () => {
+    const { ui, settings } = setup();
+    settings.touch = { ...DEFAULT_TOUCH, scale: 0.8 };
+    ui.applySettings(settings);
+    const kinds: [string, TouchElementKind][] = [['#tpad-move', 'pad'], ['.tbtn--jump', 'jump'], ['.tbtn--dash', 'tbtn']];
+    const targets = [...document.querySelectorAll<HTMLElement>('#hud-touch .tbtn, #hud-touch .tpad')];
+    expect(targets).toHaveLength(3);
+    for (const el of targets) {
+      const kind = kinds.find(([sel]) => el.matches(sel))?.[1];
+      expect(kind, el.className).toBeDefined();
+      // happy-dom lays nothing out: the box is what the stylesheet's max(44px, <rem> × --tscale) rule yields at this scale
+      const px = touchHitPx(kind!, settings.touch!.scale);
+      el.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: px, bottom: px, width: px, height: px, toJSON() { return {}; } }) as DOMRect;
+      const box = el.getBoundingClientRect();
+      expect(box.width, el.className).toBeGreaterThanOrEqual(MIN_HIT_PX);
+      expect(box.height, el.className).toBeGreaterThanOrEqual(MIN_HIT_PX);
+    }
+    // the rule itself: a tiny scale still gives 44, the pause / mute size is exactly 44
+    expect(touchHitPx('tbtn', 0.8)).toBeCloseTo(4.4 * 16 * 0.8);
+    expect(touchHitPx('tbtn', 0.1)).toBe(MIN_HIT_PX);
+    expect(touchHitPx('pause', 1)).toBe(MIN_HIT_PX);
+    expect(touchHitPx('pad', 0.8)).toBeGreaterThanOrEqual(MIN_HIT_PX);
+    expect(MIN_LABEL_PX).toBe(11);
+  });
+
+  it('floating stick: the first touch in the left zone becomes the origin (neutral), 20 px of travel reads as x, release returns the pad', () => {
+    const { ui, settings } = setup();
+    settings.touch = { ...DEFAULT_TOUCH, floating: true };
+    ui.applySettings(settings);
+    const zone = $('#tpad-zone');
+    const pad = $('#tpad-move');
+    zone.dispatchEvent(new PointerEvent('pointerdown', { clientX: 120, clientY: 300, pointerId: 7, bubbles: true }));
+    expect(ui.touch.active).toBe(true);
+    expect(ui.touch.x).toBe(0);
+    expect(ui.touch.y).toBe(0);
+    expect(pad.classList.contains('is-floated')).toBe(true);
+    // happy-dom boxes are 0×0: the fallback radius (24 px) puts the pad's corner at the touch point minus the radius
+    expect(pad.style.left).toBe('96px');
+    expect(pad.style.top).toBe('276px');
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 140, clientY: 300, pointerId: 7, bubbles: true }));
+    expect(ui.touch.x).toBeGreaterThan(0.5);        // 20 px over a 24 px radius
+    expect(ui.touch.y).toBe(0);
+    // another finger does not steal the stick
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 0, clientY: 300, pointerId: 9, bubbles: true }));
+    expect(ui.touch.x).toBeGreaterThan(0.5);
+    document.dispatchEvent(new PointerEvent('pointerup', { clientX: 140, clientY: 300, pointerId: 7, bubbles: true }));
+    expect(ui.touch.active).toBe(false);
+    expect(ui.touch.x).toBe(0);
+    expect(pad.classList.contains('is-floated')).toBe(false);
+    expect(pad.style.left).toBe('');
+    expect(pad.style.top).toBe('');
+    // with floating off the zone is inert and the resting pad works as before
+    settings.touch = { ...DEFAULT_TOUCH };
+    ui.applySettings(settings);
+    zone.dispatchEvent(new PointerEvent('pointerdown', { clientX: 120, clientY: 300, pointerId: 8, bubbles: true }));
+    expect(ui.touch.active).toBe(false);
+    pad.dispatchEvent(new PointerEvent('pointerdown', { clientX: 80, clientY: 0, pointerId: 8, bubbles: true }));
+    expect(ui.touch.active).toBe(true);
+    expect(ui.touch.x).toBeGreaterThan(0.5);
+    pad.dispatchEvent(new PointerEvent('pointerup', { clientX: 80, clientY: 0, pointerId: 8, bubbles: true }));
+  });
+
+  it('hides the pad while a gamepad was used in the last GAMEPAD_HIDE_S and brings it back on touch', () => {
+    const { ui, input } = setup();
+    coarse();
+    ui.show('play');
+    const root = $('#hud-touch');
+    expect(root.hidden).toBe(false);
+    const dev = input as unknown as { lastDevice: Device };
+    dev.lastDevice = 'gamepad';
+    ui.frame(1 / 60, input);
+    expect(root.hidden).toBe(true);
+    dev.lastDevice = 'keyboard';                        // the pad went quiet: the timer runs down
+    for (let i = 0; i < 60; i++) ui.frame(1 / 60, input);   // 1 s
+    expect(root.hidden).toBe(true);
+    for (let i = 0; i < 70; i++) ui.frame(1 / 60, input);   // past GAMEPAD_HIDE_S
+    expect(GAMEPAD_HIDE_S).toBe(2);
+    expect(root.hidden).toBe(false);
+    dev.lastDevice = 'gamepad';
+    ui.frame(1 / 60, input);
+    expect(root.hidden).toBe(true);
+    dev.lastDevice = 'touch';                           // the first finger brings it straight back
+    ui.frame(1 / 60, input);
+    expect(root.hidden).toBe(false);
+    ui.show('pause');
+    expect(root.hidden).toBe(true);
+  });
+
+  it('the mute chip shows on touch layouts only, toggles the master volume to 0 and back, and persists through settingsChanged', () => {
+    const { ui, settings, actions } = setup();
+    const chip = $('#hud-mute');
+    expect(chip.hidden).toBe(true);
+    expect(chip.hasAttribute('data-nonav')).toBe(true);
+    coarse();
+    expect(chip.hidden).toBe(false);
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+    expect(chip.getAttribute('aria-label')).toBe(MUTE_KR.mute);
+    chip.click();
+    expect(settings.master).toBe(0);
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+    expect(chip.getAttribute('aria-label')).toBe(MUTE_KR.unmute);
+    expect(chip.classList.contains('is-muted')).toBe(true);
+    expect(actions.at(-1)).toEqual({ type: 'settingsChanged' });
+    // the settings slider follows the chip
+    ui.show('settings');
+    expect($<HTMLInputElement>('#pane-av input[data-key="master"]').value).toBe('0');
+    chip.click();
+    expect(settings.master).toBeCloseTo(0.8);
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+    expect($<HTMLInputElement>('#pane-av input[data-key="master"]').value).toBe('0.8');
+    // a muted save arriving through applySettings reads as pressed
+    settings.master = 0;
+    ui.applySettings(settings);
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('설정 → 조작 carries the touch layout editor: sliders write settings.touch, preview on the real pad, floating switch, reset', () => {
+    const { ui, settings, actions, input } = setup();
+    coarse();
+    ui.show('settings');
+    const pane = $('#pane-ctrl');
+    expect(pane.querySelector('#touch-editor h3')?.textContent).toBe(TOUCH_KR.heading);
+    const sliders = [...pane.querySelectorAll<HTMLInputElement>('input[type="range"][data-touch-key]')];
+    expect(sliders.map((s) => s.dataset.touchKey)).toEqual(TOUCH_SLIDERS.map((s) => s.key));
+    const scale = sliders.find((s) => s.dataset.touchKey === 'scale')!;
+    expect([scale.min, scale.max, scale.step]).toEqual(['0.8', '1.4', '0.05']);
+    const opacity = sliders.find((s) => s.dataset.touchKey === 'opacity')!;
+    expect([opacity.min, opacity.max]).toEqual(['0.2', '0.8']);
+    const leftX = sliders.find((s) => s.dataset.touchKey === 'leftX')!;
+    expect([leftX.min, leftX.max]).toEqual(['-80', '80']);
+    const root = $('#hud-touch');
+    expect(root.hidden).toBe(true);                      // settings from the title: no pad on screen
+    scale.value = '0.8';
+    scale.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(settings.touch!.scale).toBe(0.8);
+    expect(root.style.getPropertyValue('--tscale')).toBe('0.8');
+    expect(actions.at(-1)).toEqual({ type: 'settingsChanged' });
+    expect(scale.parentElement!.querySelector('.row__val')!.textContent).toBe('80%');
+    // live preview: the real pad shows over the menu for a moment, non-interactive, then goes
+    expect(root.hidden).toBe(false);
+    expect(root.classList.contains('is-preview')).toBe(true);
+    for (let i = 0; i < 90; i++) ui.frame(1 / 60, input);   // 1.5 s > TOUCH_PREVIEW_S
+    expect(root.hidden).toBe(true);
+    expect(root.classList.contains('is-preview')).toBe(false);
+    // offsets clamp to the limits and read as signed px
+    leftX.value = '80';
+    leftX.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(settings.touch!.leftX).toBe(80);
+    expect(leftX.parentElement!.querySelector('.row__val')!.textContent).toBe('+80px');
+    expect(root.style.getPropertyValue('--tleft-x')).toBe('80px');
+    // the floating switch
+    const sw = pane.querySelector<HTMLElement>('.switch[data-touch-key="floating"]')!;
+    sw.click();
+    expect(settings.touch!.floating).toBe(true);
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+    expect(root.classList.contains('is-floating')).toBe(true);
+    // reset restores the defaults everywhere
+    $('#touch-reset').click();
+    expect(settings.touch).toEqual(DEFAULT_TOUCH);
+    expect(scale.value).toBe('1');
+    expect(leftX.value).toBe('0');
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+    expect(root.classList.contains('is-floating')).toBe(false);
+    expect(root.style.getPropertyValue('--tscale')).toBe('1');
+  });
+});
+
+// ------------------------------------------------------------------ P3-3 share button
+describe('UI result screen · 메아리 링크 공유 (P3-3)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  it('appears once the submission is accepted (result and game-over), joins the cursor, and emits shareEcho', () => {
+    const { ui, actions, input } = setup();
+    const view: ResultView = { summary: makeSummary(), levelName: '첫 물결', personalBest: true, stars: 2, submit: { state: 'pending' }, nextLevelId: 't2' };
+    ui.showResult(view);
+    const share = $('#scr-result [data-act="shareEcho"]');
+    expect(share.hidden).toBe(true);
+    ui.updateResult({ ...view, submit: { state: 'rejected', reason: 'assist' } });
+    expect(share.hidden).toBe(true);
+    ui.updateResult({ ...view, submit: { state: 'queued' } });
+    expect(share.hidden).toBe(true);
+    ui.updateResult({ ...view, submit: { state: 'accepted', rank: 3, total: 40 } });
+    expect(share.hidden).toBe(false);
+    expect(share.textContent).toContain('메아리 링크 공유');
+    share.click();
+    expect(actions.at(-1)).toEqual({ type: 'shareEcho' });
+    // a menu item the cursor can reach
+    let landed = false;
+    for (let i = 0; i < 6 && !landed; i++) {
+      input.queue.push('down');
+      ui.frame(1 / 60, input);
+      landed = share.classList.contains('is-cursor');
+    }
+    expect(landed).toBe(true);
+    // the game-over modal follows the same rule
+    ui.showOver(makeSummary({ cleared: false, height: 40 }), 10);
+    const overShare = $('#scr-over [data-act="shareEcho"]');
+    expect(overShare.hidden).toBe(true);
+    ui.updateResult({ ...view, submit: { state: 'accepted', rank: 1, total: 1 } });
+    expect(overShare.hidden).toBe(false);
   });
 });
 

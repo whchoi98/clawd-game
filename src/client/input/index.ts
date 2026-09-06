@@ -15,3 +15,5 @@ export {
   isOwnedCode,
   keyLabel,
 } from './binds.js';
+export { STICK_DEADZONE, STICK_SECTOR_RAD, STICK_Y_DEADZONE, snapStick, stickMask } from './stick.js';
+export type { StickDir, StickSnap } from './stick.js';

@@ -82,10 +82,10 @@ h1,h2,h3,p,dl,dd{margin:0}
 @keyframes screenIn{from{opacity:0;transform:scale(1.012)}to{opacity:1;transform:none}}
 @keyframes screenOut{from{opacity:1}to{opacity:0;transform:scale(.992)}}
 
-/* play must never eat clicks except on its own controls */
+/* play must never eat clicks except on its own controls (the touch pad lives beside the play section, same rule) */
 .screen--play{pointer-events:none !important}
 .screen--play.is-active{animation:none;opacity:1}
-.screen--play button,.screen--play .tpad{pointer-events:auto}
+.screen--play button,.hud__touch button,.hud__touch .tpad{pointer-events:auto}
 
 /* ============================================================
    BOOT
@@ -364,13 +364,14 @@ th.lb__shards::before{display:none}
 .hud__chip--shard i{background:var(--shard);box-shadow:0 0 9px var(--shard)}
 .hud__chip--relic i{background:var(--gold);box-shadow:0 0 9px var(--gold);border-radius:50%;rotate:0deg}
 .hud__chip--combo{color:var(--teal-hi);border-color:rgba(127,227,214,.35)}
-.hud__chip--assist{font-size:.66rem;letter-spacing:.14em;color:var(--dawn);padding:.22rem .55rem}
+.hud__chip--assist{font-size:.7rem;letter-spacing:.14em;color:var(--dawn);padding:.22rem .55rem}
 .hud__chip.bump{animation:chipBump .34s var(--e-back)}
 @keyframes chipBump{0%{transform:scale(1)}40%{transform:scale(1.16)}100%{transform:scale(1)}}
 
 .hud__timer{font-family:var(--f-num);font-size:1.5rem;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;
   text-shadow:0 2px 12px rgba(0,0,0,.8)}
-.hud__level{font-size:.64rem;font-weight:700;letter-spacing:.2em;color:var(--muted)}
+/* phone rule: no HUD text under 11 px (.7rem = 11.2 px at the 16 px root) */
+.hud__level{font-size:.7rem;font-weight:700;letter-spacing:.2em;color:var(--muted)}
 /* checkpoint split against the echo (P2-4): behind = danger, ahead = teal, even / not reached = muted */
 .hud__split{margin:.1rem 0 .15rem;padding:.16rem .62rem;border-radius:99px;font-family:var(--f-num);font-size:.98rem;font-weight:700;
   font-variant-numeric:tabular-nums;color:var(--muted);background:rgba(5,10,18,.55);border:1px solid rgba(255,255,255,.12);
@@ -381,7 +382,7 @@ th.lb__shards::before{display:none}
 .hud__height{display:flex;align-items:baseline;gap:.35rem;margin-top:.3rem;padding:.2rem .6rem;border-radius:8px;
   background:rgba(143,230,255,.1);border:1px solid rgba(143,230,255,.3);color:var(--tide);
   font-family:var(--f-num);font-size:1.05rem;font-weight:700;font-variant-numeric:tabular-nums}
-.hud__height em{font-style:normal;font-size:.62rem;font-weight:600;letter-spacing:.14em;color:var(--muted)}
+.hud__height em{font-style:normal;font-size:.7rem;font-weight:600;letter-spacing:.14em;color:var(--muted)}
 
 .hud__dash{position:absolute;left:var(--pad);bottom:calc(1rem + env(safe-area-inset-bottom));width:5.2rem;height:3px;border-radius:99px;
   background:rgba(255,255,255,.1);overflow:hidden;opacity:0;transition:opacity .25s}
@@ -407,27 +408,50 @@ th.lb__shards::before{display:none}
   transition:color .2s,background .2s,transform .2s var(--e-back)}
 .hud__pause:hover{color:#fff;background:rgba(127,227,214,.2);transform:scale(1.08)}
 .hud__pause::before,.hud__pause::after{content:"";width:3px;height:11px;border-radius:1px;background:currentColor}
-/* touch mode: keep the pause button, the dash meter and the hint clear of the pad and buttons */
-#ui.is-touch .hud__pause{bottom:auto;right:auto;left:50%;translate:-50% 0;top:calc(.85rem + env(safe-area-inset-top))}
+/* touch mode: keep the pause button, the dash meter and the hint clear of the pad and buttons;
+   every tappable HUD control is at least 44 px a side (2.75rem) */
+#ui.is-touch .hud__pause{bottom:auto;right:auto;left:50%;translate:-50% 0;top:calc(.85rem + env(safe-area-inset-top));
+  width:max(44px,2.75rem);height:max(44px,2.75rem)}
 #ui.is-touch .hud__dash{bottom:calc(9.2rem + env(safe-area-inset-bottom))}
+/* mute chip (P3-7): right of the pause button, touch layouts only (the UI keeps it hidden elsewhere) */
+.hud__mute{position:absolute;top:calc(.85rem + env(safe-area-inset-top));left:calc(50% + 1.375rem + .6rem);width:max(44px,2.75rem);height:max(44px,2.75rem);
+  border-radius:50%;display:flex;align-items:center;justify-content:center;color:#D3DEE2;
+  background:rgba(5,10,18,.62);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px);transition:color .2s,background .2s,transform .2s var(--e-back)}
+.hud__mute svg{width:1.3rem;height:1.3rem}
+.hud__mute .hud__mute-x{display:none}
+.hud__mute.is-muted{color:var(--dawn);border-color:rgba(242,180,138,.45)}
+.hud__mute.is-muted .hud__mute-wave{display:none}
+.hud__mute.is-muted .hud__mute-x{display:block}
+.hud__mute:hover,.hud__mute:active{color:#fff;background:rgba(127,227,214,.2)}
 /* touch: the pads own the bottom of the screen, so the hint is a plate right under the HUD top row */
 #ui.is-touch .hud__hint{top:calc(4.4rem + env(safe-area-inset-top));bottom:auto;max-width:64vw;font-size:.78rem;padding:.4rem .8rem;
   border-radius:12px;line-height:1.35}
 .icon-btn svg{width:1rem;height:1rem}
 
-/* touch controls */
+/* touch controls (P3-7 layout: the UI writes --tscale / --topacity / --tleft-* / --tright-* on #hud-touch;
+   every hit box stays >= 44 px a side at any scale, labels never drop under 11 px) */
 .hud__touch{position:absolute;inset:auto 0 0 0;height:44%;display:flex;justify-content:space-between;align-items:flex-end;
-  padding:0 var(--pad-r) calc(1.1rem + env(safe-area-inset-bottom)) var(--pad);touch-action:none}
-.tpad{position:relative;width:7.5rem;height:7.5rem;border-radius:50%;touch-action:none;
+  padding:0 var(--pad-r) calc(1.1rem + env(safe-area-inset-bottom)) var(--pad);touch-action:none;pointer-events:none}
+/* the stick's home (and, floating, its catch area): + x toward the centre, + y up */
+.tzone{position:relative;display:flex;align-items:flex-end;translate:var(--tleft-x,0px) calc(-1 * var(--tleft-y,0px))}
+.tpad{position:relative;width:max(44px,calc(7.5rem * var(--tscale,1)));height:max(44px,calc(7.5rem * var(--tscale,1)));border-radius:50%;touch-action:none;
   background:radial-gradient(circle,rgba(255,255,255,.08),rgba(255,255,255,.03));border:1px solid rgba(255,255,255,.12)}
-.tpad i{position:absolute;left:50%;top:50%;translate:-50% -50%;width:2.9rem;height:2.9rem;border-radius:50%;
+.tpad i{position:absolute;left:50%;top:50%;translate:-50% -50%;width:calc(2.9rem * var(--tscale,1));height:calc(2.9rem * var(--tscale,1));border-radius:50%;
   background:rgba(232,130,92,.55);border:1px solid rgba(255,255,255,.25);transition:translate .05s linear}
 .tpad.is-active i{background:rgba(232,130,92,.8);transition:none}
+/* floating stick: the left half of the touch area takes the first touch, the pad rests at its usual corner in between */
+.hud__touch.is-floating .tzone{position:absolute;left:0;top:0;bottom:0;width:50%;pointer-events:auto;translate:none}
+.hud__touch.is-floating .tpad{position:absolute;left:calc(var(--pad) + var(--tleft-x,0px));bottom:calc(1.1rem + env(safe-area-inset-bottom) + var(--tleft-y,0px))}
+.hud__touch.is-floating .tpad.is-floated{bottom:auto}
+/* the settings editor previews the pad over any screen: lifted above the modals, never tappable */
+.hud__touch.is-preview{z-index:12;pointer-events:none}
+.hud__touch.is-preview .tpad,.hud__touch.is-preview button{pointer-events:none}
 /* buttons sit 12px above the pad line and stay translucent at rest so the world (and its foes) reads through them */
-.tbtns{display:flex;gap:.7rem;align-items:flex-end;translate:0 -12px}
-.tbtn{width:4.4rem;height:4.4rem;border-radius:50%;font-size:.66rem;font-weight:800;letter-spacing:.1em;text-align:center;touch-action:none;
-  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);opacity:.35;transition:transform .08s,filter .08s,opacity .08s}
-.tbtn--jump{width:5.4rem;height:5.4rem;background:rgba(232,130,92,.24);border-color:rgba(232,130,92,.5)}
+.tbtns{display:flex;gap:calc(.7rem * var(--tscale,1));align-items:flex-end;translate:calc(-1 * var(--tright-x,0px)) calc(-12px - var(--tright-y,0px))}
+.tbtn{width:max(44px,calc(4.4rem * var(--tscale,1)));height:max(44px,calc(4.4rem * var(--tscale,1)));border-radius:50%;
+  font-size:max(11px,calc(.66rem * var(--tscale,1)));font-weight:800;letter-spacing:.1em;text-align:center;touch-action:none;
+  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);opacity:var(--topacity,.35);transition:transform .08s,filter .08s,opacity .08s}
+.tbtn--jump{width:max(44px,calc(5.4rem * var(--tscale,1)));height:max(44px,calc(5.4rem * var(--tscale,1)));background:rgba(232,130,92,.24);border-color:rgba(232,130,92,.5)}
 .tbtn--dash{background:rgba(127,227,214,.16);border-color:rgba(127,227,214,.45)}
 .tbtn:active,.tbtn.is-down{transform:scale(.93);filter:brightness(1.4);opacity:.9}
 

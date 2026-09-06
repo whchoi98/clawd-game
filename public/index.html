@@ -174,14 +174,27 @@
     <!-- Gameplay state a screen reader can follow; the canvas is aria-hidden. -->
     <p class="sr-only" id="hud-sr" role="status" aria-live="polite"></p>
     <button class="hud__pause" data-act="pause" aria-label="일시정지"></button>
-    <div class="hud__touch" id="hud-touch" hidden>
-      <div class="tpad" id="tpad-move" aria-hidden="true"><i></i></div>
-      <div class="tbtns">
-        <button class="tbtn tbtn--dash" data-touch="dash" aria-label="대시">DASH</button>
-        <button class="tbtn tbtn--jump" data-touch="jump" aria-label="점프">JUMP</button>
-      </div>
-    </div>
+    <!-- Touch layouts only (P3-7): master volume ↔ 0, the previous level restored on unmute; persisted with the settings. -->
+    <button class="hud__mute" id="hud-mute" type="button" data-act="mute" data-nonav aria-label="소리 끄기" aria-pressed="false" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 9.5v5h3.2L12 18.5v-13L7.2 9.5H4z"/>
+        <path class="hud__mute-wave" d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.6 7.6 0 0 1 0 11"/>
+        <path class="hud__mute-x" d="M15.5 9.5l5 5M20.5 9.5l-5 5"/>
+      </svg>
+    </button>
   </section>
+  <!-- TOUCH CONTROLS: outside the play section so the settings editor can preview them over any screen (P3-7).
+       The UI shows them during play on a touch-first device (hidden while a gamepad was used in the last 2 s);
+       #tpad-zone is the floating-stick catch area (the left half), inert unless is-floating. -->
+  <div class="hud__touch" id="hud-touch" hidden>
+    <div class="tzone" id="tpad-zone" aria-hidden="true">
+      <div class="tpad" id="tpad-move"><i></i></div>
+    </div>
+    <div class="tbtns">
+      <button class="tbtn tbtn--dash" data-touch="dash" aria-label="대시">DASH</button>
+      <button class="tbtn tbtn--jump" data-touch="jump" aria-label="점프">JUMP</button>
+    </div>
+  </div>
 
   <!-- PAUSE -->
   <section class="screen screen--modal" id="scr-pause" aria-label="일시정지">
@@ -217,6 +230,8 @@
       <nav class="menu menu--compact">
         <button class="menu__item menu__item--primary" data-act="next">다음 구역</button>
         <button class="menu__item" data-act="retry">다시 도전</button>
+        <!-- Shown once the submission is accepted (P3-3): a ?race=<runId> link to this echo. -->
+        <button class="menu__item menu__item--share" data-act="shareEcho" hidden>메아리 링크 공유<small>친구가 내 메아리와 경주한다</small></button>
         <button class="menu__item" data-act="quit">나가기</button>
       </nav>
     </div>
@@ -237,6 +252,8 @@
         <button class="menu__item menu__item--primary" data-act="sameTower" hidden>같은 탑 다시<small>같은 시드 · 내 최고 기록의 메아리와 함께</small></button>
         <button class="menu__item" data-act="newTower" hidden>새 탑<small>새 시드</small></button>
         <button class="menu__item menu__item--primary" data-act="retry">다시 도전</button>
+        <!-- A daily climb the server accepted can be raced too (P3-3). -->
+        <button class="menu__item menu__item--share" data-act="shareEcho" hidden>메아리 링크 공유<small>친구가 내 메아리와 경주한다</small></button>
         <button class="menu__item" data-act="quit">나가기</button>
       </nav>
     </div>
