@@ -16,3 +16,5 @@ import type { AudioPort } from '../contracts.js';
 export function createAudio(): AudioPort & AudioEngine {
   return new AudioEngine();
 }
+export { installAudioUnlock, UNLOCK_EVENTS } from './unlock.js';
+export type { UnlockController, UnlockableAudio } from './unlock.js';

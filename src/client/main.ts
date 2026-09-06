@@ -16,6 +16,7 @@
 import { LEVELS } from '../sim/index.js';
 import { Renderer } from './render/index.js';
 import { createAudio } from './audio/index.js';
+import { installAudioUnlock } from './audio/unlock.js';
 import { UI } from './ui/index.js';
 import { DEFAULT_BINDS, Input } from './input/index.js';
 import { Api } from './net/api.js';
@@ -99,10 +100,11 @@ async function start(): Promise<void> {
   const scenes = new Scenes({ renderer, audio, ui, input, api, save, queue, levels: LEVELS, build: BUILD });
   window.__clawd = scenes;
 
-  // Any first gesture unlocks WebAudio.
-  const unlock = (): void => { audio.init(); audio.applySettings(save.settings); };
-  addEventListener('pointerdown', unlock, { once: true });
-  addEventListener('keydown', unlock, { once: true });
+  // WebAudio may only start inside a user activation, and a touch pointerdown
+  // is not one: listen on every activation event until the context runs, and
+  // re-arm after an app switch (iOS will not resume outside a gesture).
+  const unlock = installAudioUnlock(window, audio, { onFirstInit: () => audio.applySettings(save.settings) });
+  addEventListener('visibilitychange', () => { if (!document.hidden && !audio.running) unlock.arm(); });
 
   const onResize = (): void => renderer.resize();
   addEventListener('resize', onResize);

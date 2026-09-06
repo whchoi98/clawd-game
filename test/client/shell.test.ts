@@ -91,8 +91,9 @@ function fakeRenderer(): FakeRenderer {
 interface FakeAudio extends AudioPort { events: SimEvent[]; track: string | null; intensity: number; muffled: boolean; inits: number }
 function fakeAudio(): FakeAudio & { setMuffle(on: boolean): void } {
   const a = {
-    events: [] as SimEvent[], track: null as string | null, intensity: 0, muffled: false, inits: 0, ready: true,
+    events: [] as SimEvent[], track: null as string | null, intensity: 0, muffled: false, inits: 0, ready: true, running: true,
     init() { a.inits++; },
+    unlock() { a.inits++; },
     applySettings() {},
     onEvent(ev: SimEvent) { a.events.push(ev); },
     setTrack(k: string | null) { a.track = k; },

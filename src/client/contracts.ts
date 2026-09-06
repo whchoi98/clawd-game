@@ -148,6 +148,16 @@ export type UiSound = 'move' | 'confirm' | 'cancel' | 'toggle' | 'unlock' | 'err
 export interface AudioPort {
   /** Create the AudioContext; call from the first user gesture. Idempotent. */
   init(): void;
+  /**
+   * Full gesture-time unlock: init, resume a suspended context and kick the
+   * output with a silent buffer (iOS starts its audio session only for sound
+   * started inside the gesture). Must be called from an activation-triggering
+   * event handler (pointerup / touchend / click / keydown — NOT a touch
+   * pointerdown). Idempotent; cheap once `running`.
+   */
+  unlock(): void;
+  /** True while the context is running (sound can actually be heard). */
+  readonly running: boolean;
   applySettings(s: Settings): void;
   onEvent(ev: SimEvent, sim: Sim): void;
   /** Start a sequenced track ('title' | biome.track | null to stop). Cross-fades. */

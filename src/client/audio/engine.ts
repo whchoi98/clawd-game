@@ -86,6 +86,8 @@ export class AudioEngine implements AudioPort, Synth {
   private lastTick = -1;
   private userSuspended = false;
   private hiddenSuspended = false;
+  /** The silent unlock buffer has been started once. */
+  private kicked = false;
   private visHandler: (() => void) | null = null;
 
   /** Voices created since init — a liveness signal for QA. */
@@ -93,6 +95,30 @@ export class AudioEngine implements AudioPort, Synth {
 
   // ------------------------------------------------------------ AudioPort
   get ready(): boolean { return this.ctx !== null; }
+  get running(): boolean { return this.ctx !== null && this.ctx.state === 'running'; }
+
+  /**
+   * Gesture-time unlock. Browsers only let a context start inside a user
+   * activation, and a *touch* pointerdown is not one (pointerup / touchend /
+   * click / keydown are), so the shell calls this from those events until
+   * `running` is true. The one-sample silent buffer is the long-standing iOS
+   * trick: Safari opens the audio session for sound started in the gesture.
+   */
+  unlock(): void {
+    this.init();
+    const ctx = this.ctx;
+    if (!ctx) return;
+    if (ctx.state === 'suspended' && !this.userSuspended) swallow(ctx.resume());
+    if (!this.kicked) {
+      try {
+        const src = ctx.createBufferSource();
+        src.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+        src.connect(ctx.destination);
+        src.start(0);
+        this.kicked = true;
+      } catch { /* a context that cannot play yet will be kicked on the next gesture */ }
+    }
+  }
   /** Key of the track currently requested ('title', a biome track, or null). */
   get track(): string | null { return this.trackKey; }
   get intensity(): number { return this.curIntensity; }

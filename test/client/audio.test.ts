@@ -498,3 +498,42 @@ describe('music', () => {
     expect(midi(81)).toBeCloseTo(880);
   });
 });
+
+describe('unlock()', () => {
+  let engine: AudioEngine;
+  beforeEach(() => { installFake(); engine = new AudioEngine(); });
+  afterEach(() => { engine.dispose(); removeFake(); });
+
+  const kicks = (ctx: FakeAudioContext) => ctx.nodes.filter((n) => n.kind === 'bufferSource' && n.started.length > 0 && (n as FakeBufferSource).buffer !== null);
+
+  it('creates the context, resumes it when suspended and kicks a silent buffer exactly once', () => {
+    engine.init();
+    const ctx = FakeAudioContext.instances[0];
+    ctx.state = 'suspended';
+    engine.unlock();
+    expect(FakeAudioContext.instances).toHaveLength(1);
+    expect(ctx.resumed).toBeGreaterThanOrEqual(1);
+    expect(kicks(ctx)).toHaveLength(1);
+    engine.unlock();
+    engine.unlock();
+    expect(kicks(ctx)).toHaveLength(1);
+    expect(engine.running).toBe(true);
+  });
+
+  it('unlock() from nothing creates the context and reports running', () => {
+    expect(engine.running).toBe(false);
+    engine.unlock();
+    expect(engine.ready).toBe(true);
+    expect(engine.running).toBe(true);
+  });
+
+  it('running is false after suspend() and unlock() does not fight a user suspend', () => {
+    engine.unlock();
+    engine.suspend();
+    expect(engine.running).toBe(false);
+    const ctx = FakeAudioContext.instances[0];
+    const before = ctx.resumed;
+    engine.unlock();
+    expect(ctx.resumed).toBe(before);
+  });
+});
