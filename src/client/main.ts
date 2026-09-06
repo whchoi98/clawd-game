@@ -29,6 +29,7 @@ import { Haptics } from './haptics.js';
 import { Scenes } from './scenes.js';
 import { parseShotQuery, runShot } from './shot.js';
 import { defaultShareEnv, parseRaceQuery, stripRaceQuery } from './echo/race.js';
+import { parseGoQuery, stripGoQuery } from './share/go.js';
 import { loadFonts } from './fonts.js';
 import { installPrompt, isIosSafariNotStandalone, isShotHarness, registerServiceWorker } from './pwa.js';
 
@@ -189,12 +190,15 @@ async function start(): Promise<void> {
   // `?race=<runId>` (a friend's link): read before boot, cleaned from the address bar right after it
   // so a reload does not start the race again, then handed to the shell (the ghost decides the zone).
   const race = parseRaceQuery(location.search);
+  // `?go=daily|endless` (a manifest shortcut, P3-4): same treatment; a race link wins when both are present.
+  const go = parseGoQuery(location.search);
   await scenes.boot({ raf: raf2, wait, fonts });
   booted = true;
-  if (race) {
-    try { history.replaceState(history.state, '', stripRaceQuery(location.href)); } catch { /* sandboxed history */ }
-    void scenes.startRace(race.runId);
+  if (race || go) {
+    try { history.replaceState(history.state, '', stripGoQuery(stripRaceQuery(location.href))); } catch { /* sandboxed history */ }
   }
+  if (race) void scenes.startRace(race.runId);
+  else if (go) scenes.go(go);
 
   let last = performance.now();
   const frame = (now: number): void => {

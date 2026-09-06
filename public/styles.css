@@ -644,6 +644,19 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
 
 .sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 
+/* ---------- install card (P3-4): result modal, story clears, hidden for good after 3 나중에 ---------- */
+.install{display:flex;align-items:center;justify-content:space-between;gap:.8rem;margin:0 0 .8rem;padding:.6rem .8rem;border-radius:12px;
+  border:1px solid rgba(127,227,214,.3);background:linear-gradient(120deg,rgba(127,227,214,.12),rgba(242,140,106,.08));font-size:.8rem;color:var(--paper)}
+.install__body{display:flex;flex-direction:column;gap:.15rem;min-width:0}
+.install__body b{font-size:.86rem;font-weight:700;color:#fff}
+.install__body span{font-family:var(--f-kr);font-size:.74rem;color:var(--muted)}
+.install__acts{display:flex;gap:.4rem;flex:0 0 auto}
+.install__btn{min-height:2.2rem;padding:.4rem .85rem;border-radius:99px;font-family:var(--f-kr);font-size:.78rem;font-weight:700;text-align:center;
+  color:var(--paper);background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);transition:background .18s,color .18s,transform .18s}
+.install__btn--ok{color:var(--ink);background:var(--teal);border-color:transparent}
+.install__btn:hover,.install__btn:focus-visible,.install__btn.is-cursor{outline:none;color:var(--ink);background:var(--teal-hi);transform:scale(1.04)}
+.install[data-variant="ios"] .install__btn--ok{display:none}
+
 /* ---------- portrait prompt ---------- */
 .nag{position:absolute;inset:0;z-index:20;display:grid;place-items:center;background:rgba(3,7,12,.94);pointer-events:auto;
   font-size:1rem;font-weight:600;text-align:center;padding:2rem}

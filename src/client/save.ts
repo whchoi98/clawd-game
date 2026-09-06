@@ -472,6 +472,9 @@ export function repairProgress(raw: unknown, defaults: Progress): Progress {
   if (typeof p.firstSeen !== 'number' || !Number.isFinite(p.firstSeen) || p.firstSeen <= 0) delete p.firstSeen;
   p.playDays = int(p.playDays);
   if (typeof p.lastPlayDay !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(p.lastPlayDay)) delete p.lastPlayDay;
+  // Install card dismissals (P3-4): a whole count, absent until the first 나중에.
+  const dismissed = int(p.installCardDismissed);
+  if (dismissed > 0) p.installCardDismissed = dismissed; else delete p.installCardDismissed;
   // The best endless run's replay (self echo on 같은 탑 다시) survives only with the SIM_VERSION that recorded it.
   const e = (isObj(p.endless) ? p.endless : {}) as Record<string, unknown>;
   const bestMasks = typeof e.bestMasks === 'string' && e.bestMasks && e.bestSim === SIM_VERSION && e.bestGen === GEN_VERSION && typeof e.bestSeed === 'number'

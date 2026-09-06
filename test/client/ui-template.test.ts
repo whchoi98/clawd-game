@@ -6,7 +6,7 @@
  * 'unsafe-inline', so no inline scripts, handlers or style attributes may
  * exist; the build replaces the two markers with hashed asset tags.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -15,6 +15,9 @@ import type { LevelDef } from '../../src/sim/types.js';
 import { FONTS_HREF } from '../../src/client/fonts.js';
 import { UI } from '../../src/client/ui/ui.js';
 import { MIN_HIT_PX, MIN_LABEL_PX, TOUCH_BASE_REM } from '../../src/client/ui/touch.js';
+import { parseGoQuery } from '../../src/client/share/go.js';
+import { SETTINGS_KEY } from '../../src/client/save.js';
+import { SHOT_SETTINGS, SOCIAL, pngSize } from '../../tools/icons.mjs';
 
 // happy-dom replaces the global URL, so the template path is resolved with node:url/path.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -470,5 +473,108 @@ describe('public/favicon.svg', () => {
     expect(svg.trim().startsWith('<svg')).toBe(true);
     expect(svg).toContain('xmlns="http://www.w3.org/2000/svg"');
     expect(svg).not.toMatch(/<script/i);
+  });
+});
+
+// ------------------------------------------------------------------ P3-4 social metadata · manifest · install card · 공유
+describe('P3-4 · social metadata, manifest shortcuts / screenshots, install card and 공유', () => {
+  interface Shortcut { name: string; url: string; icons?: { src: string; sizes: string; type?: string }[] }
+  interface Screenshot { src: string; sizes: string; type: string; form_factor?: string; label?: string }
+  const manifest = JSON.parse(readFileSync(resolve(here, '../../public/manifest.webmanifest'), 'utf8')) as {
+    id?: string; description?: string; categories?: string[]; display?: string; orientation?: string;
+    shortcuts?: Shortcut[]; screenshots?: Screenshot[];
+  };
+  const publicFile = (src: string): string => resolve(here, '../../public', src.replace(/^\//, ''));
+  const OG = 'https://clawd-game.whchoi.net/og/og.png';
+
+  it('index.html carries og / twitter tags with the absolute og image and its size; the image is a committed 1200×630 PNG ≤ 300 KB', () => {
+    const head = html.slice(0, html.indexOf('</head>'));
+    expect(head).toContain(`<meta property="og:image" content="${OG}">`);
+    expect(head).toContain('<meta property="og:image:width" content="1200">');
+    expect(head).toContain('<meta property="og:image:height" content="630">');
+    expect(head).toMatch(/<meta property="og:title" content="[^"]*CLAWD JUMP[^"]*">/);
+    expect(head).toMatch(/<meta property="og:description" content="[^"]*[가-힣][^"]*">/);
+    expect(head).toContain('<meta name="twitter:card" content="summary_large_image">');
+    expect(head).toMatch(/<meta name="twitter:title" content="[^"]*CLAWD JUMP[^"]*">/);
+    expect(head).toMatch(/<meta name="twitter:description" content="[^"]*[가-힣][^"]*">/);
+    expect(head).toContain(`<meta name="twitter:image" content="${OG}">`);
+    // static tags only: crawlers never run the app (documented next to the tags)
+    expect(head).toMatch(/static tags only/);
+    const og = readFileSync(publicFile('/og/og.png'));
+    expect(pngSize(og)).toEqual({ width: 1200, height: 630 });
+    expect(og.length).toBeLessThanOrEqual(300 * 1024);
+    const ogVariant = SOCIAL.find((v) => v.file === 'og/og.png');
+    expect(ogVariant).toMatchObject({ width: 1200, height: 630, layout: 'panel', maxBytes: 300 * 1024 });
+    expect(ogVariant?.shots[0].query).toContain('shot=t1');
+    // the renderer seeds the settings under the key the save layer reads
+    expect(SHOT_SETTINGS.key).toBe(SETTINGS_KEY);
+  });
+
+  it('manifest: id, Korean description, categories, ≥2 shortcuts to ?go= deep links with icons, ≥2 screenshots with form_factor — every file committed at its size', () => {
+    expect(manifest.id).toBe('/');
+    expect(manifest.description).toMatch(/[가-힣]/);
+    expect(manifest.description).toMatch(/다\.?$/);
+    expect(manifest.categories).toContain('games');
+    expect(manifest.display).toBe('fullscreen');
+    expect(manifest.orientation).toBe('landscape');
+    const shortcuts = manifest.shortcuts ?? [];
+    expect(shortcuts.length).toBeGreaterThanOrEqual(2);
+    expect(shortcuts.map((s) => s.url)).toEqual(expect.arrayContaining(['/?go=daily', '/?go=endless']));
+    for (const s of shortcuts) {
+      expect(s.name).toMatch(/[가-힣]/);
+      expect(parseGoQuery(new URL(s.url, 'https://x.test').search), s.url).not.toBeNull();
+      expect(s.icons?.length ?? 0, s.name).toBeGreaterThan(0);
+      for (const i of s.icons ?? []) expect(existsSync(publicFile(i.src)), i.src).toBe(true);
+    }
+    const shots = manifest.screenshots ?? [];
+    expect(shots.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(shots.map((s) => s.form_factor))).toEqual(new Set(['wide', 'narrow']));
+    for (const s of shots) {
+      const file = publicFile(s.src);
+      expect(existsSync(file), s.src).toBe(true);
+      const buf = readFileSync(file);
+      const [w, h] = s.sizes.split('x').map(Number);
+      expect(pngSize(buf), s.src).toEqual({ width: w, height: h });
+      expect(s.type).toBe('image/png');
+      expect(buf.length, s.src).toBeLessThanOrEqual(400 * 1024);
+      expect(s.label, s.src).toMatch(/[가-힣]/);
+      if (s.form_factor === 'narrow') expect(h, s.src).toBeGreaterThan(w);
+      else expect(w, s.src).toBeGreaterThan(h);
+    }
+    // the renderer's list is exactly what the manifest declares
+    const social = SOCIAL.filter((v) => v.formFactor !== null);
+    expect(shots.map((s) => s.src).sort()).toEqual(social.map((v) => `/${v.file}`).sort());
+    for (const v of social) {
+      const shot = shots.find((s) => s.src === `/${v.file}`);
+      expect(shot?.sizes, v.file).toBe(`${v.width}x${v.height}`);
+      expect(shot?.form_factor, v.file).toBe(v.formFactor);
+    }
+  });
+
+  it('social files stay out of the service worker precache: precacheList walks /icons/* and the listed roots only', () => {
+    const lib = readFileSync(resolve(here, '../../tools/lib.mjs'), 'utf8');
+    const fn = lib.slice(lib.indexOf('export function precacheList'), lib.indexOf('export async function publishServiceWorker'));
+    expect(fn).toContain("join(distPublic, 'icons')");
+    expect(fn).toContain("['favicon.svg', 'manifest.webmanifest']");
+    expect(fn).not.toMatch(/['"]og['"]|screenshots/);
+  });
+
+  it('the result modal carries the install card (설치 / 나중에, hidden) and both modals a 공유 entry; the stylesheet dresses the card', () => {
+    const result = html.slice(html.indexOf('id="scr-result"'), html.indexOf('id="scr-over"'));
+    const over = html.slice(html.indexOf('id="scr-over"'), html.indexOf('id="scr-name"'));
+    expect(result).toMatch(/<div class="install" id="res-install"[^>]*hidden>/);
+    expect(result).toContain('id="res-install-text"');
+    expect(result).toMatch(/<button class="install__btn install__btn--ok" type="button" data-act="installCardOk">설치<\/button>/);
+    expect(result).toMatch(/<button class="install__btn" type="button" data-act="installCardLater">나중에<\/button>/);
+    expect(result).toContain('홈 화면에 추가하면 오프라인에서도 바로 이어진다');
+    for (const modal of [result, over]) {
+      expect(modal).toMatch(/<button class="menu__item menu__item--share" data-act="shareCard">공유<small>[^<]*<\/small><\/button>/);
+    }
+    expect(over).not.toContain('class="install"');
+    expect(css).toMatch(/\.install\{/);
+    expect(css).toMatch(/\.install__btn--ok\{/);
+    expect(css).toMatch(/\.install\[data-variant="ios"\] \.install__btn--ok\{display:none\}/);
+    // the card's buttons take the menu cursor
+    expect(css).toMatch(/\.install__btn\.is-cursor/);
   });
 });

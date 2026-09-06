@@ -50,6 +50,9 @@ import {
   RACE_COLOR, RACE_KR, RUN_ID_RE, buildRaceUrl, defaultShareEnv, isFreshDailyDate, raceBanner, raceLabel, shareRaceLink, type ShareEnv,
 } from './echo/race.js';
 import { REHINT_HAZARD, REHINT_PIT } from './ui/hints.js';
+import { fmtTime } from './ui/hud.js';
+import { CARD_KR, defaultCardEnv, shareCard, type CardEnv, type ShareCardView } from './share/card.js';
+import type { GoTarget } from './share/go.js';
 
 export type RunMode = 'story' | 'daily' | 'endless';
 
@@ -143,6 +146,12 @@ export interface ShellUI extends UIPort {
   showTransferCode?(code: string, expiresAt: string): void;
   /** Settings → 데이터: progress / error line under the transfer widgets; null clears it. */
   transferStatus?(text: string | null, kind?: 'ok' | 'error' | 'busy'): void;
+  /**
+   * Result screen (P3-4): the shell allows the install card for this result
+   * (a story clear, fewer than INSTALL_CARD_MAX_DISMISS dismissals); the UI
+   * shows it only when the browser can install (prompt captured / iOS Safari).
+   */
+  installCard?(on: boolean): void;
 }
 /** AudioPort plus the pause-menu muffle the concrete engine offers. */
 export interface ShellAudio extends AudioPort {
@@ -198,6 +207,8 @@ export interface ScenesDeps {
   origin?: string;
   /** Web Share / clipboard hooks for '메아리 링크 공유'. Default: the platform's navigator. */
   share?: ShareEnv;
+  /** Canvas / Web Share (files) / clipboard hooks for the result card (P3-4). Default: the platform's navigator and document. */
+  card?: CardEnv;
 }
 
 /** Seconds of clear animation before the result screen. */
@@ -221,6 +232,8 @@ export const ASSIST_OFFER_DEATHS = 20;
 export const NAME_ASKED_KEY = 'name:asked';
 /** progress.seen flag per zone: 다시 묻지 않기 on the assist offer. */
 export const assistSeenKey = (levelId: string): string => `assist:${levelId}`;
+/** 나중에 presses on the result screen's install card before it stays hidden for good (P3-4). */
+export const INSTALL_CARD_MAX_DISMISS = 3;
 
 /** Growable per-tick mask recording, capped at MAX_TICKS. */
 export class MaskLog {
@@ -372,6 +385,7 @@ export class Scenes {
   private readonly persistStorage: (() => Promise<boolean> | boolean | void) | null;
   private readonly origin: string;
   private readonly shareEnv: ShareEnv;
+  private readonly cardEnv: CardEnv;
   /** The race a `?race=` link started (kept across restarts of that zone); null when not racing. */
   private race: PendingRace | null = null;
   /** startRace is about to begin the raced run: the next beginRun attaches the ghost. */
@@ -417,6 +431,7 @@ export class Scenes {
     this.persistStorage = deps.persistStorage ?? defaultPersistStorage();
     this.origin = deps.origin ?? defaultOrigin();
     this.shareEnv = deps.share ?? defaultShareEnv();
+    this.cardEnv = deps.card ?? defaultCardEnv();
     this.fx = new FxBus({ random: deps.random });
     this.fx.applySettings(this.save.settings);
     this.ui.on((a) => this.onAction(a));
@@ -564,9 +579,28 @@ export class Scenes {
       case 'transferExport': void this.track(this.transferExport()); break;
       case 'transferImport': void this.track(this.transferImport(a.code)); break;
       case 'shareEcho': void this.track(this.shareEcho()); break;
+      case 'shareCard': void this.track(this.shareCard()); break;
+      case 'installCardDismiss': this.dismissInstallCard(); break;
       default:
         break;
     }
+  }
+
+  // ================================================================ deep links (P3-4)
+  /**
+   * A manifest shortcut (`/?go=daily|endless`, read by main.ts before boot):
+   * open the daily screen, or start a fresh endless climb. Ignored mid-run.
+   * Returns whether anything happened.
+   */
+  go(target: GoTarget): boolean {
+    if (this.run) return false;
+    if (target === 'daily') {
+      this.ui.show('daily');
+      void this.track(this.openDaily());
+      return true;
+    }
+    this.startEndless();
+    return true;
   }
 
   // ================================================================ race links (P3-3)
@@ -655,6 +689,60 @@ export class Scenes {
   raceUrl(): string | null {
     const run = this.run;
     return run?.acceptedRunId ? buildRaceUrl(this.origin, run.acceptedRunId, run.def.id) : null;
+  }
+
+  // ================================================================ share card (P3-4)
+  /** What the card prints for the finished run, or null before a result exists. */
+  cardView(): ShareCardView | null {
+    const run = this.run;
+    const s = run?.summary, v = run?.view;
+    if (!run || !s || !v) return null;
+    const sub = v.submit;
+    return {
+      biome: run.def.biome,
+      zoneName: run.def.name,
+      zoneEn: run.def.en,
+      timeText: fmtTime(s.time),
+      rank: s.rank,
+      stars: v.stars,
+      cleared: s.cleared,
+      ...(s.height > 0 ? { height: Math.floor(s.height) } : {}),
+      world: sub.state === 'accepted' && sub.rank ? { rank: sub.rank, ...(sub.total ? { total: sub.total } : {}) } : null,
+      playerName: this.save.progress.player.name,
+      skin: this.save.settings.skin,
+      // The race link when the submission was accepted; the site itself otherwise (the card still travels).
+      url: this.raceUrl() ?? `${this.origin.replace(/\/+$/, '')}/`,
+    };
+  }
+
+  /**
+   * '공유': the result card as a PNG through the Web Share API (files), else
+   * the link through it, else the clipboard — toast either way, and a
+   * share_click with the outcome.
+   */
+  private async shareCard(): Promise<void> {
+    const run = this.run;
+    const view = this.cardView();
+    if (!run || !view) { this.ui.toast(CARD_KR.noResult); return; }
+    const outcome = await shareCard(view, this.cardEnv, (ctx, skin, size, t) => this.renderer.drawPortrait(ctx, skin, size, t));
+    this.telemetry?.track('share_click', { levelId: run.def.id, mode: run.mode, via: outcome, kind: 'card' });
+    if (outcome === 'cancelled') return;
+    this.ui.toast(CARD_KR[outcome]);
+  }
+
+  // ================================================================ install card (P3-4)
+  /** The install card may sit on this result: a story clear the player recorded, fewer than INSTALL_CARD_MAX_DISMISS 나중에 so far. */
+  private installCardAllowed(run: Run): boolean {
+    if (run.mode !== 'story' || run.raceLocked || run.resultKind !== 'clear') return false;
+    return (this.save.progress.installCardDismissed ?? 0) < INSTALL_CARD_MAX_DISMISS;
+  }
+
+  /** 나중에: count the dismissal (persisted) and drop the card from this result. */
+  private dismissInstallCard(): void {
+    const p = this.save.progress;
+    p.installCardDismissed = (p.installCardDismissed ?? 0) + 1;
+    this.save.saveProgress();
+    this.ui.installCard?.(false);
   }
 
   /** The result row against the raced friend: story ghosts are clears by contract; a daily ghost must have cleared too. */
@@ -1560,8 +1648,10 @@ export class Scenes {
       this.ui.setVersus?.(this.raceVersus(run) ?? (r && run.summary.cleared
         ? { label: r.kind === 'top' ? TOP_LABEL : RIVAL_LABEL, deltaTicks: run.summary.ticks - r.ticks }
         : null));
+      this.ui.installCard?.(this.installCardAllowed(run));
       this.ui.showResult(run.view);
     } else {
+      this.ui.installCard?.(false);
       this.ui.showOver(run.summary, run.prevBestHeight, {
         sameTowerAvailable: run.mode === 'endless',
         ...(run.mode === 'daily' ? { worldBest: this.worldBestFor(run) } : {}),

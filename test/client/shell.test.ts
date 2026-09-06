@@ -45,6 +45,10 @@ import { GOAL_LABEL } from '../../src/client/echo/goal.js';
 import { GOAL_ECHOES } from '../../src/sim/echoes.generated.js';
 import { SPLIT_NONE, SPLIT_SECONDS, fmtSplit, fmtVersus, pickWorldEcho, worldEchoLabel } from '../../src/client/echo/rival.js';
 import { RACE_COLOR, RACE_KR, type ShareData, type ShareEnv } from '../../src/client/echo/race.js';
+import { CARD_KR, type CardEnv, type CardShareData } from '../../src/client/share/card.js';
+import { INSTALL_CARD_MAX_DISMISS } from '../../src/client/scenes.js';
+import { defaultProgress, repairProgress } from '../../src/client/save.js';
+import { fmtTime } from '../../src/client/ui/hud.js';
 import { echoWorldMode, segmentBests, setEchoWorldMode } from '../../src/client/save.js';
 import {
   ASSIST_OFFER_DEATHS, DEATH_MARKS_MAX, NAME_ASKED_KEY, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, assistSeenKey,
@@ -157,6 +161,8 @@ interface FakeUI extends ShellUI {
   /** Every showTransferCode() / transferStatus() call (P3-5). */
   transferCodes: { code: string; expiresAt: string }[];
   transferStatuses: { text: string | null; kind: string | undefined }[];
+  /** Every installCard() value (P3-4). */
+  installCards: boolean[];
   emit(a: UIAction): void; setScreen(s: Screen): void;
 }
 function fakeUI(): FakeUI {
@@ -165,7 +171,8 @@ function fakeUI(): FakeUI {
   const u: FakeUI = {
     cbs: [], shown: [], result: null, over: null, huds: [], hints: [], toasts: [], banners: [], dailyCalls: [], selectRefreshes: 0,
     unlockCalls: [], goalScreens: [], versionBehind: [], offers: [], nameAsks: 0, nameAnswer: null, yesterdays: [],
-    splits: [], segmentCalls: [], versusCalls: [], transferCodes: [], transferStatuses: [],
+    splits: [], segmentCalls: [], versusCalls: [], transferCodes: [], transferStatuses: [], installCards: [],
+    installCard(on) { u.installCards.push(on); },
     showTransferCode(code, expiresAt) { u.transferCodes.push({ code, expiresAt }); },
     transferStatus(text, kind) { u.transferStatuses.push({ text, kind }); },
     split(text, sign) { u.splits.push({ text, sign }); },
@@ -339,6 +346,8 @@ function makeScenes(
     assist?: boolean; echoWorld?: boolean; echoSelf?: boolean; now?: () => number; makeDaily?: (seed: number) => LevelDef;
     /** Race links (P3-3): the origin the shell shares and the share / clipboard fakes (default: nothing available). */
     origin?: string; share?: ShareEnv;
+    /** Share card (P3-4): canvas / share / clipboard fakes (default: nothing available). */
+    card?: CardEnv;
   } = {},
 ) {
   const renderer = fakeRenderer();
@@ -358,6 +367,7 @@ function makeScenes(
     onServerNewer: (v) => { newer.push(v); },
     origin: opts.origin ?? 'https://clawd.test',
     ...(opts.share ? { share: opts.share } : {}),
+    ...(opts.card ? { card: opts.card } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.makeDaily ? { makeDaily: opts.makeDaily } : {}),
   });
@@ -2984,5 +2994,227 @@ describe('Scenes · haptics dispatch (P3-8)', () => {
     save.settings.haptics = false;
     ui.emit({ type: 'settingsChanged' });
     expect(applied.at(-1)).toBe(false);
+  });
+});
+
+// ================================================================ P3-4 share card · install card · deep links
+describe('Scenes · share card, install card and ?go= deep links (P3-4)', () => {
+  /** A CardEnv over a recording canvas: the texts drawn, the shares and copies made. */
+  function fakeCard(parts: { share?: boolean; files?: boolean; clipboard?: boolean; canvas?: boolean } = {}) {
+    const shared: CardShareData[] = [];
+    const copied: string[] = [];
+    const texts: string[] = [];
+    const ctx = new Proxy({} as CanvasRenderingContext2D, {
+      get(_t, key: string) {
+        if (key === 'measureText') return () => ({ width: 10 });
+        if (key === 'fillText') return (t: string) => { texts.push(t); };
+        if (key === 'createLinearGradient' || key === 'createRadialGradient') return () => ({ addColorStop() { /* stop */ } });
+        return () => undefined;
+      },
+      set() { return true; },
+    });
+    const env: CardEnv = {
+      makeFile: (blob, name, type) => new File([blob], name, { type }),
+      ...(parts.canvas === false ? {} : {
+        createCanvas: () => ({
+          width: 0, height: 0, getContext: () => ctx,
+          toBlob(cb: (b: Blob | null) => void) { cb(new Blob(['png'], { type: 'image/png' })); },
+        }),
+      }),
+      ...(parts.share ? { share: async (d: CardShareData) => { shared.push(d); }, canShare: (d: CardShareData) => (d.files ? !!parts.files : true) } : {}),
+      ...(parts.clipboard ? { writeText: async (t: string) => { copied.push(t); } } : {}),
+    };
+    return { env, shared, copied, texts };
+  }
+
+  it('공유: the card PNG travels with the race link once the record is accepted; toast and share_click carry the outcome', async () => {
+    const def = flatRoom();
+    const card = fakeCard({ share: true, files: true, clipboard: true });
+    const s = makeScenes([def], { card: card.env });
+    let portraits = 0;
+    s.renderer.drawPortrait = () => { portraits++; };
+    s.scenes.bootSync();
+    // nothing finished yet: a toast, no event
+    s.ui.emit({ type: 'shareCard' });
+    await s.scenes.settle();
+    expect(s.ui.toasts.at(-1)).toBe(CARD_KR.noResult);
+    expect(s.tele.of('share_click')).toEqual([]);
+    expect(s.scenes.cardView()).toBeNull();
+    await clearFlat(s);
+    expect(s.ui.result!.submit.state).toBe('accepted');
+    const view = s.scenes.cardView()!;
+    expect(view).toMatchObject({
+      biome: 'tidepool', zoneName: def.name, zoneEn: def.en, cleared: true, rank: s.ui.result!.summary.rank, stars: s.ui.result!.stars,
+      world: { rank: 1, total: 1 }, playerName: s.save.progress.player.name, skin: s.save.settings.skin, url: 'https://clawd.test/?race=run-1&z=flat',
+    });
+    expect(view.timeText).toBe(fmtTime(s.ui.result!.summary.time));
+    expect(view.height).toBeUndefined();
+    s.ui.emit({ type: 'shareCard' });
+    await s.scenes.settle();
+    expect(card.shared).toHaveLength(1);
+    expect(card.shared[0].url).toBe('https://clawd.test/?race=run-1&z=flat');
+    expect(card.shared[0].files).toHaveLength(1);
+    expect(card.shared[0].files![0].type).toBe('image/png');
+    expect(card.shared[0].text).toContain(def.name);
+    expect(card.texts).toContain(def.name);
+    expect(card.texts).toContain(view.timeText);
+    expect(card.texts).toContain('세계 1위 / 1명');
+    expect(card.texts).toContain('https://clawd.test/?race=run-1&z=flat');
+    // the portrait came from the renderer
+    expect(portraits).toBe(1);
+    expect(card.copied).toEqual([]);
+    expect(s.ui.toasts.at(-1)).toBe(CARD_KR.files);
+    expect(s.tele.of('share_click').at(-1)).toEqual({ levelId: 'flat', mode: 'story', via: 'files', kind: 'card' });
+  });
+
+  it('without an accepted record the card carries the site link; no files → link; no share → clipboard; nothing → 공유하지 못했다', async () => {
+    const def = flatRoom();
+    // assist runs are never submitted: the card still shares, pointing at the site
+    const a = fakeCard({ share: true, files: true });
+    const sa = makeScenes([def], { assist: true, card: a.env });
+    sa.scenes.bootSync();
+    await clearFlat(sa);
+    expect(sa.ui.result!.submit.state).toBe('idle');
+    sa.ui.emit({ type: 'shareCard' });
+    await sa.scenes.settle();
+    expect(a.shared[0].url).toBe('https://clawd.test/');
+    expect(a.shared[0].files).toHaveLength(1);
+    expect(a.texts).toContain('https://clawd.test/');
+    expect(a.texts.some((t) => t.startsWith('세계'))).toBe(false);
+    expect(sa.scenes.cardView()!.world).toBeNull();
+    // a platform that takes no files gets the link
+    const b = fakeCard({ share: true, files: false });
+    const sb = makeScenes([def], { card: b.env });
+    sb.scenes.bootSync();
+    await clearFlat(sb);
+    sb.ui.emit({ type: 'shareCard' });
+    await sb.scenes.settle();
+    expect(b.shared).toHaveLength(1);
+    expect(b.shared[0].files).toBeUndefined();
+    expect(sb.ui.toasts.at(-1)).toBe(CARD_KR.link);
+    expect(sb.tele.of('share_click').at(-1)).toMatchObject({ via: 'link', kind: 'card' });
+    // the clipboard
+    const c = fakeCard({ clipboard: true });
+    const sc = makeScenes([def], { card: c.env });
+    sc.scenes.bootSync();
+    await clearFlat(sc);
+    sc.ui.emit({ type: 'shareCard' });
+    await sc.scenes.settle();
+    expect(c.copied).toEqual(['https://clawd.test/?race=run-1&z=flat']);
+    expect(sc.ui.toasts.at(-1)).toBe(CARD_KR.clipboard);
+    // nothing at all (Node, a locked-down browser)
+    const d = fakeCard({ canvas: false });
+    const sd = makeScenes([def], { card: d.env });
+    sd.scenes.bootSync();
+    await clearFlat(sd);
+    sd.ui.emit({ type: 'shareCard' });
+    await sd.scenes.settle();
+    expect(sd.ui.toasts.at(-1)).toBe(CARD_KR.failed);
+    expect(sd.tele.of('share_click').at(-1)).toMatchObject({ via: 'failed' });
+  });
+
+  it('a game over shares the tide card: the height is the figure, the link is the site', async () => {
+    const tide = tideRoom();
+    const card = fakeCard({ share: true, files: true });
+    const ui = fakeUI(); const input = fakeInput(); const api = fakeApi([flatRoom()]);
+    const { save } = makeSave();
+    const scenes = new Scenes({
+      renderer: fakeRenderer(), audio: fakeAudio(), ui, input, api, save, levels: [flatRoom()], build: 'test',
+      makeEndless: () => ({ ...tide, id: 'endless' }), randomSeed: () => 1000, origin: 'https://clawd.test', card: card.env,
+    });
+    scenes.bootSync();
+    ui.emit({ type: 'endless' });
+    const summary = hopOver(scenes, ui, input, 12);
+    expect(ui.screen).toBe('over');
+    expect(ui.installCards.at(-1)).toBe(false);
+    const view = scenes.cardView()!;
+    expect(view.cleared).toBe(false);
+    expect(view.height).toBe(Math.floor(summary.height));
+    expect(view.url).toBe('https://clawd.test/');
+    expect(view.zoneName).toBe(tide.name);
+    ui.emit({ type: 'shareCard' });
+    await scenes.settle();
+    expect(card.shared).toHaveLength(1);
+    expect(card.texts).toContain(String(Math.floor(summary.height)));
+    expect(card.texts).toContain('도달 높이');
+    expect(ui.toasts.at(-1)).toBe(CARD_KR.files);
+  });
+
+  it('install card: allowed on a story clear until three 나중에 (persisted and repaired), never on a locked race or a daily', async () => {
+    const def = flatRoom();
+    const s = makeScenes([def]);
+    s.scenes.bootSync();
+    expect(s.ui.installCards).toEqual([]);
+    await clearFlat(s);
+    expect(s.ui.installCards.at(-1)).toBe(true);
+    expect(s.ui.shown.at(-1)).toBe('result');
+    s.ui.emit({ type: 'installCardDismiss' });
+    expect(s.save.progress.installCardDismissed).toBe(1);
+    expect(s.ui.installCards.at(-1)).toBe(false);
+    for (let n = 2; n <= INSTALL_CARD_MAX_DISMISS; n++) {
+      s.ui.emit({ type: 'quit' });
+      await clearFlat(s);
+      expect(s.ui.installCards.at(-1)).toBe(true);
+      s.ui.emit({ type: 'installCardDismiss' });
+      expect(s.save.progress.installCardDismissed).toBe(n);
+    }
+    s.ui.emit({ type: 'quit' });
+    await clearFlat(s);
+    expect(s.ui.installCards.at(-1)).toBe(false);
+    // persisted through the save and repaired on load
+    s.save.flush();
+    const again = makeSave(s.storage);
+    expect(again.save.progress.installCardDismissed).toBe(INSTALL_CARD_MAX_DISMISS);
+    expect(repairProgress({ installCardDismissed: -2 }, defaultProgress('p')).installCardDismissed).toBeUndefined();
+    expect(repairProgress({ installCardDismissed: 'x' }, defaultProgress('p')).installCardDismissed).toBeUndefined();
+    expect(repairProgress({ installCardDismissed: 2.7 }, defaultProgress('p')).installCardDismissed).toBe(2);
+    expect(repairProgress({}, defaultProgress('p')).installCardDismissed).toBeUndefined();
+
+    // a locked zone raced through a link is not the player's clear
+    const first = flatRoom();
+    const second: LevelDef = { ...flatRoom(), id: 'flat2', name: '둘째 방' };
+    const r = makeScenes([first, second]);
+    r.scenes.bootSync();
+    r.api.ghosts['run-locked'] = {
+      runId: 'run-locked', mode: 'story', board: 'flat2', levelId: 'flat2', seed: second.seed, assist: false,
+      masks: encodeMasks(new Uint8Array(900).fill(IN.RIGHT)), name: '친구A', ticks: 900,
+    };
+    expect(await r.scenes.startRace('run-locked')).toBe(true);
+    r.input.heldMask = IN.RIGHT;
+    runFrames(r.scenes, () => r.ui.screen === 'result');
+    await r.scenes.settle();
+    expect(r.ui.installCards.at(-1)).toBe(false);
+
+    // a daily clear is not a story clear
+    const daily: LevelDef = { ...flatRoom(), id: 'daily', name: '데일리' };
+    const d = makeScenes([flatRoom()], { makeDaily: () => daily });
+    d.scenes.bootSync();
+    d.scenes.startDaily({ date: '2026-09-06', seed: 7, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z' });
+    d.input.heldMask = IN.RIGHT;
+    runFrames(d.scenes, () => d.ui.screen === 'result');
+    await d.scenes.settle();
+    expect(d.ui.result!.summary.cleared).toBe(true);
+    expect(d.ui.installCards.at(-1)).toBe(false);
+  });
+
+  it('go(): daily opens the daily screen and fetches the tower; endless starts a climb; ignored mid-run', async () => {
+    const def = flatRoom();
+    const s = makeScenes([def]);
+    s.scenes.bootSync();
+    expect(s.ui.screen).toBe('title');
+    expect(s.scenes.go('daily')).toBe(true);
+    expect(s.ui.screen).toBe('daily');
+    await s.scenes.settle();
+    expect(s.scenes.daily).not.toBeNull();
+    expect(s.ui.dailyCalls.length).toBeGreaterThan(0);
+    expect(s.scenes.run).toBeNull();
+    const s2 = makeScenes([def]);
+    s2.scenes.bootSync();
+    expect(s2.scenes.go('endless')).toBe(true);
+    expect(s2.scenes.run?.mode).toBe('endless');
+    expect(s2.ui.screen).toBe('play');
+    expect(s2.scenes.go('daily')).toBe(false);   // mid-run: nothing changes
+    expect(s2.scenes.run?.mode).toBe('endless');
+    expect(s2.ui.screen).toBe('play');
   });
 });

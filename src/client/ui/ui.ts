@@ -46,6 +46,11 @@ export const GAMEPAD_HIDE_S = 2;
 export const TOUCH_PREVIEW_S = 1.2;
 /** HUD mute chip copy (aria labels). */
 export const MUTE_KR = { mute: '소리 끄기', unmute: '소리 켜기' } as const;
+/** Install card copy (P3-4): the prompt variant and the iOS share-sheet variant. */
+export const INSTALL_CARD_KR = {
+  prompt: '홈 화면에 추가하면 오프라인에서도 바로 이어진다',
+  ios: '공유 → 홈 화면에 추가 하면 오프라인에서도 바로 이어진다',
+} as const;
 
 export interface UIOptions {
   /** Defaults to the global document. */
@@ -202,6 +207,10 @@ export class UI implements UIPort {
   private nagDismissed = false;
   private iosHintWanted = false;
   private iosHintDismissed = false;
+  /** The browser holds a deferred install prompt (setInstallable) — the install card's 설치 variant (P3-4). */
+  private installable = false;
+  /** The shell allows the install card on the current result (ShellUI.installCard). */
+  private installCardOn = false;
   /** Set by showUpdate(); the bar stays until the player applies the update. */
   private updateApply: (() => void) | null = null;
   /** The server runs a newer sim than this bundle (setVersionBehind): the bar is urgent and reloads even without a waiting worker. */
@@ -549,6 +558,7 @@ export class UI implements UIPort {
     if (next) next.hidden = !view.nextLevelId;
     this.paintVersus();
     this.paintSubmission('res-submit', 'res-lb', view);
+    this.paintInstallCard();
     this.show('result');
     // the rank letter pops once the modal has landed (CSS keyframes; reduced motion disables them)
     if (rank) replay(rank, 'pop');
@@ -789,8 +799,10 @@ export class UI implements UIPort {
     this.syncUpdateBar();
   }
 
-  /** The browser offered a deferred install prompt: reveal "홈 화면에 추가" in the title menu. */
+  /** The browser offered a deferred install prompt: reveal "홈 화면에 추가" in the title menu (and the card's 설치 variant). */
   setInstallable(on: boolean): void {
+    this.installable = on;
+    this.paintInstallCard();
     const btn = this.doc.querySelector<HTMLElement>('#title-menu [data-act="install"]');
     if (!btn || btn.hidden === !on) return;
     btn.hidden = !on;
@@ -802,6 +814,43 @@ export class UI implements UIPort {
     this.iosHintWanted = on;
     const hint = this.doc.getElementById('ios-hint');
     if (hint) hint.hidden = !(on && !this.iosHintDismissed);
+    this.paintInstallCard();
+  }
+
+  // ================================================================ install card (P3-4)
+  /**
+   * The shell allows (or withdraws) the install card for the current result.
+   * It shows only when there is a way to install: the captured prompt (설치 /
+   * 나중에) or iOS Safari's share sheet (hint / 나중에). Not part of UIPort.
+   */
+  installCard(on: boolean): void {
+    this.installCardOn = on;
+    this.paintInstallCard();
+  }
+
+  /** 'prompt' (Android / desktop Chromium with a stashed beforeinstallprompt), 'ios' (Safari tab), or null. */
+  private installVariant(): 'prompt' | 'ios' | null {
+    return this.installable ? 'prompt' : this.iosHintWanted ? 'ios' : null;
+  }
+
+  private paintInstallCard(): void {
+    const card = this.doc.getElementById('res-install');
+    if (!card) return;
+    const variant = this.installVariant();
+    const show = this.installCardOn && variant !== null;
+    const changed = card.hidden !== !show;
+    card.hidden = !show;
+    if (variant) card.dataset.variant = variant;
+    const text = this.doc.getElementById('res-install-text');
+    if (text) text.textContent = variant === 'ios' ? INSTALL_CARD_KR.ios : INSTALL_CARD_KR.prompt;
+    const ok = card.querySelector<HTMLElement>('[data-act="installCardOk"]');
+    if (ok) ok.hidden = variant !== 'prompt';
+    if (changed && this.screens.top === 'result' && this.screens.isActive('result')) this.nav.refresh(this.screens.el('result'), true);
+  }
+
+  private hideInstallCard(): void {
+    this.installCardOn = false;
+    this.paintInstallCard();
   }
 
   /** navigator.onLine mirror: the title badge and an `is-offline` class on #ui for styling. */
@@ -1066,6 +1115,19 @@ export class UI implements UIPort {
       case 'mute': this.toggleMuteChip(); break;
       // Result / game-over: a race link to my accepted echo (the shell builds and shares it).
       case 'shareEcho': this.sound('confirm'); this.emit({ type: 'shareEcho' }); break;
+      // Result / game-over: the drawn result card (P3-4); the shell renders and shares it.
+      case 'shareCard': this.sound('confirm'); this.emit({ type: 'shareCard' }); break;
+      // Install card (P3-4): 설치 reuses the title entry's prompt; 나중에 counts toward hiding it for good.
+      case 'installCardOk':
+        this.sound('confirm');
+        this.hideInstallCard();
+        try { this.onInstall?.(); } catch { /* the prompt is best-effort */ }
+        break;
+      case 'installCardLater':
+        this.sound('cancel');
+        this.hideInstallCard();
+        this.emit({ type: 'installCardDismiss' });
+        break;
       default: break;
     }
   }
