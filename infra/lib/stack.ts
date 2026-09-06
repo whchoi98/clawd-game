@@ -25,7 +25,7 @@ export class ClawdEchoTowerStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: ClawdEchoTowerStackProps) {
     super(scope, id, {
-      description: 'CLAWD JUMP: ECHO TOWER — CloudFront, prefix-list ALB, Fargate (Graviton), DynamoDB',
+      description: 'CLAWD JUMP: ECHO TOWER - CloudFront, prefix-list ALB, Fargate (Graviton), DynamoDB',
       ...props,
     });
     cdk.Tags.of(this).add('Project', 'clawd-echo-tower');

@@ -61,7 +61,7 @@ export class Service extends Construct {
 
     // --- secrets -----------------------------------------------------------
     this.originToken = new secretsmanager.Secret(this, 'OriginToken', {
-      description: 'CLAWD ECHO TOWER: CloudFront → ALB X-Origin-Verify token',
+      description: 'CLAWD ECHO TOWER: CloudFront to ALB X-Origin-Verify token',
       generateSecretString: { excludePunctuation: true, passwordLength: 40 },
     });
     // unsafeUnwrap() is the documented escape hatch: the rendered value is a
@@ -90,7 +90,7 @@ export class Service extends Construct {
       description: 'Fargate tasks: ingress only from the ALB',
       allowAllOutbound: true,
     });
-    this.serviceSecurityGroup.addIngressRule(this.albSecurityGroup, ec2.Port.tcp(APP_PORT), 'ALB → app');
+    this.serviceSecurityGroup.addIngressRule(this.albSecurityGroup, ec2.Port.tcp(APP_PORT), 'ALB to app');
 
     // --- load balancer -----------------------------------------------------
     this.loadBalancer = new elbv2.ApplicationLoadBalancer(this, 'Alb', {

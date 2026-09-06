@@ -436,4 +436,22 @@ describe('stack', () => {
   it('has no Lambda functions or custom resources (nothing to babysit)', () => {
     t.resourceCountIs('AWS::Lambda::Function', 0);
   });
+  it('uses only the characters EC2 accepts in security group rule descriptions (a real deploy failed on an arrow)', () => {
+    const ok = /^[a-zA-Z0-9. _\-:/()#,@[\]+=&;{}!$*]{1,255}$/;
+    const rules = Object.values(t.findResources('AWS::EC2::SecurityGroupIngress')) as Resource[];
+    expect(rules.length).toBeGreaterThan(0);
+    for (const r of rules) expect(r.Properties.Description, JSON.stringify(r.Properties)).toMatch(ok);
+    const groups = Object.values(t.findResources('AWS::EC2::SecurityGroup')) as Resource[];
+    for (const g of groups) {
+      expect(g.Properties.GroupDescription).toMatch(ok);
+      for (const e of g.Properties.SecurityGroupEgress ?? []) expect(e.Description ?? 'x').toMatch(ok);
+      for (const e of g.Properties.SecurityGroupIngress ?? []) expect(e.Description ?? 'x').toMatch(ok);
+    }
+    // Keep every free-text description ASCII so no other service trips on it either.
+    for (const r of Object.values(t.toJSON().Resources) as Resource[]) {
+      const d = r.Properties?.Description ?? r.Properties?.Comment;
+      if (typeof d === 'string') expect(d, r.Type).toMatch(/^[\x20-\x7E]*$/);
+    }
+    expect(t.toJSON().Description ?? '').toMatch(/^[\x20-\x7E]*$/);
+  });
 });
