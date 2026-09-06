@@ -4,12 +4,12 @@
  * when both fail print a usage hint and exit 2 (before any network check runs).
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
-  DEFAULT_REGION, STACK_NAME, describeStacksArgs, regionFromEnv, resolveOutputs,
+  DEFAULT_REGION, EDGE_CACHED_PATHS, STACK_NAME, describeStacksArgs, isEdgeHit, regionFromEnv, resolveOutputs,
 } from '../../tools/postdeploy.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)));
@@ -45,6 +45,31 @@ function fakeSpawn(result: { status: number | null; stdout?: string; stderr?: st
     return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '', error: result.error };
   };
 }
+
+describe('tools/postdeploy.mjs edge cache check', () => {
+  it('checks the second GET of / and /sw.js for an x-cache hit', () => {
+    expect([...EDGE_CACHED_PATHS]).toEqual(['/', '/sw.js']);
+  });
+
+  it('recognises CloudFront cache hits (Hit / RefreshHit) and nothing else', () => {
+    expect(isEdgeHit('Hit from cloudfront')).toBe(true);
+    expect(isEdgeHit('RefreshHit from cloudfront')).toBe(true);
+    expect(isEdgeHit('  hit from CloudFront ')).toBe(true);
+    expect(isEdgeHit('Miss from cloudfront')).toBe(false);
+    expect(isEdgeHit('Error from cloudfront')).toBe(false);
+    expect(isEdgeHit('Redirect from cloudfront')).toBe(false);
+    expect(isEdgeHit('Hit')).toBe(false);
+    expect(isEdgeHit('')).toBe(false);
+    expect(isEdgeHit(null)).toBe(false);
+    expect(isEdgeHit(undefined)).toBe(false);
+  });
+
+  it('runs the edge hit check against the same paths the release invalidates', () => {
+    const source = readFileSync(SCRIPT, 'utf8');
+    expect(source).toMatch(/for \(const path of EDGE_CACHED_PATHS\)/);
+    expect(source).toMatch(/ok\(`edge hit \$\{path\}`/);
+  });
+});
 
 describe('tools/postdeploy.mjs outputs resolution', () => {
   let dir: string;

@@ -62,6 +62,19 @@ export function readSimVersions(root = process.cwd()) {
   return versionsFromSource(readFileSync(path, 'utf8'));
 }
 
+/**
+ * Paths the origin serves with `s-maxage=60` (stale-while-revalidate 300), so
+ * CloudFront must answer the second GET of each from its cache. `/index.html`
+ * and `/manifest.webmanifest` share the policy; these two are the ones every
+ * session fetches.
+ */
+export const EDGE_CACHED_PATHS = ['/', '/sw.js'];
+
+/** True when an `x-cache` header says CloudFront served the response from cache (`Hit` or `RefreshHit from cloudfront`). */
+export function isEdgeHit(xCache) {
+  return /^(hit|refreshhit) from cloudfront$/i.test(String(xCache ?? '').trim());
+}
+
 /** Arguments to the AWS CLI for the fallback. */
 export function describeStacksArgs({ stackName, region }) {
   return ['cloudformation', 'describe-stacks', '--stack-name', stackName, '--region', region, '--output', 'json'];
@@ -186,6 +199,22 @@ async function main() {
     (home.headers.get('content-security-policy') ?? '').includes("default-src 'self'") &&
     home.headers.get('x-content-type-options') === 'nosniff',
     `hsts "${home.headers.get('strict-transport-security')}", csp ${home.headers.has('content-security-policy') ? 'present' : 'MISSING'}`);
+
+  // 1b. index.html and the service worker are edge-cached (origin s-maxage=60):
+  //     after one priming GET the next one must come from CloudFront, not the
+  //     origin. One retry, in case the two requests land on different cache
+  //     nodes of the same POP.
+  for (const path of EDGE_CACHED_PATHS) {
+    const primed = path === '/' ? home : await get(`${site}${path}`);
+    let hit = await get(`${site}${path}`);
+    let gets = 2;
+    if (!isEdgeHit(hit.headers.get('x-cache')) && hit.status === 200) {
+      hit = await get(`${site}${path}`);
+      gets++;
+    }
+    ok(`edge hit ${path}`, hit.status === 200 && isEdgeHit(hit.headers.get('x-cache')),
+      `GET #${gets} x-cache "${hit.headers.get('x-cache')}" (first "${primed.headers.get('x-cache')}"), cache-control "${hit.headers.get('cache-control')}"`);
+  }
 
   // 2. hashed asset is immutable-cached
   const asset = home.text.match(/\/assets\/app\.[A-Za-z0-9]+\.js/)?.[0];

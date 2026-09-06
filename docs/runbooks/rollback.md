@@ -123,4 +123,43 @@ PLAYER 항목은 pk가 플레이어별이라 보드 단위 쿼리가 없다. 위
 - [ ] `npm run postdeploy:check` 전부 PASS
 - [ ] CloudFront 무효화 `Completed`, `/assets/*` 20회 모두 200
 - [ ] CloudWatch: ALB 5xx 0, `SubmitRejected{reason=sim-version}`이 잦아드는가(구 클라이언트 캐시가 빠지는 데 수 분)
+- [ ] CloudWatch 대시보드(`DashboardName` 출력, 스택 이름과 같다)의 알람 위젯이 모두 OK로 돌아왔는가
 - [ ] `CHANGELOG.md` [Unreleased]에 롤백 사실과 원인을 한 줄 남긴다(다음 릴리스 노트가 된다)
+
+## 6. 알람 점검 / Alarm drill
+
+스택은 SNS 토픽 하나(`AlarmTopicArn` 출력)와 알람 10개를 만든다(`infra/lib/constructs/observability.ts`). 이메일은 `cdk deploy -c alarmEmail=ops@example.com`으로 구독하고(주소는 `cdk.json`에 넣지 않는다), 첫 배포 뒤 확인 메일의 링크를 눌러야 알림이 온다. 구독 없이도 알람은 상태를 바꾸고 대시보드에 보인다.
+
+| 알람 (`<스택>-…`) | 조건 | 놓치지 않으려는 것 |
+| --- | --- | --- |
+| `alb-5xx-rate` | (ELB+타깃 5xx)/요청 > 1%, 5분 | 서버 오류·오리진 불통 |
+| `alb-latency-p95` | 타깃 응답 p95 > 1 s, 5분 | 검증 지연·과부하 |
+| `alb-unhealthy-hosts` | UnHealthyHostCount ≥ 1, 2분 | `/healthz` 실패(크래시 루프) |
+| `alb-healthy-hosts` | HealthyHostCount < 2, 2분 | 태스크 유실·기동 실패(비정상 상태로는 잡히지 않는다) |
+| `ecs-cpu` / `ecs-memory` | 서비스 평균 CPU > 80% / 메모리 > 85%, 5분 | 오토스케일이 못 따라가는 부하 |
+| `ddb-read-throttles` / `ddb-write-throttles` | 스로틀 이벤트 > 0, 1분 | 핫 파티션·계정 한도 |
+| `verify-ms-p95` | `ClawdEchoTower/VerifyMs` p95 > 2000 ms, 5분 | 검증기 회귀 |
+| `submit-reject-ratio` | 거절/(수락+거절) > 30%, 5분, 제출 10건 이상일 때만 | SIM_VERSION 어긋남·결정론 붕괴 |
+
+CloudFront 5xx는 지표가 us-east-1에만 있고 CloudWatch 알람은 다른 리전 지표를 볼 수 없어서 대시보드에만 있다(엣지 오류는 대개 오리진 문제라 `alb-5xx-rate`·`alb-healthy-hosts`가 먼저 울린다). `VerifyMs`·`SubmitAccepted`·`SubmitRejected` 알람 지표는 로그 그룹의 메트릭 필터가 `build` 차원 없이 다시 발행한 값이다 — 서버 EMF 라인의 `Dimensions`에 빈 차원 세트를 추가하면 두 배로 집계되니 하지 않는다.
+
+### 6.1 실측 절차 — 태스크 1개 수동 중지
+
+파이프라인(지표 → 알람 → SNS → 메일)이 실제로 이어지는지 릴리스 후 한 번 확인한다. 태스크 하나를 멈추면 ECS가 즉시 대체 태스크를 띄우므로 사용자 영향은 없고, `alb-healthy-hosts`(1분 주기 × 2회)가 2~3분 안에 ALARM으로 바뀌어야 한다.
+
+```bash
+CLUSTER=$(node -e "console.log(require('./cdk-outputs.json').ClawdEchoTowerStack.ClusterName)")
+SERVICE=$(node -e "console.log(require('./cdk-outputs.json').ClawdEchoTowerStack.ServiceName)")
+TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "$SERVICE" --query 'taskArns[0]' --output text)
+date -u; aws ecs stop-task --cluster "$CLUSTER" --task "$TASK" --reason "alarm drill" --query 'task.stoppedReason' --output text
+
+# 알람 상태를 30초마다 본다 (ALARM → 대체 태스크가 healthy 가 되면 OK)
+watch -n 30 "aws cloudwatch describe-alarms --alarm-name-prefix ClawdEchoTowerStack-alb-healthy-hosts \
+  --query 'MetricAlarms[].[AlarmName,StateValue,StateUpdatedTimestamp]' --output text"
+```
+
+기록할 것: 중지 시각, ALARM 전환 시각, 메일 도착 시각, OK 복귀 시각. 5분 안에 ALARM 메일이 오지 않으면 순서대로 확인한다 — (1) SNS 구독이 `Confirmed`인가(`aws sns list-subscriptions-by-topic`), (2) 알람 `StateReason`에 데이터가 있는가(`InsufficientData`면 대상 그룹 지표 이름 확인), (3) 메일 스팸함.
+
+| 날짜 (UTC) | 중지 | ALARM | 메일 | OK | 비고 |
+| --- | --- | --- | --- | --- | --- |
+| 미실측 | | | | | P3-11 배포 뒤 첫 릴리스에서 채운다 |

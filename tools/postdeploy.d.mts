@@ -37,6 +37,11 @@ export interface ResolvedOutputs {
 
 export function regionFromEnv(env?: Record<string, string | undefined>): string;
 
+/** Paths whose second GET must be an edge cache hit (`/` and `/sw.js`). */
+export const EDGE_CACHED_PATHS: readonly string[];
+/** True for `Hit from cloudfront` / `RefreshHit from cloudfront` (case-insensitive); false for Miss, Error, null. */
+export function isEdgeHit(xCache: string | null | undefined): boolean;
+
 export const SIM_TYPES_PATH: string;
 export interface SimVersions { sim: number; gen: number }
 /** `{ sim, gen }` parsed from the text of src/sim/types.ts, or null when either constant is missing. */

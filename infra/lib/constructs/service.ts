@@ -62,6 +62,8 @@ export class Service extends Construct {
    */
   readonly originTokenValue: string;
   readonly dailySecret: secretsmanager.Secret;
+  /** HMAC key for playerTag; the server falls back to DAILY_SECRET when unset. */
+  readonly tagSecret: secretsmanager.Secret;
   readonly logGroup: logs.LogGroup;
   /** Content hash of the container image; exported to the app as APP_VERSION. */
   readonly imageHash: string;
@@ -81,6 +83,13 @@ export class Service extends Construct {
 
     this.dailySecret = new secretsmanager.Secret(this, 'DailySecret', {
       description: 'CLAWD ECHO TOWER: HMAC key for daily tower seeds',
+      generateSecretString: { excludePunctuation: true, passwordLength: 48 },
+    });
+
+    // Separate from DAILY_SECRET so either can rotate on its own: rotating this
+    // one changes every playerTag, rotating DAILY_SECRET changes future seeds.
+    this.tagSecret = new secretsmanager.Secret(this, 'TagSecret', {
+      description: 'CLAWD ECHO TOWER: HMAC key for player tags',
       generateSecretString: { excludePunctuation: true, passwordLength: 48 },
     });
 
@@ -193,6 +202,7 @@ export class Service extends Construct {
       },
       secrets: {
         DAILY_SECRET: ecs.Secret.fromSecretsManager(this.dailySecret),
+        TAG_SECRET: ecs.Secret.fromSecretsManager(this.tagSecret),
       },
     });
 
