@@ -250,7 +250,15 @@ async function main() {
   const bogus = await get(`${site}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"nope":1}' });
   ok('api rejects bad run', bogus.status === 400, `status ${bogus.status} ${bogus.text.slice(0, 80)}`);
 
-  // 4. the ALB must not be reachable except through CloudFront
+  // 3b. social preview image (static og:image referenced by index.html)
+{
+  const og = await fetch(`${site}/og/og.png`).then(async (r) => ({ status: r.status, type: r.headers.get('content-type'), buf: new Uint8Array(await r.arrayBuffer()) })).catch((e) => ({ status: 0, type: String(e), buf: new Uint8Array() }));
+  const w = og.buf.length > 24 ? (og.buf[16] << 24 | og.buf[17] << 16 | og.buf[18] << 8 | og.buf[19]) >>> 0 : 0;
+  const h = og.buf.length > 24 ? (og.buf[20] << 24 | og.buf[21] << 16 | og.buf[22] << 8 | og.buf[23]) >>> 0 : 0;
+  ok('og:image', og.status === 200 && (og.type ?? '').startsWith('image/png') && w === 1200 && h === 630, `status ${og.status}, ${og.type}, ${w}x${h}`);
+}
+
+// 4. the ALB must not be reachable except through CloudFront
   if (alb) {
     const direct = await get(`http://${alb}/`, { timeout: 8000 });
     ok('alb direct blocked', direct.status === 0 || direct.status === 403, direct.status === 0 ? `no response (${direct.text}) — security group` : `status ${direct.status} (listener default)`);
