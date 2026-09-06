@@ -10,8 +10,9 @@ import { SIM_VERSION } from '../../src/sim/types.js';
 import type { Progress } from '../../src/client/contracts.js';
 import type { LevelDef } from '../../src/sim/types.js';
 import {
-  DEFAULT_NAME, PROGRESS_KEY, Save, daysBucket, defaultProgress, echoMasks, fallbackName, isValidName, markEcho, repairProgress,
-  retentionBuckets, streakFor, touchPlayDay, unlockedZones, type StorageLike,
+  DEFAULT_ECHO_WORLD_MODE, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, daysBucket, defaultLevelRecord, defaultProgress,
+  defaultSettings, echoMasks, echoWorldMode, fallbackName, isValidName, markEcho, recordSegmentBest, repairProgress,
+  retentionBuckets, segmentBests, setEchoWorldMode, streakFor, touchPlayDay, unlockedZones, type StorageLike,
 } from '../../src/client/save.js';
 
 class MemStorage implements StorageLike {
@@ -230,5 +231,61 @@ describe('repairProgress · endless best replay, daily rank, session deaths', ()
     expect(save.progress.levels.t3.sessionDeaths).toBeUndefined();
     expect(save.progress.daily['2026-09-05'].rank).toBe(12);
     expect(save.progress.daily['2026-09-04'].rank).toBeUndefined();
+  });
+});
+
+describe('P2-4 · 세계 메아리 mode and segment bests', () => {
+  function withSettings(raw: unknown): Save {
+    const storage = new MemStorage();
+    storage.setItem(SETTINGS_KEY, JSON.stringify(raw));
+    return new Save({ storage, schedule: () => 0, cancel: () => {} });
+  }
+
+  it('echoWorldMode defaults to rival, keeps top, drops junk, and round-trips through the save', () => {
+    expect(DEFAULT_ECHO_WORLD_MODE).toBe('rival');
+    expect(echoWorldMode(defaultSettings())).toBe('rival');
+    expect(echoWorldMode(withSettings({ v: 1, echoWorldMode: 'top' }).settings)).toBe('top');
+    expect(echoWorldMode(withSettings({ v: 1, echoWorldMode: 'median' }).settings)).toBe('rival');
+    expect(echoWorldMode(withSettings({ v: 1 }).settings)).toBe('rival');
+    // a pre-P2-4 Settings object without the field reads as the default through the accessor
+    const bare = defaultSettings() as unknown as Record<string, unknown>;
+    delete bare.echoWorldMode;
+    expect(echoWorldMode(bare as unknown as ReturnType<typeof defaultSettings>)).toBe('rival');
+    const storage = new MemStorage();
+    const save = new Save({ storage, schedule: () => 0, cancel: () => {} });
+    setEchoWorldMode(save.settings, 'top');
+    save.flush();
+    expect(JSON.parse(storage.getItem(SETTINGS_KEY)!).echoWorldMode).toBe('top');
+    expect(echoWorldMode(new Save({ storage, schedule: () => 0, cancel: () => {} }).settings)).toBe('top');
+  });
+
+  it('recordSegmentBest keeps the faster whole-tick time per segment; repairLevelRecord sanitises segBest', () => {
+    const rec = defaultLevelRecord();
+    expect(segmentBests(rec)).toEqual([]);
+    expect(recordSegmentBest(rec, 1, 900)).toBe(true);
+    expect(segmentBests(rec)).toEqual([0, 900]);
+    expect(recordSegmentBest(rec, 1, 950)).toBe(false);
+    expect(recordSegmentBest(rec, 1, 850.7)).toBe(true);
+    expect(segmentBests(rec)).toEqual([0, 850]);
+    expect(recordSegmentBest(rec, 0, 0)).toBe(false);
+    expect(recordSegmentBest(rec, -1, 10)).toBe(false);
+    expect(recordSegmentBest(rec, 99, 10)).toBe(false);
+    expect(recordSegmentBest(rec, 0.5, 10)).toBe(false);
+    const save = stored({
+      v: 1,
+      levels: {
+        ok: { done: true, bestTicks: 10, segBest: [120, 0, 300.9, -4, 'x'] },
+        junk: { done: true, bestTicks: 10, segBest: 'nope' },
+        zeros: { done: true, bestTicks: 10, segBest: [0, 0] },
+        plain: { done: true, bestTicks: 10 },
+      },
+    });
+    expect(segmentBests(save.progress.levels.ok)).toEqual([120, 0, 300, 0, 0]);
+    expect(segmentBests(save.progress.levels.junk)).toEqual([]);
+    expect('segBest' in save.progress.levels.junk).toBe(false);
+    expect(segmentBests(save.progress.levels.zeros)).toEqual([]);
+    expect(segmentBests(save.progress.levels.plain)).toEqual([]);
+    // the other fields are untouched
+    expect(save.progress.levels.ok.bestTicks).toBe(10);
   });
 });

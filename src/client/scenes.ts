@@ -31,18 +31,55 @@ import { MAX_FRAME_DT, TickScheduler } from './loop.js';
 import { FxBus } from './fx.js';
 import { Camera } from './camera.js';
 import {
-  DEFAULT_NAME, MS_PER_DAY, Save, echoMasks, fallbackName, isValidName, markEcho, retentionBuckets, unlockedZones, utcDateStr,
+  DEFAULT_NAME, MS_PER_DAY, Save, echoMasks, echoWorldMode, fallbackName, isValidName, markEcho, recordSegmentBest, retentionBuckets,
+  segmentBests, unlockedZones, utcDateStr,
 } from './save.js';
 import { cloneBinds } from './input/binds.js';
 import { ApiError } from './net/api.js';
 import type { FlushEvent, FlushResult, QueuedRun, SubmitQueue } from './net/queue.js';
 import type { TelemetryData, TelemetryPort } from './net/telemetry.js';
-import { Echo } from './echo/echo.js';
+import { Echo, checkpointKey } from './echo/echo.js';
 import { GUIDE_COLOR, GUIDE_DELAY, GUIDE_LABEL, guideFor } from './echo/guide.js';
 import { GOAL_LABEL, goalEchoFor } from './echo/goal.js';
+import {
+  RIVAL_LABEL, SPLIT_NONE, SPLIT_SECONDS, TOP_LABEL, fmtSplit, pickWorldEcho, worldEchoLabel, type SplitSign, type WorldEchoKind,
+} from './echo/rival.js';
 import { REHINT_HAZARD, REHINT_PIT } from './ui/hints.js';
 
 export type RunMode = 'story' | 'daily' | 'endless';
+
+/** A death position (world units, the player's centre) drawn as an X mark for the rest of the zone session. */
+export interface DeathMark { x: number; y: number }
+
+/** One checkpoint segment of the current run, as the pause screen lists it. */
+export interface SegmentRow {
+  /** 0 = start → first checkpoint; the last row ends at the goal. */
+  idx: number;
+  /** Deaths inside this segment during the zone session. */
+  deaths: number;
+  /** Best time (ticks) for this segment on this install (story zones), null = none. */
+  best: number | null;
+  /** The segment the player is in right now. */
+  current: boolean;
+}
+
+/** How the finished run compares with the world echo it raced: our ticks − theirs (negative = faster). */
+export interface VersusView {
+  /** '라이벌' or '1위'. */
+  label: string;
+  deltaTicks: number;
+}
+
+/** Everything a zone remembers across restarts within one browser session (never saved). */
+interface ZoneSession {
+  marks: DeathMark[];
+  segDeaths: number[];
+}
+
+/** Death X marks kept per zone session. */
+export const DEATH_MARKS_MAX = 5;
+/** Pause screen: at most this many segment rows (procedural towers can carry many checkpoints). */
+export const MAX_SEGMENT_ROWS = 12;
 
 /**
  * Yesterday's tower as the daily screen shows it: the date, the seed when the
@@ -69,14 +106,24 @@ export interface ShellUI extends UIPort {
   setGoalScreen?(g: { x: number; y: number; onScreen: boolean } | null): void;
   /** The server runs a newer sim than this bundle: the update bar turns urgent. */
   setVersionBehind?(on: boolean): void;
+  /** Live checkpoint split chip ('+0.84s' / '−1.20s' / '—'; sign −1 ahead · 0 even · 1 behind); null hides it. */
+  split?(text: string | null, sign?: SplitSign): void;
+  /** Pause screen: per-checkpoint-segment death counts and segment bests of the current run; null clears them. */
+  segments?(rows: SegmentRow[] | null): void;
+  /** Result screen: the "라이벌보다 0.62s 빠름" row when a world echo was raced; null hides it. */
+  setVersus?(v: VersusView | null): void;
 }
 /** AudioPort plus the pause-menu muffle the concrete engine offers. */
 export interface ShellAudio extends AudioPort {
   setMuffle?(on: boolean): void;
 }
+/** RendererPort plus the death X marks the concrete renderer draws (the shell keeps the list). */
+export interface ShellRenderer extends RendererPort {
+  setDeathMarks?(marks: readonly DeathMark[]): void;
+}
 
 export interface ScenesDeps {
-  renderer: RendererPort;
+  renderer: ShellRenderer;
   audio: ShellAudio;
   ui: ShellUI;
   input: InputPort;
@@ -161,6 +208,23 @@ export interface Run {
   masks: MaskLog;
   daily: { date: string; seed: number } | null;
   echoes: Echo[];
+  /**
+   * The world echo (라이벌 / 1위, or the 목표 stand-in) and the self echo, kept
+   * after they finish: their checkpoint ticks feed the live splits.
+   */
+  worldEcho: Echo | null;
+  selfEcho: Echo | null;
+  /** The board entry raced as the world echo (a cleared run), for the result screen's 라이벌보다 row. */
+  rival: { kind: WorldEchoKind; name: string; ticks: number } | null;
+  /** Live tick at which the player passed each checkpoint (see checkpointKey). */
+  cpTicks: Map<string, number>;
+  /** The split chip waiting to be pushed to the UI (`dirty`) and its remaining lifetime (−1 = none). */
+  split: { text: string; sign: SplitSign; dirty: boolean } | null;
+  splitTimer: number;
+  /** Tick at which the current checkpoint segment began (segment bests). */
+  segStart: number;
+  /** Death marks and per-segment deaths of this zone, shared by every run of it in this session. */
+  session: ZoneSession;
   /** The bundled '길잡이' echo while it is running (first play of a guided zone), else null. */
   guide: Echo | null;
   /** Seconds until the guide sets off; -1 = none pending. */
@@ -237,7 +301,7 @@ export class Scenes {
   /** Yesterday's tower (date / seed / board), fetched once per day at boot and when the daily screen opens. */
   yesterday: YesterdayInfo | null = null;
 
-  private readonly renderer: RendererPort;
+  private readonly renderer: ShellRenderer;
   private readonly audio: ShellAudio;
   private readonly ui: ShellUI;
   private readonly input: InputPort;
@@ -256,6 +320,8 @@ export class Scenes {
   private readonly onServerNewer: ((serverSim: number | null) => void) | null;
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly runEndListeners: (() => void)[] = [];
+  /** Per-zone session memory (death marks, segment deaths), keyed by mode · zone · seed. */
+  private readonly sessions = new Map<string, ZoneSession>();
 
   private titleT = 0;
   private titleSwitchT = 0;
@@ -505,8 +571,11 @@ export class Scenes {
     const echoSafe = !s.assist && !s.invincible;
     const firstPlay = !restart && !this.save.progress.seen[def.id];
     const guided = firstPlay && mode === 'story' && guideFor(def, seed) !== null;
+    const session = this.zoneSession(mode, def.id, seed);
     const run: Run = {
       sim, def, mode, biome, seed, masks: new MaskLog(), daily, echoes: [],
+      worldEcho: null, selfEcho: null, rival: null,
+      cpTicks: new Map(), split: null, splitTimer: -1, segStart: 0, session,
       guide: null, guideTimer: guided ? GUIDE_DELAY : -1,
       segDeaths: { pit: 0, hazard: 0 },
       firstEver: mode === 'story' && !this.levels.some((l) => this.save.progress.levels[l.id]?.done),
@@ -532,12 +601,16 @@ export class Scenes {
     this.scheduler.reset();
     this.renderer.setLevel(sim, biome);
     this.renderer.clearParticles();
+    // The zone session's death marks outlive a restart; the split chip does not.
+    this.renderer.setDeathMarks?.(session.marks.slice());
     this.setMuffle(false);
     this.audio.setTrack(biome.track);
     this.audio.setIntensity(0.55);
     this.input.reset();
     this.ui.hint(null);
+    this.ui.split?.(null);
     this.ui.show('play');
+    this.pushSegments(run);
     this.retryCarry = 0;
     if (!restart) {
       this.ui.banner?.(def.name);
@@ -559,6 +632,14 @@ export class Scenes {
   /** Story zones open right now (the select screen applies the same rule: clearing N opens N+1 and N+2 within the tier). */
   private unlockedZones(progress: Progress = this.save.progress): Set<string> {
     return unlockedZones(this.levels, progress);
+  }
+
+  /** The session memory of one zone (a daily / endless tower is a zone per seed), created on first use. */
+  private zoneSession(mode: RunMode, levelId: string, seed: number): ZoneSession {
+    const key = `${mode}:${levelId}:${seed >>> 0}`;
+    let s = this.sessions.get(key);
+    if (!s) { s = { marks: [], segDeaths: [] }; this.sessions.set(key, s); }
+    return s;
   }
 
   private resume(): void {
@@ -804,7 +885,12 @@ export class Scenes {
       if (run.masks.overflow) run.eligible = false;
     }
     sim.step(mask);
-    for (const e of run.echoes) e.step();
+    const splitEcho = this.splitEchoOf(run);
+    for (const e of run.echoes) {
+      const evs = e.step();
+      // The echo reaching a pillar the player already passed: the player is ahead, and now by how much.
+      if (e === splitEcho) for (const ev of evs) if (ev.type === 'checkpoint') this.onEchoCheckpoint(run, e, ev.x, ev.y);
+    }
     const events = sim.drainEvents();
     for (const ev of events) {
       this.fx.onEvent(ev);
@@ -860,6 +946,15 @@ export class Scenes {
     if (run.guideTimer >= 0) {
       run.guideTimer -= dt;
       if (run.guideTimer < 0) this.spawnGuide(run);
+    }
+    // The split chip: pushed on the frame after the checkpoint, gone SPLIT_SECONDS later.
+    if (run.split?.dirty) {
+      run.split.dirty = false;
+      this.ui.split?.(run.split.text, run.split.sign);
+    }
+    if (run.splitTimer >= 0) {
+      run.splitTimer -= dt;
+      if (run.splitTimer < 0) { run.split = null; this.ui.split?.(null); }
     }
   }
 
@@ -964,13 +1059,14 @@ export class Scenes {
         this.dropGuide(run);
         run.segDeaths.pit = 0;
         run.segDeaths.hazard = 0;
-        run.checkpoints++;
+        this.onCheckpoint(run, ev.x, ev.y);
         break;
       case 'death': {
         const line = deathLine(ev.cause);
         if (line && run.mode === 'story') this.ui.toast(line);
         this.rehint(run, ev.cause);
         this.countDeath(run);
+        this.markDeath(run, ev.x, ev.y);
         run.deathAt = run.t;
         // Tile coordinates only: the death heat-map needs nothing finer.
         this.telemetry?.track('death', {
@@ -988,6 +1084,87 @@ export class Scenes {
       case 'tideOver': this.finish(run, ev.summary, 'over'); break;
       default: break;
     }
+  }
+
+  // ================================================================ splits · segments · death marks (P2-4)
+  /** The echo the live splits are read against: the world echo (라이벌 / 1위 / 목표) when there is one, else the self echo. */
+  private splitEchoOf(run: Run): Echo | null {
+    return run.worldEcho ?? run.selfEcho;
+  }
+
+  /**
+   * The player reached a checkpoint: remember the tick (for the echo's later
+   * arrival), close the segment for the segment best, and show the split
+   * against the echo — '—' while the echo has not been here yet.
+   */
+  private onCheckpoint(run: Run, x: number, y: number): void {
+    const tick = run.sim.state.tick;
+    run.cpTicks.set(checkpointKey(x, y), tick);
+    this.recordSegment(run, run.checkpoints, tick - run.segStart);
+    run.segStart = tick;
+    run.checkpoints++;
+    const echo = this.splitEchoOf(run);
+    if (echo) {
+      const et = echo.checkpointTick(x, y);
+      this.showSplit(run, et === null ? { text: SPLIT_NONE, sign: 0 } : fmtSplit(tick - et));
+    }
+    this.pushSegments(run);
+  }
+
+  /** The split echo reached a pillar the player passed earlier: the player was ahead by this much. */
+  private onEchoCheckpoint(run: Run, echo: Echo, x: number, y: number): void {
+    const mine = run.cpTicks.get(checkpointKey(x, y));
+    if (mine === undefined) return;   // the echo leads here; the split shows when the player arrives
+    const et = echo.checkpointTick(x, y);
+    if (et === null) return;
+    this.showSplit(run, fmtSplit(mine - et));
+  }
+
+  private showSplit(run: Run, s: { text: string; sign: SplitSign }): void {
+    run.split = { text: s.text, sign: s.sign, dirty: true };
+    run.splitTimer = SPLIT_SECONDS;
+  }
+
+  /** A story segment's time (ticks, deaths included) goes to the install's segment bests — never from assist / invincible runs. */
+  private recordSegment(run: Run, idx: number, ticks: number): void {
+    if (run.mode !== 'story' || !run.echoSafe || ticks <= 0) return;
+    const rec = this.save.levelRecord(run.def.id);
+    if (recordSegmentBest(rec, idx, ticks)) this.save.saveProgress();
+  }
+
+  /** Pause-screen rows: one per checkpoint segment of the level (capped), with the session's deaths and the install's bests. */
+  segmentRows(run: Run): SegmentRow[] {
+    let checkpoints = 0;
+    for (const e of run.sim.state.entities) if (e.kind === 'checkpoint') checkpoints++;
+    const n = Math.min(MAX_SEGMENT_ROWS, checkpoints + 1);
+    const rec = run.mode === 'story' ? this.save.progress.levels[run.def.id] : undefined;
+    const bests = rec ? segmentBests(rec) : [];
+    const current = Math.min(run.checkpoints, n - 1);
+    const rows: SegmentRow[] = [];
+    for (let i = 0; i < n; i++) {
+      const best = bests[i] ?? 0;
+      rows.push({ idx: i, deaths: run.session.segDeaths[i] ?? 0, best: best > 0 ? best : null, current: i === current });
+    }
+    return rows;
+  }
+
+  private pushSegments(run: Run): void {
+    this.ui.segments?.(this.segmentRows(run));
+  }
+
+  /**
+   * A death leaves an X mark for the rest of the zone session (the last
+   * DEATH_MARKS_MAX) and counts against the current segment. A pit death is
+   * marked at the level's floor line so it stays in view.
+   */
+  private markDeath(run: Run, x: number, y: number): void {
+    const s = run.session;
+    const floor = run.sim.level.pxH - TILE / 2;
+    s.marks.push({ x, y: Math.min(y, floor) });
+    while (s.marks.length > DEATH_MARKS_MAX) s.marks.shift();
+    s.segDeaths[run.checkpoints] = (s.segDeaths[run.checkpoints] ?? 0) + 1;
+    this.renderer.setDeathMarks?.(s.marks.slice());
+    this.pushSegments(run);
   }
 
   /**
@@ -1011,6 +1188,11 @@ export class Scenes {
     run.resultTimer = kind === 'clear' ? RESULT_DELAY : OVER_DELAY;
     this.ui.hint(null);
     this.dropGuide(run);
+    // The last segment ends at the goal.
+    if (kind === 'clear') {
+      this.recordSegment(run, run.checkpoints, run.sim.state.tick - run.segStart);
+      this.pushSegments(run);
+    }
     if (kind === 'clear') {
       this.telemetry?.track(run.mode === 'daily' ? 'daily_clear' : 'clear', {
         levelId: run.def.id, mode: run.mode, ticks: summary.ticks, deaths: summary.deaths, shards: summary.shards,
@@ -1130,6 +1312,11 @@ export class Scenes {
     run.resultShown = true;
     if (!run.view || !run.summary) return;
     if (run.resultKind === 'clear') {
+      // "라이벌보다 0.62s 빠름": our play ticks against the raced entry's (both the board's score).
+      const r = run.rival;
+      this.ui.setVersus?.(r && run.summary.cleared
+        ? { label: r.kind === 'top' ? TOP_LABEL : RIVAL_LABEL, deltaTicks: run.summary.ticks - r.ticks }
+        : null);
       this.ui.showResult(run.view);
     } else {
       this.ui.showOver(run.summary, run.prevBestHeight, {
@@ -1317,6 +1504,7 @@ export class Scenes {
           const echo = new Echo(run.def, decodeMasks(masks), run.seed, false, C.echoSelf, '나');
           echo.syncTo(run.sim.state.tick);
           run.echoes.push(echo);
+          run.selfEcho = echo;
         } catch { /* a corrupt local replay is simply not shown */ }
       }
     }
@@ -1328,25 +1516,31 @@ export class Scenes {
       if (!echo) return;
       echo.syncTo(run.sim.state.tick);
       run.echoes.push(echo);
+      run.worldEcho ??= echo;
     };
     if (run.offline) { goal(); return; }
     const mode = run.mode === 'daily' ? 'daily' : 'story';
     const board = run.mode === 'daily' ? run.daily!.date : run.def.id;
     try {
-      // playerId goes with every board query so the server can flag our own row
-      // (`you`); entries never carry a raw player id, only an opaque tag.
-      const lb = await this.api.leaderboard({ mode, board, limit: 1, playerId: prog.player.id });
-      const top = lb.entries[0];
+      // The whole top 50 with our own row flagged (`you` / `yours`; entries never
+      // carry a raw player id, only an opaque tag): the 라이벌 is the entry ranked
+      // just above ours, the 1위 the leader — see echo/rival.ts.
+      const lb = await this.api.leaderboard({ mode, board, limit: 50, playerId: prog.player.id });
       if (this.run !== run) return;
-      if (!top) { goal(); return; }
-      // Our own best is already running as the self echo.
-      if (top.you) return;
-      const g = await this.api.ghost(top.runId);
+      if (lb.entries.length === 0) { goal(); return; }
+      const pick = pickWorldEcho(lb, echoWorldMode(s));
+      // Only our own row qualifies: it is already running as the self echo.
+      if (!pick) return;
+      const g = await this.api.ghost(pick.entry.runId);
       if (this.run !== run) return;
       if (g.levelId !== run.def.id || (run.mode === 'daily' && g.seed !== run.daily!.seed)) { goal(); return; }
-      const echo = new Echo(run.def, decodeMasks(g.masks), g.seed, g.assist, C.echoWorld, g.name || top.name);
+      const name = g.name || pick.entry.name;
+      const echo = new Echo(run.def, decodeMasks(g.masks), g.seed, g.assist, C.echoWorld, worldEchoLabel(pick.kind, name));
       echo.syncTo(run.sim.state.tick);
       run.echoes.push(echo);
+      run.worldEcho = echo;
+      // A cleared entry is a time to beat on the result screen; a daily height-only row is not.
+      if (pick.entry.cleared) run.rival = { kind: pick.kind, name, ticks: g.ticks > 0 ? g.ticks : pick.entry.ticks };
     } catch { goal(); }
   }
 

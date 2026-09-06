@@ -24,6 +24,7 @@ import type { Biome } from '../../shared/biomes.js';
 import { BIOMES, BIOME_ORDER } from '../../shared/biomes.js';
 import { DEFAULT_BINDS } from '../input/binds.js';
 import { MS_PER_DAY, streakFor, unlockedZones, utcDateStr } from '../save.js';
+import { fmtVersus } from '../echo/rival.js';
 import {
   LEAVE_MS, MODAL_SCREENS, Navigator, ScreenStack, el, lockSvg, replay, starSvg, validateName, NAME_MAX,
 } from './screens.js';
@@ -102,6 +103,21 @@ export interface YesterdayView {
   lb: LeaderboardResponse | null;
 }
 
+/** One checkpoint segment of the current run as the shell reports it (see Scenes.segmentRows): deaths this session, best ticks on this install. */
+export interface SegmentView {
+  idx: number;
+  deaths: number;
+  best: number | null;
+  current: boolean;
+}
+
+/** How the finished run compares with the world echo it raced: our ticks − theirs (negative = faster). */
+export interface VersusView {
+  /** '라이벌' or '1위'. */
+  label: string;
+  deltaTicks: number;
+}
+
 /** The inline name prompt while it is open on the result / game-over modal. */
 interface InlineName {
   root: HTMLElement;
@@ -163,6 +179,10 @@ export class UI implements UIPort {
   private dailyStatus: LbStatus = 'loading';
   private dailyClock = 0;
   private yesterday: YesterdayView | null = null;
+  /** Pause-screen segment rows (deaths · best per checkpoint segment), as the shell last reported them. */
+  private segRows: SegmentView[] | null = null;
+  /** The result screen's 라이벌보다 row, as the shell last set it (null = no world echo was raced). */
+  private versus: VersusView | null = null;
   /** The inline name prompt, while open. */
   private inlineName: InlineName | null = null;
   /** Whole-tile best height the game-over screen shows (rewritten with the world best when the board arrives). */
@@ -344,6 +364,21 @@ export class UI implements UIPort {
 
   toast(text: string): void { this.hudCtl.toast(text); }
 
+  /** Checkpoint split chip ('+0.84s' / '−1.20s' / '—'; sign −1 ahead · 0 even · 1 behind); null hides it. Not part of UIPort. */
+  split(text: string | null, sign: -1 | 0 | 1 = 0): void { this.hudCtl.split(text, sign); }
+
+  /** Pause screen rows: one per checkpoint segment with the session's deaths and the install's best; repainted when the pause is up. */
+  segments(rows: SegmentView[] | null): void {
+    this.segRows = rows;
+    if (this.screens.top === 'pause') this.fillPause();
+  }
+
+  /** Result screen: "라이벌보다 0.62s 빠름 / 느림" when a world echo was raced; null hides the row. Call before showResult. */
+  setVersus(v: VersusView | null): void {
+    this.versus = v;
+    this.paintVersus();
+  }
+
   /**
    * Where the renderer drew the goal (canvas CSS px) after the last frame, or
    * null: the zone name chip hides while the goal sits under the HUD's
@@ -492,6 +527,7 @@ export class UI implements UIPort {
     }
     const next = d.querySelector<HTMLElement>('#scr-result [data-act="next"]');
     if (next) next.hidden = !view.nextLevelId;
+    this.paintVersus();
     this.paintSubmission('res-submit', 'res-lb', view);
     this.show('result');
     // the rank letter pops once the modal has landed (CSS keyframes; reduced motion disables them)
@@ -1162,6 +1198,38 @@ export class UI implements UIPort {
       stat(`${h?.shards ?? 0}/${h?.totalShards ?? 0}`, '파편'),
       stat(String(h?.hp ?? 0), '체력'),
     );
+    this.fillSegments();
+  }
+
+  /** 구간 N · 쓰러짐 M · best — one row per checkpoint segment, the current one highlighted; empty without rows. */
+  private fillSegments(): void {
+    const host = this.doc.getElementById('pause-segs');
+    if (!host) return;
+    const d = this.doc;
+    const rows = this.segRows ?? [];
+    host.replaceChildren(...rows.map((r) => el(d, 'div', {
+      class: r.current ? 'segrow is-current' : 'segrow', role: 'listitem', 'data-seg': String(r.idx),
+      'aria-label': `구간 ${r.idx + 1} · 쓰러짐 ${r.deaths}회 · 최고 ${r.best ? fmtTicks(r.best) : '없음'}${r.current ? ' · 현재' : ''}`,
+    },
+    el(d, 'span', {}, `구간 ${r.idx + 1}`),
+    el(d, 'em', { class: r.deaths > 0 ? 'is-hot' : undefined }, `쓰러짐 ${r.deaths}`),
+    el(d, 'b', { class: r.best ? undefined : 'is-none' }, r.best ? fmtTicks(r.best) : '—'))));
+  }
+
+  /** The 라이벌보다 row: hidden without a raced world echo, else the two-decimal gap and 빠름 / 느림 coloured by sign. */
+  private paintVersus(): void {
+    const row = this.doc.getElementById('res-vs-world');
+    if (!row) return;
+    const v = this.versus;
+    row.classList.remove('is-ahead', 'is-behind', 'is-even');
+    if (!v) { row.hidden = true; row.replaceChildren(); delete row.dataset.sign; return; }
+    const f = fmtVersus(v.label, v.deltaTicks);
+    const d = this.doc;
+    if (f.sign === 0) row.replaceChildren(f.text);
+    else row.replaceChildren(`${v.label}보다 `, el(d, 'b', {}, f.secs), f.sign < 0 ? ' 빠름' : ' 느림');
+    row.dataset.sign = String(f.sign);
+    row.classList.add(f.sign < 0 ? 'is-ahead' : f.sign > 0 ? 'is-behind' : 'is-even');
+    row.hidden = false;
   }
 
   private resRow(label: string, value: string, best = false): HTMLElement {

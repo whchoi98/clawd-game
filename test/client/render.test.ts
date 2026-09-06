@@ -17,6 +17,7 @@ import { BIOMES, BIOME_ORDER, C } from '../../src/shared/biomes.js';
 import type { FxState, GhostView, Settings, WorldView } from '../../src/client/contracts.js';
 import { Renderer, SKINS } from '../../src/client/render/index.js';
 import type { SimView } from '../../src/client/render/index.js';
+import { DEATH_MARK_COLOR } from '../../src/client/render/actors.js';
 
 // ------------------------------------------------------------------ stubs
 class StubPath2D {
@@ -486,5 +487,46 @@ describe('Renderer', () => {
     const mentions = (hex: string) => styles.some((s) => s.toLowerCase().includes(hex.toLowerCase()) || s.includes(rgbOf(hex)));
     expect(mentions(BIOMES.voidreef.accent)).toBe(true);
     expect(mentions(BIOMES.voidreef.spike.hi)).toBe(true);
+  });
+
+  // ---------------------------------------------------------------- P2-4 death marks
+  it('draws one X per death mark the shell set, keeps them across a respawn, and culls off-screen marks', () => {
+    const { r, ctx } = makeRenderer();
+    const sim = fakeSim(fixtureDef('tidepool'));
+    r.setLevel(sim, BIOMES.tidepool);
+    // every mark sets the stroke colour exactly once, and nothing else in a frame uses it
+    const marksDrawn = () => (ctx.__sets.strokeStyle ?? []).filter((s) => s === DEATH_MARK_COLOR).length;
+    ctx.__sets.strokeStyle = [];
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(marksDrawn()).toBe(0);
+    // three deaths inside VIEW (x 0..512, y -48..240)
+    r.setDeathMarks([{ x: 100, y: 60 }, { x: 200, y: 60 }, { x: 300, y: 60 }]);
+    ctx.__sets.strokeStyle = [];
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(marksDrawn()).toBe(3);
+    // the respawn wipes particles and streaks, never the marks
+    r.onEvent({ type: 'respawn', x: 40, y: 64 }, sim);
+    ctx.__sets.strokeStyle = [];
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(marksDrawn()).toBe(3);
+    // nor does a phase intro (a full zone restart keeps the zone session's marks until the shell says otherwise)
+    r.onEvent({ type: 'phase', phase: 'intro' }, sim);
+    ctx.__sets.strokeStyle = [];
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(marksDrawn()).toBe(3);
+    // an off-screen mark is culled; alpha and the save / restore stack are left balanced
+    r.setDeathMarks([{ x: 100, y: 60 }, { x: 5000, y: 60 }]);
+    ctx.__sets.strokeStyle = [];
+    ctx.__calls.length = 0;
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(marksDrawn()).toBe(1);
+    expect(ctx.globalAlpha).toBe(1);
+    const saves = ctx.__calls.filter((c) => c.name === 'save').length;
+    const restores = ctx.__calls.filter((c) => c.name === 'restore').length;
+    expect(saves).toBe(restores);
+    r.setDeathMarks([]);
+    ctx.__sets.strokeStyle = [];
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(marksDrawn()).toBe(0);
   });
 });

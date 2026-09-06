@@ -5,6 +5,7 @@
  */
 import type { BindAction, Binds, Settings, UiSound } from '../contracts.js';
 import { cloneBinds } from '../input/binds.js';
+import { ECHO_WORLD_MODES, echoWorldMode, setEchoWorldMode, type EchoWorldMode } from '../save.js';
 import { el } from './screens.js';
 
 export type PortraitPainter = (ctx: CanvasRenderingContext2D, skin: string, size: number, t: number) => void;
@@ -36,7 +37,18 @@ export function bindLabel(action: BindAction): string {
 
 type BoolKey = 'bloom' | 'grain' | 'flashes' | 'showTimer' | 'assist' | 'invincible' | 'echoSelf' | 'echoWorld';
 type NumKey = 'master' | 'music' | 'sfx' | 'shake';
-type SegKey = 'quality' | 'skin';
+/** Segmented choices; `echoWorldMode` is not on the Settings contract yet and goes through save.ts's accessors. */
+type SegKey = 'quality' | 'skin' | 'echoWorldMode';
+
+function segValue(s: Settings, key: SegKey): string {
+  return key === 'echoWorldMode' ? echoWorldMode(s) : s[key];
+}
+
+function setSegValue(s: Settings, key: SegKey, value: string): void {
+  if (key === 'echoWorldMode') {
+    if ((ECHO_WORLD_MODES as readonly string[]).includes(value)) setEchoWorldMode(s, value as EchoWorldMode);
+  } else (s as Record<'quality' | 'skin', string>)[key] = value;
+}
 
 export interface SettingsPanelDeps {
   doc: Document;
@@ -90,7 +102,9 @@ export class SettingsPanel {
       if (val) val.textContent = `${Math.round(Number(i.value) * 100)}%`;
     }
     for (const b of doc.querySelectorAll<HTMLElement>('#scr-settings .seg button[data-key]')) {
-      const on = bag[b.dataset.key ?? ''] === b.dataset.value;
+      const key = b.dataset.key ?? '';
+      const cur = key === 'echoWorldMode' ? echoWorldMode(s) : bag[key];
+      const on = cur === b.dataset.value;
       b.classList.toggle('on', on);
       b.setAttribute('aria-checked', String(on));
     }
@@ -113,6 +127,7 @@ export class SettingsPanel {
       this.sliderRow('효과음', 'sfx'),
       this.segRow('화질', 'quality', [['auto', '자동'], ['high', '높음'], ['balanced', '균형'], ['low', '낮음']]),
       this.skinRow(),
+      this.segRow('세계 메아리', 'echoWorldMode', [['rival', '라이벌'], ['top', '1위']], '라이벌은 내 바로 위 순위의 기록과 달린다 · 체크포인트마다 스플릿'),
       this.toggleRow('블룸 (발광)', 'bloom', '발광체 주변의 빛 번짐'),
       this.toggleRow('필름 그레인', 'grain', '미세한 입자감'),
     );
@@ -202,9 +217,9 @@ export class SettingsPanel {
     return row;
   }
 
-  private segRow(label: string, key: SegKey, opts: readonly (readonly [string, string])[]): HTMLElement {
+  private segRow(label: string, key: SegKey, opts: readonly (readonly [string, string])[], sub?: string): HTMLElement {
     const doc = this.d.doc;
-    const { row, ctl } = this.row(label);
+    const { row, ctl } = this.row(label, sub);
     const seg = el(doc, 'div', { class: 'seg', role: 'radiogroup', 'aria-label': label });
     for (const [value, text] of opts) seg.appendChild(this.segButton(seg, key, value, text));
     ctl.appendChild(seg);
@@ -214,7 +229,7 @@ export class SettingsPanel {
   private segButton(seg: HTMLElement, key: SegKey, value: string, text: string, extra?: Node): HTMLButtonElement {
     const doc = this.d.doc;
     const s = this.d.settings();
-    const on = s?.[key] === value;
+    const on = s !== null && segValue(s, key) === value;
     const b = el(doc, 'button', { type: 'button', role: 'radio', 'data-key': key, 'data-value': value, 'aria-checked': String(on) });
     if (on) b.classList.add('on');
     if (extra) b.appendChild(extra);
@@ -222,7 +237,7 @@ export class SettingsPanel {
     b.addEventListener('click', () => {
       const cur = this.d.settings();
       if (!cur) return;
-      (cur as Record<SegKey, string>)[key] = value;
+      setSegValue(cur, key, value);
       for (const x of seg.querySelectorAll<HTMLElement>('button')) {
         const active = x === b;
         x.classList.toggle('on', active);

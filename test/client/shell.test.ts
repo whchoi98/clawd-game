@@ -37,12 +37,16 @@ import { QUEUE_KEY, SubmitQueue } from '../../src/client/net/queue.js';
 import type { TelemetryData, TelemetryPort } from '../../src/client/net/telemetry.js';
 import type { TelemetryName } from '../../src/shared/protocol.js';
 import { ECHO_ALPHA, Echo } from '../../src/client/echo/echo.js';
+import { GOAL_LABEL } from '../../src/client/echo/goal.js';
+import { GOAL_ECHOES } from '../../src/sim/echoes.generated.js';
+import { SPLIT_NONE, SPLIT_SECONDS, fmtSplit, fmtVersus, pickWorldEcho, worldEchoLabel } from '../../src/client/echo/rival.js';
+import { echoWorldMode, segmentBests, setEchoWorldMode } from '../../src/client/save.js';
 import {
-  ASSIST_OFFER_DEATHS, NAME_ASKED_KEY, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, assistSeenKey,
-  type ShellUI, type YesterdayInfo,
+  ASSIST_OFFER_DEATHS, DEATH_MARKS_MAX, NAME_ASKED_KEY, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, assistSeenKey,
+  type DeathMark, type SegmentRow, type ShellUI, type VersusView, type YesterdayInfo,
 } from '../../src/client/scenes.js';
 import { ShotScript, parseShotQuery } from '../../src/client/shot.js';
-import { flatRoom, openRoom, pitRoom, shaftRoom, spikeRoom, tideRoom } from '../fixtures/levels.js';
+import { checkpointRoom, flatRoom, openRoom, pitRoom, shaftRoom, spikeRoom, tideRoom } from '../fixtures/levels.js';
 
 const BINDS: Binds = {
   left: ['ArrowLeft', 'KeyA'], right: ['ArrowRight', 'KeyD'], up: ['ArrowUp', 'KeyW'], down: ['ArrowDown', 'KeyS'],
@@ -80,10 +84,15 @@ function makeSave(storage = new MemStorage(), extra: Partial<ConstructorParamete
 interface FakeRenderer extends RendererPort {
   setLevelCalls: number; draws: number; titleDraws: number; events: SimEvent[]; lastView: WorldView | null;
   lastGhosts: GhostView[]; lastFx: FxState | null; lastDt: number;
+  /** The death marks the shell last handed over (ShellRenderer.setDeathMarks). */
+  deathMarks: readonly DeathMark[];
+  setDeathMarks(marks: readonly DeathMark[]): void;
 }
 function fakeRenderer(): FakeRenderer {
   const r: FakeRenderer = {
     setLevelCalls: 0, draws: 0, titleDraws: 0, events: [], lastView: null, lastGhosts: [], lastFx: null, lastDt: 0, goalScreen: null,
+    deathMarks: [],
+    setDeathMarks(marks) { r.deathMarks = marks; },
     setLevel() { r.setLevelCalls++; },
     draw(_sim, view, fx, ghosts, dt) { r.draws++; r.lastView = view; r.lastFx = fx; r.lastGhosts = ghosts; r.lastDt = dt; },
     onEvent(ev) { r.events.push(ev); },
@@ -133,6 +142,12 @@ interface FakeUI extends ShellUI {
   nameAsks: number; nameAnswer: string | null;
   /** Every setYesterday() value, in order. */
   yesterdays: (YesterdayInfo | null)[];
+  /** Every split() call (P2-4): text null = the chip was hidden. */
+  splits: { text: string | null; sign: number | undefined }[];
+  /** Every segments() call (P2-4). */
+  segmentCalls: (SegmentRow[] | null)[];
+  /** Every setVersus() call (P2-4). */
+  versusCalls: (VersusView | null)[];
   emit(a: UIAction): void; setScreen(s: Screen): void;
 }
 function fakeUI(): FakeUI {
@@ -141,6 +156,10 @@ function fakeUI(): FakeUI {
   const u: FakeUI = {
     cbs: [], shown: [], result: null, over: null, huds: [], hints: [], toasts: [], banners: [], dailyCalls: [], selectRefreshes: 0,
     unlockCalls: [], goalScreens: [], versionBehind: [], offers: [], nameAsks: 0, nameAnswer: null, yesterdays: [],
+    splits: [], segmentCalls: [], versusCalls: [],
+    split(text, sign) { u.splits.push({ text, sign }); },
+    segments(rows) { u.segmentCalls.push(rows); },
+    setVersus(v) { u.versusCalls.push(v); },
     offerAssist(name) { u.offers.push(name); scr = 'assist'; u.shown.push('assist'); },
     askNameInline() { u.nameAsks++; return Promise.resolve(u.nameAnswer); },
     setYesterday(info) { u.yesterdays.push(info); },
@@ -832,8 +851,10 @@ describe('Scenes', () => {
     runFrames(scenes, () => run.sim.state.tick >= 300);
     for (const e of run.echoes) expect(e.tick).toBe(run.sim.state.tick);
     const labels = run.echoes.map((e) => e.label);
-    expect(labels).toContain('라이벌');
-    expect(api.lbQueries.some((q) => q.limit === 1)).toBe(true);
+    // no row of our own on that board → the median entry (the only one) runs as the 라이벌
+    expect(labels).toContain('라이벌 · 라이벌');
+    // the echo query asks for the whole top 50 so the rival can be picked client-side
+    expect(api.lbQueries.some((q) => q.limit === 50)).toBe(true);
   });
 
   it('runs the daily tower from the server seed and reports a tide game over', async () => {
@@ -2178,5 +2199,328 @@ describe('Scenes · stuck detector → assist offer (P2-6)', () => {
     expect(daily.ui.offers).toHaveLength(0);
     expect(daily.save.progress.levels.daily).toBeUndefined();
     await daily.scenes.settle();
+  });
+});
+
+// ================================================================ P2-4 rival echo · live splits · death marks · segment bests
+describe('Scenes · rival echo, live splits, death marks and segment bests (P2-4)', () => {
+  /** A ghost recording: `lead` idle ticks, then RIGHT for `hold` ticks. */
+  const ghostMasks = (lead: number, hold: number): string => {
+    const m = new Uint8Array(lead + hold);
+    m.fill(IN.RIGHT, lead);
+    return encodeMasks(m);
+  };
+
+  /**
+   * A cleared board of ranks 1..n on `def` (rank k = 4000 + 60k ticks, name `주자k`,
+   * runId `run-rk`), every entry with a decodable ghost. `yoursRank` marks one row
+   * as ours (the server flags it `you`, exactly like the real route).
+   */
+  function seedBoard(api: FakeApi, def: LevelDef, n: number, ownerId: string, yoursRank?: number, masks = ghostMasks(0, 900)): void {
+    api.board = [];
+    for (let k = 1; k <= n; k++) {
+      const runId = `run-r${k}`;
+      const ticks = 4000 + 60 * k;
+      api.board.push({
+        rank: k, runId, ownerId: k === yoursRank ? ownerId : `other-${k}`, playerTag: String(k).padStart(12, 'a'), name: `주자${k}`,
+        score: ticks, ticks, shards: 0, deaths: 0, cleared: true, height: 0, createdAt: '2026-09-06T00:00:00.000Z',
+      });
+      api.ghosts[runId] = { runId, mode: 'story', board: def.id, levelId: def.id, seed: def.seed, assist: false, masks, name: `주자${k}`, ticks };
+    }
+  }
+
+  /** Record every ghost fetch. */
+  function spyGhosts(api: FakeApi): string[] {
+    const calls: string[] = [];
+    const orig = api.ghost.bind(api);
+    api.ghost = async (id) => { calls.push(id); return orig(id); };
+    return calls;
+  }
+
+  it('pickWorldEcho: rank−1 above ours, the chaser when we lead, the upper median without a row, the leader in top mode', () => {
+    const mk = (rank: number, you = false): LeaderboardEntry => ({
+      rank, runId: `r${rank}`, playerTag: 'aaaaaaaaaaaa', you, name: `n${rank}`, score: rank, ticks: rank, shards: 0, deaths: 0,
+      cleared: true, height: 0, createdAt: '',
+    });
+    const lb = (entries: LeaderboardEntry[], yours?: LeaderboardEntry): LeaderboardResponse => ({ mode: 'story', board: 't1', total: entries.length, entries, yours });
+    const ten = Array.from({ length: 10 }, (_, i) => mk(i + 1, i + 1 === 7));
+    expect(pickWorldEcho(lb(ten), 'rival')).toMatchObject({ kind: 'rival', entry: { rank: 6 } });
+    // `yours` outside the listed rows still anchors the pick (rank 12 → the closest listed above is rank 10)
+    expect(pickWorldEcho(lb(Array.from({ length: 10 }, (_, i) => mk(i + 1)), mk(12, true)), 'rival')).toMatchObject({ entry: { rank: 10 } });
+    // we lead: the closest chaser
+    expect(pickWorldEcho(lb(Array.from({ length: 5 }, (_, i) => mk(i + 1, i === 0))), 'rival')).toMatchObject({ entry: { rank: 2 } });
+    // alone on the board: nothing (the self echo already runs)
+    expect(pickWorldEcho(lb([mk(1, true)]), 'rival')).toBeNull();
+    expect(pickWorldEcho(lb([mk(1, true)]), 'top')).toBeNull();
+    // no row of ours: the upper median (10 → rank 6, 9 → rank 5, 1 → rank 1)
+    expect(pickWorldEcho(lb(Array.from({ length: 10 }, (_, i) => mk(i + 1))), 'rival')).toMatchObject({ entry: { rank: 6 } });
+    expect(pickWorldEcho(lb(Array.from({ length: 9 }, (_, i) => mk(i + 1))), 'rival')).toMatchObject({ entry: { rank: 5 } });
+    expect(pickWorldEcho(lb([mk(1)]), 'rival')).toMatchObject({ entry: { rank: 1 } });
+    // top mode ignores our rank
+    expect(pickWorldEcho(lb(ten), 'top')).toMatchObject({ kind: 'top', entry: { rank: 1 } });
+    expect(pickWorldEcho(lb([]), 'rival')).toBeNull();
+    expect(worldEchoLabel('rival', '바다')).toBe('라이벌 · 바다');
+    expect(worldEchoLabel('top', '바다')).toBe('1위 · 바다');
+  });
+
+  it('fmtSplit / fmtVersus keep two decimals and an explicit sign; 0 is even', () => {
+    expect(fmtSplit(101)).toEqual({ text: '+0.84s', sign: 1 });
+    expect(fmtSplit(-144)).toEqual({ text: '−1.20s', sign: -1 });
+    expect(fmtSplit(0)).toEqual({ text: '±0.00s', sign: 0 });
+    expect(fmtVersus('라이벌', -74)).toMatchObject({ text: '라이벌보다 0.62s 빠름', secs: '0.62s', sign: -1 });
+    expect(fmtVersus('1위', 144)).toMatchObject({ text: '1위보다 1.20s 느림', sign: 1 });
+    expect(fmtVersus('라이벌', 0)).toMatchObject({ text: '라이벌과 같은 기록', sign: 0 });
+  });
+
+  it('a board 1..10 with our row at rank 7 → the ghost of rank 6 runs as 라이벌 · 이름 (limit 50, our player id on the query)', async () => {
+    const def = flatRoom();
+    const { scenes, ui, api, save } = makeScenes([def], { echoWorld: true, echoSelf: false });
+    scenes.bootSync();
+    seedBoard(api, def, 10, save.progress.player.id, 7);
+    const ghosts = spyGhosts(api);
+    ui.emit({ type: 'start', levelId: 'flat' });
+    await scenes.settle();
+    expect(ghosts).toEqual(['run-r6']);
+    const run = scenes.run!;
+    expect(run.echoes.map((e) => e.label)).toEqual(['라이벌 · 주자6']);
+    expect(run.worldEcho).toBe(run.echoes[0]);
+    expect(run.rival).toEqual({ kind: 'rival', name: '주자6', ticks: 4000 + 60 * 6 });
+    const q = api.lbQueries.at(-1)!;
+    expect(q.limit).toBe(50);
+    expect(q.playerId).toBe(save.progress.player.id);
+    expect(q.board).toBe('flat');
+  });
+
+  it('without a row of ours → the median entry; 1위 mode → the leader labelled 1위 · 이름; leading ourselves → the chaser', async () => {
+    const def = flatRoom();
+    const median = makeScenes([def], { echoWorld: true, echoSelf: false });
+    median.scenes.bootSync();
+    seedBoard(median.api, def, 9, median.save.progress.player.id);
+    const medianGhosts = spyGhosts(median.api);
+    median.ui.emit({ type: 'start', levelId: 'flat' });
+    await median.scenes.settle();
+    expect(medianGhosts).toEqual(['run-r5']);
+    expect(median.scenes.run!.echoes.map((e) => e.label)).toEqual(['라이벌 · 주자5']);
+
+    const top = makeScenes([def], { echoWorld: true, echoSelf: false });
+    top.scenes.bootSync();
+    expect(echoWorldMode(top.save.settings)).toBe('rival');   // the default
+    setEchoWorldMode(top.save.settings, 'top');
+    seedBoard(top.api, def, 10, top.save.progress.player.id, 7);
+    const topGhosts = spyGhosts(top.api);
+    top.ui.emit({ type: 'start', levelId: 'flat' });
+    await top.scenes.settle();
+    expect(topGhosts).toEqual(['run-r1']);
+    expect(top.scenes.run!.echoes.map((e) => e.label)).toEqual(['1위 · 주자1']);
+    expect(top.scenes.run!.rival?.kind).toBe('top');
+
+    const lead = makeScenes([def], { echoWorld: true, echoSelf: false });
+    lead.scenes.bootSync();
+    seedBoard(lead.api, def, 4, lead.save.progress.player.id, 1);
+    const leadGhosts = spyGhosts(lead.api);
+    lead.ui.emit({ type: 'start', levelId: 'flat' });
+    await lead.scenes.settle();
+    expect(leadGhosts).toEqual(['run-r2']);
+  });
+
+  it('an empty board falls back to the bundled 목표 echo, which then feeds the splits as the world echo', async () => {
+    const t1 = REAL_LEVELS[0];
+    if (!(t1.id in GOAL_ECHOES)) return;
+    const { scenes, ui, api } = makeScenes(REAL_LEVELS, { echoWorld: true, echoSelf: false });
+    scenes.bootSync();
+    api.board = [];
+    ui.emit({ type: 'start', levelId: t1.id });
+    await scenes.settle();
+    const run = scenes.run!;
+    expect(run.echoes.map((e) => e.label)).toEqual([GOAL_LABEL]);
+    expect(run.worldEcho).toBe(run.echoes[0]);
+    expect(run.rival).toBeNull();
+  });
+
+  it('a checkpoint shows the split chip against the world echo on that frame and hides it SPLIT_SECONDS later; behind reads +, ahead −', async () => {
+    const def = checkpointRoom();
+    // the rival sets off at once; the player waits 40 frames (80 ticks) before holding RIGHT
+    const { scenes, ui, api, input, save } = makeScenes([def], { echoWorld: true, echoSelf: false });
+    scenes.bootSync();
+    seedBoard(api, def, 1, save.progress.player.id, undefined, ghostMasks(0, 2400));
+    ui.emit({ type: 'start', levelId: 'checkpoint' });
+    await scenes.settle();
+    const run = scenes.run!;
+    const echo = run.worldEcho!;
+    expect(echo.label).toBe('라이벌 · 주자1');
+    for (let i = 0; i < 40; i++) scenes.frame(1 / 60);
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => run.checkpoints >= 1, 2000);
+    expect(run.checkpoints).toBe(1);
+    // the chip arrived in the frame of the event, with the exact gap in ticks
+    const [key, myTick] = [...run.cpTicks.entries()][0];
+    const [cx, cy] = key.split(',').map(Number);
+    const echoTick = echo.checkpointTick(cx, cy);
+    expect(echoTick).not.toBeNull();
+    expect(myTick).toBeGreaterThan(echoTick!);
+    const shown = ui.splits.at(-1)!;
+    expect(shown).toEqual({ text: fmtSplit(myTick - echoTick!).text, sign: 1 });
+    expect(shown.text).toMatch(/^\+\d+\.\d{2}s$/);
+    // one frame later it is still up; after SPLIT_SECONDS it is gone
+    const before = ui.splits.length;
+    scenes.frame(1 / 60);
+    expect(ui.splits.length).toBe(before);
+    let frames = 0;
+    runFrames(scenes, () => ui.splits.length > before || ++frames > 200, 400);
+    expect(ui.splits.at(-1)).toEqual({ text: null, sign: undefined });
+    expect(frames).toBeGreaterThanOrEqual(Math.floor(SPLIT_SECONDS * 60) - 2);
+    expect(frames).toBeLessThanOrEqual(Math.ceil(SPLIT_SECONDS * 60) + 2);
+
+    // the echo has not reached the pillar → '—'; when it gets there later, the player's lead shows as a − split
+    const late = makeScenes([def], { echoWorld: true, echoSelf: false });
+    late.scenes.bootSync();
+    seedBoard(late.api, def, 1, late.save.progress.player.id, undefined, ghostMasks(240, 2400));
+    late.ui.emit({ type: 'start', levelId: 'checkpoint' });
+    await late.scenes.settle();
+    late.input.heldMask = IN.RIGHT;
+    const lateRun = late.scenes.run!;
+    runFrames(late.scenes, () => lateRun.checkpoints >= 1, 2000);
+    expect(late.ui.splits.at(-1)).toEqual({ text: SPLIT_NONE, sign: 0 });
+    const lateEcho = lateRun.worldEcho!;
+    runFrames(late.scenes, () => lateEcho.checkpointsPassed >= 1, 2000);
+    const ahead = late.ui.splits.at(-1)!;
+    expect(ahead.sign).toBe(-1);
+    expect(ahead.text).toMatch(/^−\d+\.\d{2}s$/);
+  });
+
+  it('with no world echo the split is read against the self echo (own best); 세계 메아리 off never shows one without a self echo', async () => {
+    const def = checkpointRoom();
+    const { scenes, ui, input } = makeScenes([def], { echoWorld: false, echoSelf: true });
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'checkpoint' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.splits.filter((s) => s.text !== null)).toHaveLength(0);
+    // second attempt: the self echo of the clear runs; waiting 30 frames makes us slower at the pillar
+    ui.emit({ type: 'retry' });
+    await scenes.settle();
+    const run = scenes.run!;
+    expect(run.selfEcho).not.toBeNull();
+    expect(run.worldEcho).toBeNull();
+    input.heldMask = 0;
+    for (let i = 0; i < 30; i++) scenes.frame(1 / 60);
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => run.checkpoints >= 1, 2000);
+    const shown = ui.splits.at(-1)!;
+    expect(shown.sign).toBe(1);
+    expect(shown.text).toMatch(/^\+\d+\.\d{2}s$/);
+  });
+
+  it('keeps the last five death marks per zone session — across respawns and a restart — and counts deaths per segment', async () => {
+    const def = pitRoom();
+    const { scenes, ui, input, renderer } = makeScenes([def]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'pit' });
+    expect(renderer.deathMarks).toEqual([]);
+    input.heldMask = IN.RIGHT;
+    const deaths = () => renderer.events.filter((e) => e.type === 'death').length;
+    runFrames(scenes, () => deaths() >= 3, 6000);
+    const run = scenes.run!;
+    expect(run.session.marks).toHaveLength(3);
+    expect(renderer.deathMarks).toHaveLength(3);
+    // a pit death is marked at the level's floor line, inside the level
+    for (const m of renderer.deathMarks) expect(m.y).toBeLessThanOrEqual(run.sim.level.pxH);
+    // the marks survive the respawns in between
+    runFrames(scenes, () => run.sim.state.phase === 'play', 300);
+    expect(renderer.deathMarks).toHaveLength(3);
+    runFrames(scenes, () => deaths() >= DEATH_MARKS_MAX + 2, 12000);
+    expect(run.session.marks).toHaveLength(DEATH_MARKS_MAX);
+    expect(renderer.deathMarks).toHaveLength(DEATH_MARKS_MAX);
+    // all in segment 0 (no checkpoint reached)
+    const rows = ui.segmentCalls.at(-1)!;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ idx: 0, deaths: DEATH_MARKS_MAX + 2, best: null, current: true });
+    // a full restart keeps the zone session: same marks, same counts, handed to the renderer again
+    const before = renderer.deathMarks;
+    ui.emit({ type: 'restart' });
+    await scenes.settle();
+    expect(scenes.run).not.toBe(run);
+    expect(scenes.run!.session).toBe(run.session);
+    expect(renderer.deathMarks).toEqual(before);
+    expect(ui.segmentCalls.at(-1)![0].deaths).toBe(DEATH_MARKS_MAX + 2);
+    // the split chip was reset on the restart
+    expect(ui.splits.at(-1)).toEqual({ text: null, sign: undefined });
+    // another zone has its own session
+    const other = makeScenes([def, { ...flatRoom(), id: 'flat2' }]);
+    other.scenes.bootSync();
+    other.ui.emit({ type: 'start', levelId: 'flat2' });
+    expect(other.renderer.deathMarks).toEqual([]);
+  });
+
+  it('records segment bests (ticks) per checkpoint segment on a clear, keeps the faster one, and lists them on the pause rows', async () => {
+    const def = checkpointRoom();
+    const { scenes, ui, input, save } = makeScenes([def]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'checkpoint' });
+    // two segments: start → C, C → G; the current one is highlighted
+    expect(ui.segmentCalls.at(-1)).toEqual([
+      { idx: 0, deaths: 0, best: null, current: true },
+      { idx: 1, deaths: 0, best: null, current: false },
+    ]);
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    const first = [...segmentBests(save.progress.levels.checkpoint)];
+    expect(first).toHaveLength(2);
+    // segment 0 runs from tick 0 to the pillar, segment 1 from the pillar to the goal (the sim keeps ticking through the clear animation)
+    expect(first[0]).toBe([...scenes.run!.cpTicks.values()][0]);
+    expect(first[1]).toBeGreaterThan(0);
+    expect(first[0] + first[1]).toBeLessThanOrEqual(scenes.run!.sim.state.tick);
+    const rows = ui.segmentCalls.at(-1)!;
+    expect(rows.map((r) => r.best)).toEqual(first);
+    expect(rows[1].current).toBe(true);
+
+    // a slower second run (waits 30 frames) changes nothing
+    ui.emit({ type: 'retry' });
+    input.heldMask = 0;
+    for (let i = 0; i < 30; i++) scenes.frame(1 / 60);
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect([...segmentBests(save.progress.levels.checkpoint)]).toEqual(first);
+
+    // assist runs never write segment bests
+    const assisted = makeScenes([def], { assist: true });
+    assisted.scenes.bootSync();
+    assisted.ui.emit({ type: 'start', levelId: 'checkpoint' });
+    assisted.input.heldMask = IN.RIGHT;
+    runFrames(assisted.scenes, () => assisted.ui.screen === 'result');
+    await assisted.scenes.settle();
+    expect(segmentBests(assisted.save.progress.levels.checkpoint)).toEqual([]);
+  });
+
+  it('the result screen gets the 라이벌보다 comparison (our ticks − theirs) only when a world echo was raced', async () => {
+    const def = flatRoom();
+    const { scenes, ui, api, input, save } = makeScenes([def], { echoWorld: true, echoSelf: false });
+    scenes.bootSync();
+    seedBoard(api, def, 3, save.progress.player.id);
+    ui.emit({ type: 'start', levelId: 'flat' });
+    await scenes.settle();
+    expect(scenes.run!.rival).toEqual({ kind: 'rival', name: '주자2', ticks: 4000 + 120 });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    const summary = ui.result!.summary;
+    const v = ui.versusCalls.at(-1)!;
+    expect(v).toEqual({ label: '라이벌', deltaTicks: summary.ticks - (4000 + 120) });
+    expect(fmtVersus(v.label, v.deltaTicks).text).toMatch(/^라이벌보다 \d+\.\d{2}s (빠름|느림)$/);
+    // the versus row is set before the result is shown
+    expect(ui.versusCalls.length).toBeGreaterThan(0);
+    await scenes.settle();
+
+    // no board → no rival → the row is cleared
+    const alone = makeScenes([def], { echoWorld: true, echoSelf: false });
+    alone.scenes.bootSync();
+    alone.ui.emit({ type: 'start', levelId: 'flat' });
+    await alone.scenes.settle();
+    alone.input.heldMask = IN.RIGHT;
+    runFrames(alone.scenes, () => alone.ui.screen === 'result');
+    expect(alone.ui.versusCalls.at(-1)).toBeNull();
+    await alone.scenes.settle();
   });
 });
