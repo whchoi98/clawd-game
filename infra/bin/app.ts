@@ -23,4 +23,6 @@ new ClawdEchoTowerStack(app, 'ClawdEchoTowerStack', {
   vpcId: contextString('vpcId') ?? 'vpc-0dfa5610180dfa628',
   cloudfrontPrefixListId: contextString('cloudfrontPrefixListId') ?? 'pl-22a6434b',
   desiredCount: contextNumber('desiredCount', 2),
+  domainName: contextString('domainName'),
+  certificateArn: contextString('certificateArn'),
 });

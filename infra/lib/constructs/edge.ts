@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import type * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import type * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
@@ -10,6 +11,13 @@ export interface EdgeProps {
   readonly originVerifyHeader: string;
   /** Token as a CloudFormation dynamic reference (never plaintext). */
   readonly originVerifyValue: string;
+  /**
+   * Custom viewer domain (e.g. `clawd-game.whchoi.net`). Requires `certificate`.
+   * DNS for the name is managed outside this stack (a CNAME to the distribution).
+   */
+  readonly domainName?: string;
+  /** ACM certificate covering `domainName`; CloudFront requires it to live in us-east-1. */
+  readonly certificate?: acm.ICertificate;
 }
 
 /**
@@ -47,6 +55,9 @@ export class Edge extends Construct {
 
   constructor(scope: Construct, id: string, props: EdgeProps) {
     super(scope, id);
+    if (!!props.domainName !== !!props.certificate) {
+      throw new Error('Edge: domainName and certificate must be given together');
+    }
 
     const origin = new origins.HttpOrigin(props.loadBalancer.loadBalancerDnsName, {
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
@@ -136,6 +147,16 @@ export class Edge extends Construct {
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       enableIpv6: true,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_200,
+      // Custom domain: SNI-only with the ACM certificate; without one CloudFront
+      // serves *.cloudfront.net and a CNAME to it fails certificate validation.
+      ...(props.domainName && props.certificate
+        ? {
+            domainNames: [props.domainName],
+            certificate: props.certificate,
+            minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+            sslSupportMethod: cloudfront.SSLMethod.SNI,
+          }
+        : {}),
     });
   }
 }

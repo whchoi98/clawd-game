@@ -479,6 +479,44 @@ describe('container image build context', () => {
   });
 });
 
+describe('custom domain', () => {
+  const DOMAIN = 'clawd-game.whchoi.net';
+  const CERT = 'arn:aws:acm:us-east-1:061525506239:certificate/7d53182a-2a2a-4225-a319-4f94030561b7';
+
+  it('serves the default *.cloudfront.net certificate and no aliases when no domain is configured', () => {
+    const [, dist] = only(t, 'AWS::CloudFront::Distribution');
+    const cfg = dist.Properties.DistributionConfig;
+    expect(cfg.Aliases ?? []).toEqual([]);
+    expect(cfg.ViewerCertificate?.AcmCertificateArn).toBeUndefined();
+  });
+
+  it('attaches the alias and the us-east-1 certificate (SNI, TLS 1.2 2021) when configured', () => {
+    const d = synth({ domainName: DOMAIN, certificateArn: CERT });
+    const [, dist] = only(d, 'AWS::CloudFront::Distribution');
+    const cfg = dist.Properties.DistributionConfig;
+    expect(cfg.Aliases).toEqual([DOMAIN]);
+    expect(cfg.ViewerCertificate).toEqual({
+      AcmCertificateArn: CERT,
+      MinimumProtocolVersion: 'TLSv1.2_2021',
+      SslSupportMethod: 'sni-only',
+    });
+    // DNS is managed outside the stack: no Route 53 records are created.
+    d.resourceCountIs('AWS::Route53::RecordSet', 0);
+  });
+
+  it('publishes the custom URL as SiteUrl and keeps the distribution name for the CNAME', () => {
+    const d = synth({ domainName: DOMAIN, certificateArn: CERT });
+    const outs = d.findOutputs('SiteUrl');
+    expect(Object.values(outs)[0].Value).toBe('https://' + DOMAIN + '/');
+    expect(Object.keys(d.findOutputs('DistributionDomainName'))).toHaveLength(1);
+  });
+
+  it('refuses a domain without a certificate and vice versa', () => {
+    expect(() => synth({ domainName: DOMAIN })).toThrow(/together/);
+    expect(() => synth({ certificateArn: CERT })).toThrow(/together/);
+  });
+});
+
 describe('data', () => {
   it('is a single on-demand pk/sk table with PITR, TTL on `ttl`, destroyed with the stack', () => {
     const [, table] = only(t, 'AWS::DynamoDB::GlobalTable');

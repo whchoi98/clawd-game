@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import { Construct } from 'constructs';
 import { Data } from './constructs/data.js';
 import { Edge } from './constructs/edge.js';
@@ -12,6 +13,13 @@ export interface ClawdEchoTowerStackProps extends cdk.StackProps {
   readonly cloudfrontPrefixListId: string;
   /** Initial Fargate task count (autoscaling then keeps it between 2 and 6). */
   readonly desiredCount: number;
+  /**
+   * Custom viewer domain, e.g. `clawd-game.whchoi.net`. DNS (a CNAME to the
+   * distribution) is managed outside this stack. Requires `certificateArn`.
+   */
+  readonly domainName?: string;
+  /** us-east-1 ACM certificate covering `domainName` (an existing wildcard is fine). */
+  readonly certificateArn?: string;
 }
 
 /**
@@ -43,15 +51,26 @@ export class ClawdEchoTowerStack extends cdk.Stack {
       table: this.data.table,
     });
 
+    if (!!props.domainName !== !!props.certificateArn) {
+      throw new Error('domainName and certificateArn must be set together (cdk.json context)');
+    }
     this.edge = new Edge(this, 'Edge', {
       loadBalancer: this.service.loadBalancer,
       originVerifyHeader: ORIGIN_VERIFY_HEADER,
       originVerifyValue: this.service.originTokenValue,
+      domainName: props.domainName,
+      certificate: props.certificateArn
+        ? acm.Certificate.fromCertificateArn(this, 'ViewerCertificate', props.certificateArn)
+        : undefined,
     });
 
     new cdk.CfnOutput(this, 'SiteUrl', {
-      value: `https://${this.edge.distribution.distributionDomainName}/`,
+      value: props.domainName ? `https://${props.domainName}/` : `https://${this.edge.distribution.distributionDomainName}/`,
       description: 'Play CLAWD JUMP: ECHO TOWER here',
+    });
+    new cdk.CfnOutput(this, 'DistributionDomainName', {
+      value: this.edge.distribution.distributionDomainName,
+      description: 'Point the custom domain CNAME here',
     });
     new cdk.CfnOutput(this, 'DistributionId', { value: this.edge.distribution.distributionId });
     new cdk.CfnOutput(this, 'AlbDnsName', {

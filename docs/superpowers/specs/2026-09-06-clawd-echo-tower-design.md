@@ -134,8 +134,14 @@ Constructs: `Data`, `Service`, `Edge` (the VPC is imported in the stack).
   60 % and ALB requests/target; deployment circuit breaker with rollback;
   log group 14 days; task role: DynamoDB table RW only; execution role: ECR +
   logs only.
-- Outputs: `SiteUrl`, `DistributionId`, `AlbDnsName`, `TableName`,
-  `ClusterName`, `ServiceName`.
+- Custom domain (user, 2026-09-06): `clawd-game.whchoi.net` as a distribution
+  alias with the account's existing us-east-1 wildcard certificate
+  `*.whchoi.net` (SNI, TLS 1.2 2021). The zone that is authoritative for
+  whchoi.net is not the one in this account, so the CNAME is managed outside
+  the stack and no Route 53 records are created. Context: `domainName`,
+  `certificateArn` (both or neither).
+- Outputs: `SiteUrl` (custom domain when set), `DistributionDomainName`,
+  `DistributionId`, `AlbDnsName`, `TableName`, `ClusterName`, `ServiceName`.
 
 ### 2.6 Build & container
 - `tools/build.mjs` (esbuild): client → `dist/public/assets/app.<hash>.js`,
