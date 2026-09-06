@@ -6,7 +6,7 @@
 
 **절차적 벡터 아트로 그린 정밀 플랫포머 — 그리고 서버가 재생해 검증하는 기록**
 
-[![play](https://img.shields.io/badge/▶_PLAY-배포_후_URL_기재-E8825C?style=for-the-badge&labelColor=07060B)](#배포)
+[![play](https://img.shields.io/badge/▶_PLAY-d24frhamecczl7.cloudfront.net-E8825C?style=for-the-badge&labelColor=07060B)](https://d24frhamecczl7.cloudfront.net/)
 
 [![sim](https://img.shields.io/badge/simulation-isomorphic_·_120Hz-5BD8E0?labelColor=15121F)](#결정론적-시뮬레이션이-백엔드를-정당화한다)
 [![tests](https://img.shields.io/badge/tests-384_passing-8BE86A?labelColor=15121F)](#테스트)
@@ -121,6 +121,8 @@ npm run qa:browser && npm run qa:smoke   # Playwright 스모크 (dev 서버 필�
 레벨은 손으로 타이핑하지 않습니다. `levels/dsl.ts`의 프리미티브로 조립하고, 검증기가 직사각형 여부·`P`/`G` 존재·모든 `o`/`R`/`G`의 플러드필 도달성(스위치 극성 양쪽)·7칸 초과 구덩이·통로 폭(3–5칸)을 거절합니다. `src/sim/levels.generated.ts`는 **생성 파일**이므로 직접 고치지 마세요.
 
 ## 배포
+
+현재 배포: `ClawdEchoTowerStack` (ap-northeast-2), CloudFront `E38DW91AO2DWTB` → https://d24frhamecczl7.cloudfront.net/
 
 ```bash
 export CDK_DEFAULT_ACCOUNT=061525506239 CDK_DEFAULT_REGION=ap-northeast-2
