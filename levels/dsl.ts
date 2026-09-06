@@ -64,16 +64,47 @@ export interface ShaftOpts {
 const lo = (a: number, b: number) => Math.min(a, b);
 const hi = (a: number, b: number) => Math.max(a, b);
 
+/** A named tile anchor placed with Room.mark(). */
+export interface Anchor { x: number; y: number }
+
 export class Room {
   readonly w: number;
   readonly h: number;
   private readonly g: string[][];
+  private readonly anchors = new Map<string, Anchor>();
 
   constructor(w: number, h: number) {
     if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1) throw new Error(`room: bad size ${w}x${h}`);
     this.w = w;
     this.h = h;
     this.g = Array.from({ length: h }, () => new Array<string>(w).fill(EMPTY));
+  }
+
+  /**
+   * Name a tile so later primitives can be placed relative to it:
+   *   m.mark('shaftFloor', 21, 27); const a = m.at('shaftFloor'); m.ent('S', a.x + 1, a.y - 1);
+   * Marks are authoring aids only — they never reach the LevelDef.
+   */
+  mark(name: string, x: number, y: number): this {
+    if (!name) throw new Error('mark: empty name');
+    if (!Number.isInteger(x) || !Number.isInteger(y)) throw new Error(`mark '${name}': non-integer position (${x}, ${y})`);
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) throw new Error(`mark '${name}': (${x}, ${y}) is outside the ${this.w}x${this.h} room`);
+    this.anchors.set(name, { x, y });
+    return this;
+  }
+
+  /** The tile a mark names. Throws for an unknown name so a typo fails the build, not the level. */
+  at(name: string): Anchor {
+    const a = this.anchors.get(name);
+    if (!a) throw new Error(`at '${name}': no such mark (known: ${[...this.anchors.keys()].join(', ') || 'none'})`);
+    return { x: a.x, y: a.y };
+  }
+
+  /** Every mark, for tooling. */
+  marks(): Record<string, Anchor> {
+    const out: Record<string, Anchor> = {};
+    for (const [k, v] of this.anchors) out[k] = { x: v.x, y: v.y };
+    return out;
   }
 
   /** Character at (x, y); out of range reads as rock so callers can test edges safely. */
@@ -207,6 +238,36 @@ export function room(w: number, h: number): Room { return new Room(w, h); }
 
 // ------------------------------------------------------------------ validation
 
+/** Rows above / below and columns left / right of the offending cell shown by `dumpAt`. */
+export const DUMP_ROWS = 3;
+export const DUMP_COLS = 12;
+
+/**
+ * ASCII excerpt of `rows` around (x, y): a two-line column ruler (tens over
+ * units), the rows y-3..y+3 prefixed with their index, and a caret under the
+ * offending cell. Every located validator error carries one so a failing
+ * build shows the geometry, not just a coordinate.
+ */
+export function dumpAt(rows: readonly string[], x: number, y: number): string {
+  const h = rows.length, w = rows.reduce((m, r) => Math.max(m, r.length), 0);
+  const x0 = Math.max(0, x - DUMP_COLS), x1 = Math.min(w - 1, x + DUMP_COLS);
+  const y0 = Math.max(0, y - DUMP_ROWS), y1 = Math.min(h - 1, y + DUMP_ROWS);
+  const gutter = String(y1).length + 3;                    // "y=NN "
+  const pad = ' '.repeat(gutter);
+  let tens = '', units = '';
+  for (let cx = x0; cx <= x1; cx++) {
+    tens += cx % 10 === 0 ? String(Math.floor(cx / 10) % 10) : ' ';
+    units += String(cx % 10);
+  }
+  const out = [`cell (${x}, ${y}) — rows ${y0}..${y1}, columns ${x0}..${x1}:`, `${pad}${tens}`, `${pad}${units}`];
+  for (let cy = y0; cy <= y1; cy++) {
+    const line = (rows[cy] ?? '').padEnd(w, ' ').slice(x0, x1 + 1);
+    out.push(`${`y=${cy}`.padEnd(gutter)}${line}`);
+    if (cy === y) out.push(`${pad}${' '.repeat(Math.max(0, x - x0))}^ (${x}, ${y})`);
+  }
+  return out.join('\n');
+}
+
 interface Grid { w: number; h: number; at(x: number, y: number): string }
 
 function parse(rows: string[]): Grid {
@@ -270,6 +331,9 @@ function floodFrom(g: Grid, sx: number, sy: number, switchA: boolean): Uint8Arra
  *    form a shaft, which must be 3..5 wide (real shafts are 4)
  *  - the hint is a token template ({move} {jump} {dash} {stomp} {down}): raw
  *    key names (Shift, Space, ← →, A/D, R) are wrong on a phone or after a rebind
+ *
+ * Every error located at a cell ends with an ASCII excerpt of the rows around
+ * it (`dumpAt`: ±3 rows, ±12 columns, a column ruler and a caret at "(x, y)").
  */
 export function validate(def: LevelDef): string[] {
   const id = def.id || '?';
@@ -287,8 +351,10 @@ function validateGeometry(def: LevelDef, id: string): string[] {
   if (!rows || rows.length === 0) return [`${id}: no rows`];
   const w = rows[0].length;
   if (w === 0) return [`${id}: empty rows`];
+  /** An error located at a cell: the message plus the ASCII excerpt around it. */
+  const located = (msg: string, x: number, y: number) => errs.push(`${msg}\n${dumpAt(rows, x, y)}`);
   for (let y = 0; y < rows.length; y++) {
-    if (rows[y].length !== w) errs.push(`${id}: row ${y} has width ${rows[y].length}, expected ${w}`);
+    if (rows[y].length !== w) located(`${id}: row ${y} has width ${rows[y].length}, expected ${w}`, Math.max(0, Math.min(rows[y].length, w) - 1), y);
   }
   if (errs.length) return errs;
   const g = parse(rows);
@@ -297,7 +363,7 @@ function validateGeometry(def: LevelDef, id: string): string[] {
   for (let y = 0; y < g.h; y++) {
     for (let x = 0; x < g.w; x++) {
       const ch = g.at(x, y);
-      if (!ALL_CH.includes(ch)) errs.push(`${id}: unknown char '${ch}' at (${x},${y})`);
+      if (!ALL_CH.includes(ch)) located(`${id}: unknown char '${ch}' at (${x},${y})`, x, y);
     }
   }
   if (errs.length) return errs;
@@ -309,11 +375,14 @@ function validateGeometry(def: LevelDef, id: string): string[] {
     return out;
   };
   const ps = find('P'), gs = find('G');
-  if (ps.length !== 1) errs.push(`${id}: expected exactly one P, found ${ps.length}`);
-  if (gs.length !== 1) errs.push(`${id}: expected exactly one G, found ${gs.length}`);
+  for (const [label, pts] of [['P', ps], ['G', gs]] as const) {
+    if (pts.length === 1) continue;
+    const msg = `${id}: expected exactly one ${label}, found ${pts.length}`;
+    if (pts.length > 1) located(msg, pts[1][0], pts[1][1]); else errs.push(msg);
+  }
   for (const [label, pts] of [['P', ps], ['G', gs]] as const) {
     for (const [x, y] of pts) {
-      if (g.at(x, y + 1) !== ROCK || y + 1 >= g.h) errs.push(`${id}: ${label} at (${x},${y}) is not standing on rock`);
+      if (g.at(x, y + 1) !== ROCK || y + 1 >= g.h) located(`${id}: ${label} at (${x},${y}) is not standing on rock`, x, y);
     }
   }
 
@@ -325,7 +394,7 @@ function validateGeometry(def: LevelDef, id: string): string[] {
     for (const ch of ['o', 'R', 'G']) {
       for (const [x, y] of find(ch)) {
         const k = y * g.w + x;
-        if (!seenA[k] && !seenB[k]) errs.push(`${id}: ${ch} at (${x},${y}) is not reachable from P`);
+        if (!seenA[k] && !seenB[k]) located(`${id}: ${ch} at (${x},${y}) is not reachable from P`, x, y);
       }
     }
   }
@@ -339,7 +408,7 @@ function validateGeometry(def: LevelDef, id: string): string[] {
       if (run === 0) runStart = x;
       run++;
     } else {
-      if (run > MAX_PIT_TILES) errs.push(`${id}: bottomless pit ${run} wide at x=${runStart}..${x - 1} (max ${MAX_PIT_TILES})`);
+      if (run > MAX_PIT_TILES) located(`${id}: bottomless pit ${run} wide at x=${runStart}..${x - 1} (max ${MAX_PIT_TILES})`, runStart, g.h - 1);
       run = 0;
     }
   }
@@ -368,7 +437,7 @@ function validateGeometry(def: LevelDef, id: string): string[] {
         if (r.len >= SHAFT_MIN_TALL && (r.width < SHAFT_MIN_WIDTH || r.width > SHAFT_MAX_WIDTH) && !reported.has(key + r.y0)) {
           reported.add(key + r.y0);
           const [xl, xr] = key.split(':').map(Number);
-          errs.push(`${id}: shaft ${r.width} wide between x=${xl} and x=${xr}, rows ${r.y0}..${r.y0 + r.len - 1} (allowed ${SHAFT_MIN_WIDTH}..${SHAFT_MAX_WIDTH})`);
+          located(`${id}: shaft ${r.width} wide between x=${xl} and x=${xr}, rows ${r.y0}..${r.y0 + r.len - 1} (allowed ${SHAFT_MIN_WIDTH}..${SHAFT_MAX_WIDTH})`, Math.max(0, xl + 1), r.y0);
         }
         if (!rowPairs.has(key)) facingRun.delete(key);
       }

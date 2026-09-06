@@ -17,12 +17,17 @@
  *   &seed=N                               daily / endless seed (no server in capture mode)
  *   &ui=select|settings|result|...        with shot=title: show a UI surface over the backdrop
  *   &audio                                also init the audio engine (diagnostics only)
+ *   &ghost=par                            run the zone's bundled goal echo ('목표') from tick 0 — one ghost
+ *   &grid=1                               level-author overlay after the frame: tile grid, coordinates every
+ *                                         4 tiles, spawn characters, checkpoint segment lengths (render/debug.ts)
  */
 import { IN, IN_ALL } from '../sim/types.js';
 import type { InputMask, LevelDef, PlayerState, RunSummary, SimEvent } from '../sim/types.js';
 import { BIOMES } from '../shared/biomes.js';
 import type { AudioPort, RendererPort, ResultView, Screen } from './contracts.js';
 import type { Scenes, ShellUI } from './scenes.js';
+import { goalEchoFor } from './echo/goal.js';
+import { debugStageOf, drawDebugGrid, type GridStats } from './render/debug.js';
 
 export const SHOT_MAX_FRAMES = 3000;
 export const SHOT_DEFAULT_FRAMES = 120;
@@ -42,6 +47,10 @@ export interface ShotSpec {
   seed: number | null;
   ui: string | null;
   audio: boolean;
+  /** 'par' = add the zone's goal echo so the capture renders exactly one ghost. */
+  ghost: 'par' | null;
+  /** Draw the level-author grid overlay after the frame. */
+  grid: boolean;
 }
 
 const ACTION_BIT: Record<ShotAction, InputMask> = {
@@ -74,6 +83,8 @@ export function parseShotQuery(q: URLSearchParams): ShotSpec | null {
     seed,
     ui: q.get('ui'),
     audio: q.has('audio'),
+    ghost: q.get('ghost') === 'par' ? 'par' : null,
+    grid: q.get('grid') === '1' || q.get('grid') === 'true',
   };
 }
 
@@ -216,6 +227,11 @@ export function runShot(spec: ShotSpec, ctx: ShotContext): Record<string, unknow
     if (!started || !run) return stamp({ error: `unknown level '${spec.target}'` });
 
     if (spec.at) scenes.teleport(spec.at[0], spec.at[1]);
+    // The goal echo steps in lockstep with the live sim from tick 0 (Scenes.tick steps every echo).
+    if (spec.ghost === 'par') {
+      const echo = goalEchoFor(run.def);
+      if (echo) run.echoes.push(echo);
+    }
 
     const script = new ShotScript(spec);
     const track: Track = { maxX: 0, minY: Infinity, jumps: 0, dashes: 0, wallJumps: 0, hurts: 0, deaths: 0 };
@@ -237,6 +253,13 @@ export function runShot(spec: ShotSpec, ctx: ShotContext): Record<string, unknow
     scenes.fx.reset(0);
     scenes.settleCamera();
     scenes.drawFrame(1 / 60);
+    // The author overlay goes on top of the finished frame, only with the flag,
+    // and only when the renderer exposes its stage (the concrete one does).
+    let gridStats: GridStats | null = null;
+    if (spec.grid) {
+      const stage = debugStageOf(renderer);
+      if (stage) gridStats = drawDebugGrid(stage, run.sim.level);
+    }
     // Screen changes fade out over a timer that never fires inside this
     // synchronous capture, so finish them by hand: a lingering boot overlay
     // would otherwise sit on top of every screenshot.
@@ -244,6 +267,7 @@ export function runShot(spec: ShotSpec, ctx: ShotContext): Record<string, unknow
 
     const st = run.sim.state;
     const resultUp = !!doc.querySelector('#scr-result.is-active');
+    const ghostViews = run.echoes.map((e) => e.view()).filter((v) => v !== null);
     return stamp({
       ...common(),
       cam: [Math.round(scenes.camera.x), Math.round(scenes.camera.y)],
@@ -255,6 +279,10 @@ export function runShot(spec: ShotSpec, ctx: ShotContext): Record<string, unknow
       phase: st.phase,
       cleared: st.phase === 'clear',
       tick: st.tick,
+      ghosts: ghostViews.length,
+      ghostLabels: ghostViews.map((v) => v.label ?? ''),
+      grid: spec.grid,
+      gridStats,
       rank: resultUp ? doc.getElementById('res-rank')?.textContent ?? null : null,
       stars: resultUp ? doc.querySelectorAll('#res-stars .star.on').length : 0,
       tide: st.tide ? { y: Math.round(st.tide.y), speed: +st.tide.speed.toFixed(1), height: Math.round(st.tide.maxHeight) } : null,

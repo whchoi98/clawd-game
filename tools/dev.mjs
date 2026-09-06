@@ -9,6 +9,12 @@
  * is stripped from the child's env so the server uses its in-memory repo. The
  * server child is restarted whenever its bundle changes; public/ edits
  * (styles.css, index.html, favicon) are republished on save.
+ *
+ * Level authoring loop: a save under levels/ (zones, dsl, build, solutions)
+ * reruns `npx tsx levels/build.ts` (debounced); on success the regenerated
+ * src/sim/levels.generated.ts + echoes.generated.ts flow through esbuild's
+ * watcher into a republish, so a reload shows the new geometry. A validator
+ * failure prints the error with its ASCII cell dump and the loop keeps running.
  */
 import { context } from 'esbuild';
 import { spawn } from 'node:child_process';
@@ -162,5 +168,52 @@ startServer();
   };
   for (const dir of [paths.publicDir, join(paths.publicDir, 'icons'), dirname(paths.srcSw)]) {
     if (existsSync(dir)) fsWatch(dir, () => schedule(relative(paths.root, dir) || '.'));
+  }
+}
+
+// levels/ — rerun the level builder on save. Serialised (a save during a build
+// queues one more run) and debounced; a failing build never stops the loop.
+{
+  const levelsDir = join(paths.root, 'levels');
+  const tsxCli = join(paths.root, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  let timer = null;
+  let running = false;
+  let again = false;
+  const rebuild = () => {
+    if (running) { again = true; return; }
+    running = true;
+    log('levels  changed, rebuilding levels.generated.ts + echoes.generated.ts');
+    const child = spawn(process.execPath, [tsxCli, join(levelsDir, 'build.ts')], { cwd: paths.root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('exit', (code) => {
+      running = false;
+      if (code === 0) {
+        const wrote = out.split('\n').filter((l) => l.startsWith('wrote ') || l.startsWith('warning:'));
+        log(`levels  ok${wrote.length ? `\n  ${wrote.join('\n  ')}` : ''}`);
+        if (err.trim()) process.stderr.write(`${err.trimEnd()}\n`);
+        // esbuild republishes on its own when the generated modules changed; publish again
+        // regardless so an unchanged build still refreshes sw.js for the reload.
+        void publish();
+      } else {
+        // the validator's message carries the ASCII dump around the offending cell
+        log(`levels  build FAILED (exit ${code}) — fix the zone and save again\n${(err || out).trimEnd()}`);
+      }
+      if (again) { again = false; rebuild(); }
+    });
+  };
+  const schedule = (name) => {
+    if (name && !/\.(ts|json)$/.test(String(name))) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { timer = null; rebuild(); }, 250);
+  };
+  const dirs = [levelsDir, join(levelsDir, 'zones'), join(levelsDir, 'solutions')];
+  if (existsSync(tsxCli)) {
+    for (const dir of dirs) if (existsSync(dir)) fsWatch(dir, (_event, name) => schedule(name));
+    log(`watching ${relative(paths.root, levelsDir)}/ (zones, solutions) → npx tsx levels/build.ts`);
+  } else {
+    log('levels  watch disabled: node_modules/tsx not found');
   }
 }

@@ -7,6 +7,7 @@
  *   DAILY_SECRET  HMAC key for daily seeds; unset → random per process (seeds differ across tasks!)
  *   STATIC_DIR    built client to serve (dist/public); unset → API only
  *   APP_VERSION   reported by /api/health
+ *   SEED_BOARDS   0 → do not seed empty story boards with the goal runs at boot (default: seed)
  */
 import { randomBytes } from 'node:crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';

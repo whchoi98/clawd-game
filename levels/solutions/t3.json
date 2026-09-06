@@ -1,0 +1,12 @@
+{
+  "levelId": "t3",
+  "sim": 2,
+  "rev": 0,
+  "seed": 29,
+  "masks": "EQUBGxIKAgoSCgIEIgMCCxIFAhsSCgIEJgMCHwAQEgUCGwACEAY6AxAFEgoCBCIDAh8ABxAJAgYkAwIHEgwCAhIMAhYmAwIdKgMCHSIDAh0iAwIdIgMCHSoDAh0qAwItEgwCBBIKAgQmAwIgKgMCDBIKAgQiAwIfIgMCHQADIgMAChIKAgQiAwIR",
+  "ticks": 749,
+  "time": 6.242,
+  "shards": 6,
+  "deaths": 0,
+  "recordedAt": "2026-09-06T16:12:18.813Z"
+}

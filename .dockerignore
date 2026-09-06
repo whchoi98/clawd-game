@@ -19,6 +19,7 @@ tools/postdeploy.*
 tools/icons.*
 tools/release.*
 tools/stats.*
+tools/solve.ts
 infra
 cdk.json
 cdk.context.json

@@ -125,9 +125,9 @@ src/sim/        결정론적 엔진 (DOM 의존 없음) — types · legend · c
 src/shared/     biomes(아트 디렉션) · protocol(zod)
 src/client/     render(stage·sky·tiles·particles·clawd 리그·actors) · audio(합성 sfx·시퀀서) · ui(DOM) · input · net · echo · fx · camera · save · scenes · shot(QA)
 src/server/     Fastify app · routes · runs(검증 파이프라인) · daily(HMAC 시드) · repo(memory · dynamo) · static
-levels/         TypeScript DSL + 검증기 + 9개 구역 → src/sim/levels.generated.ts
+levels/         TypeScript DSL + 검증기 + 9개 구역 → src/sim/levels.generated.ts · solutions/(골든 리플레이) → src/sim/echoes.generated.ts
 infra/          CDK 스택: Network(import) · Data · Service · Edge
-tools/          build.mjs(esbuild) · dev.mjs · qa/smoke.ts(Playwright) · postdeploy.mjs
+tools/          build.mjs(esbuild) · dev.mjs(레벨 워치 포함) · solve.ts(골든 리플레이 솔버) · qa/smoke.ts · qa/grid.ts(Playwright) · postdeploy.mjs
 test/           sim · levels · client · server · infra · tools
 docs/superpowers/  설계 스펙 · 구현 계획
 ```
@@ -144,11 +144,54 @@ npm run build          # dist/public (해시 에셋) + dist/server/index.js
 npm run qa:browser && npm run qa:smoke   # Playwright 스모크 + 오프라인 단계 (dev 서버 필요)
 npm run qa:mobile      # 폰·태블릿 에뮬레이션 레이아웃 QA
 npm run qa:readability # 상승기류·가시·골 비콘 픽셀 대비 QA
+npm run qa:grid        # ?shot=t1&grid=1 격자 오버레이가 실제로 그려지는지 (Playwright, dev 서버 필요)
+npm run solve -- t1    # 골든 리플레이 솔버: levels/solutions/<zone>.json 생성 (아래 '골든 리플레이 재녹화')
 npm run stats -- --help  # 텔레메트리 NDJSON → 퍼널·D1·사망 히트맵
 npm run icons          # public/icons/icon.svg → PNG (Playwright; 결과는 커밋)
 ```
 
-레벨은 손으로 타이핑하지 않습니다. `levels/dsl.ts`의 프리미티브로 조립하고, 검증기가 직사각형 여부·`P`/`G` 존재·모든 `o`/`R`/`G`의 플러드필 도달성(스위치 극성 양쪽)·7칸 초과 구덩이·통로 폭(3–5칸)을 거절합니다. `src/sim/levels.generated.ts`는 **생성 파일**이므로 직접 고치지 마세요.
+레벨은 손으로 타이핑하지 않습니다. `levels/dsl.ts`의 프리미티브로 조립하고, 검증기가 직사각형 여부·`P`/`G` 존재·모든 `o`/`R`/`G`의 플러드필 도달성(스위치 극성 양쪽)·7칸 초과 구덩이·통로 폭(3–5칸)을 거절합니다. `src/sim/levels.generated.ts`와 `src/sim/echoes.generated.ts`는 **생성 파일**이므로 직접 고치지 마세요.
+
+### 구역 만들기 10분 가이드
+
+1. **방을 판다.** `levels/zones/<id>.ts`에서 `room(w, h)`로 시작한다. 좌표는 타일 단위, x는 오른쪽, y는 **아래**로 증가하고 모든 범위는 양끝 포함이다. 스폰 문자는 발판 **바로 위** 빈 칸에 놓는다(런타임이 그 칸의 바닥에 붙인다).
+2. **지형 프리미티브.** `ground(x0, x1, y[, depth])` 바닥 · `plat(x0, x1, y)` 한 칸 두께 선반 · `block(x0, x1, y0, y1)` 덩어리 · `wall(x, y0, y1[, thick])` 기둥 · `owp` 아래서 통과하는 발판(`=`) · `crumble` 0.42초 뒤 무너지는 발판(`X`) · `spikes`/`spikesV` 가시(`^ V { }`) · `water(x0, x1, y0, y1)` 수면 `~`+물 `W` · `shaft(x, y0, y1, {leftTop, rightTop})` 정확히 4칸 폭 월점프 통로(벽은 바닥 위 2칸에서 끊겨 문이 된다) · `switchA`/`switchB` 스위치 블록(`%`는 처음에 실체, `&`는 `k` 토글을 대시로 통과하면 실체).
+3. **스폰 문자.** `ent(ch, x, y)`: `P` 시작 · `G` 골 · `C` 체크포인트 · `o` 파편(`shards([[x,y],…])`, `shardRow`, `arc`는 점프 초대장처럼 포물선으로 놓는다) · `R` 유물 · `S` 용수철 · `D` 대시 크리스탈 · `k` 토글 · 적 `w h f t c` · `m`/`M` 수평/수직 발판 · `s` 톱날 · `z` 상승기류(스폰 칸에서 위쪽 첫 바위까지, 최대 12칸).
+4. **마크(앵커).** 나중에 상대 좌표로 놓고 싶은 자리는 이름을 붙인다: `m.mark('shaftFloor', 21, 27)` → `const a = m.at('shaftFloor'); m.ent('S', a.x + 1, a.y - 1)`. 마크는 저작 보조일 뿐 LevelDef에 남지 않고, 없는 이름은 빌드에서 바로 던진다.
+5. **메타.** `m.def({ id, name, en, biome, par, seed, hint, rev?, spikers?, tide?, baseY? })`. `hint`는 `{move} {jump} {dash} {stomp} {down}` 토큰만 쓴다(Shift·Space·화살표 같은 원시 키 이름은 검증기가 거절한다 — 폰과 리바인드에서 틀리기 때문). **배포된 구역의 칸을 바꾸면 `rev`를 올린다**: 보드 키(`t1#s2r1`)와 골든 리플레이가 거기에 묶여 있다.
+6. **빌드와 검증.** `levels/build.ts`의 `ZONES`에 추가하고 `npm run levels`. 검증기 규칙: 직사각형 · 허용 문자만 · `P`/`G` 정확히 하나씩, 둘 다 바위 위 · 모든 `o`/`R`/`G`가 `P`에서 플러드필로 도달 가능(스위치 극성 중 하나, `k`에서 극성 전환 허용) · 바닥 없는 구덩이 최대 7칸 · 마주 보는 5칸 이상 벽 사이 폭은 3–5칸. 실패 메시지는 문제 칸의 `(x, y)`와 함께 주변 ±3행 ±12열 ASCII 덤프(열 눈금, 캐럿 포함)를 붙여 온다.
+7. **살아 있는 미리보기.** `npm run dev`는 `levels/`를 감시해 저장할 때마다 `npx tsx levels/build.ts`를 다시 돌리고 재발행한다(실패하면 덤프를 찍고 계속 돈다). 브라우저에서 `?shot=<id>&grid=1`을 열면 타일 격자·4칸마다 좌표·스폰 문자·체크포인트 구간 길이(`seg 1: 46 tiles (→46 ↑0)`)가 프레임 위에 그려진다. `&at=x,y`로 원하는 곳에 세우고, `&frames=N`으로 시간을 돌린다. 플래그 없이는 절대 켜지지 않는다.
+8. **완주 증명.** `npm run solve -- <id>`로 솔버가 사망 0·파 120% 이내 클리어를 찾아 `levels/solutions/<id>.json`에 기록한다(못 찾으면 `PENDING.json`에 이유와 최고 진행 지점이 남는다). `test/levels/solutions.test.ts`가 모든 구역에 대해 "솔루션이 재생되어 클리어" 또는 "PENDING에 등재" 둘 중 하나를 요구하므로, 이후의 물리·지형 변경은 이 테스트에서 걸린다. 솔루션이 있는 구역은 `npm run levels`가 `GOAL_ECHOES`로 묶어 클라이언트의 '목표' 메아리와 서버의 빈 보드 시딩에 쓴다.
+9. **플레이 테스트.** `npm run dev` → 구역 선택에서 열어 본다(해금 규칙은 앞 구역 클리어). `qa:smoke`가 9구역을 `?shot=`으로 캡처하니 새 구역은 `tools/qa/smoke.ts`의 `ZONES` 목록에도 넣는다.
+
+### 골든 리플레이 재녹화
+
+`levels/solutions/<zoneId>.json`은 해당 구역의 **개발자 클리어 입력 로그**(RLE base64 마스크, 사망 0, 파 × 1.2 이내)다. 세 곳이 이것을 소비한다: `test/levels/solutions.test.ts`(모든 물리·레벨 변경의 회귀망), `src/sim/echoes.generated.ts`의 `GOAL_ECHOES`(보드가 비었거나 오프라인일 때 클라이언트가 띄우는 '목표' 메아리, `?shot=<id>&ghost=par`로 강제 렌더), 서버 부트 시딩(`putIfBoardEmpty`: 빈 스토리 보드에 `개발자` 이름으로 조건부 기록, `SEED_BOARDS=0`으로 끔).
+
+- **솔버로 녹화**: `npm run solve -- t1 t2` (인자 없이 실행하면 9구역 전부, 이미 유효한 솔루션은 건너뜀). 옵션 `--budget=300`(구역당 초) `--beam=40` `--random=8` `--seed=1` `--nohurt`(피격도 가지치기) `--force`(재녹화). 솔버는 실제 `Sim`을 복제해 빔 서치를 하고, 찾은 마스크를 **새 Sim으로 `verifyReplay`** 해 통과할 때만 파일을 쓴다. 실패한 구역은 `levels/solutions/PENDING.json`에 이유·최고 진행 지점과 함께 남는다 — 가짜 솔루션을 손으로 만들지 말 것.
+- **사람이 녹화**: 구역을 사망 0으로 클리어한 직후 결과 화면에서 브라우저 콘솔을 열고 입력 로그(틱당 1바이트)를 복사한다.
+  ```js
+  copy(JSON.stringify({ levelId: __clawd.run.def.id, seed: __clawd.run.seed, masks: Array.from(__clawd.run.masks.bytes()) }))
+  ```
+  붙여 넣은 내용을 `raw.json`으로 저장하고 Node에서 RLE base64로 인코딩해 검증·기록한다(파일은 `verifyReplay`가 클리어·사망 0·파 × 1.2를 확인한 뒤에만 쓴다).
+  ```bash
+  npx tsx -e "
+  import { readFileSync, writeFileSync } from 'node:fs';
+  import { encodeMasks, verifyReplay } from './src/sim/replay.js';
+  import { LEVEL_BY_ID } from './src/sim/levels.generated.js';
+  import { SIM_VERSION } from './src/sim/types.js';
+  const raw = JSON.parse(readFileSync('raw.json', 'utf8'));
+  const def = LEVEL_BY_ID[raw.levelId], masks = Uint8Array.from(raw.masks);
+  const v = verifyReplay(def, { v: SIM_VERSION, levelId: def.id, seed: def.seed, assist: false, masks });
+  if (!v.ok || !v.summary.cleared || v.summary.deaths !== 0 || v.summary.time > def.par * 1.2) throw new Error('not a golden run: ' + JSON.stringify(v));
+  const s = v.summary;
+  writeFileSync('levels/solutions/' + def.id + '.json', JSON.stringify({ levelId: def.id, sim: SIM_VERSION, rev: def.rev ?? 0, seed: def.seed,
+    masks: encodeMasks(masks), ticks: s.ticks, time: s.time, shards: s.shards, deaths: 0, recordedAt: new Date().toISOString() }, null, 2) + '\n');
+  "
+  npm run levels && npx vitest run test/levels/solutions.test.ts
+  ```
+  `npm run levels`가 재생 검증에 실패한 파일은 경고와 함께 건너뛴다(`GOAL_ECHOES`에 들어가지 않는다).
+- **다시 녹화해야 할 때**: `SIM_VERSION`을 올렸을 때(모든 구역), 구역의 칸이 바뀌어 `rev`를 올렸을 때(그 구역), 시드를 바꿨을 때. 솔루션은 `sim`·`rev`·`seed` 세 값에 묶여 있어 하나라도 다르면 `solutions.test.ts`가 실패하고 `GOAL_ECHOES`에서 빠지며 시딩도 건너뛴다. 기존 보드는 키(`s<SIM>r<rev>`)가 바뀌어 새로 시작하므로 새 보드가 다시 시드된다.
 
 ## 배포
 
@@ -172,6 +215,8 @@ npm run destroy              # 전부 삭제 (테이블·로그·시크릿 포�
 
 ```
 ?shot=<levelId|title|endless|daily>&frames=240&hold=right&pulse=jump:26,dash:60&alt=30&bot=wall&at=x,y&ui=select|settings|result
+      &ghost=par   구역의 골든 리플레이를 '목표' 고스트로 함께 돌린다 (고스트 1개, data-shot.ghosts)
+      &grid=1      레벨 저작용 오버레이: 타일 격자 · 4칸마다 좌표 · 스폰 문자 · 체크포인트 구간 길이 (data-shot.grid = true)
 ```
 
 `tools/qa/smoke.ts`가 타이틀 → 선택 → 플레이를 실제 키 입력으로 통과하고 9개 구역을 이 하네스로 캡처합니다(콘솔 오류 0 조건). 컨테이너 상태에서 12/12 통과를 확인했습니다.
@@ -181,7 +226,7 @@ npm run destroy              # 전부 삭제 (테이블·로그·시크릿 포�
 | 영역 | 무엇을 단언하나 |
 |---|---|
 | `test/sim` | 동일 입력 → 600/3600/7200틱에서 상태 JSON 동일, 점프 정점 2.5–2.9칸, 탭 < 홀드, 대시 40–50유닛, 4칸 통로 월점프 등반, 스톰프 킬, 크리스탈 리필, 스위치 토글, 조류 사망, 리플레이 라운드트립과 위조 거절 |
-| `test/levels` | DSL 검증기(봉인된 방·과도한 구덩이 거절), 9구역 통과, 생성 파일 최신 여부 |
+| `test/levels` | DSL 검증기(봉인된 방·과도한 구덩이 거절, 오류마다 문제 칸 ASCII 덤프, 마크 앵커), 9구역 통과, 생성 파일 최신 여부, **골든 리플레이**: 모든 구역이 사망 0·파 120% 이내로 재생되어 클리어(또는 PENDING 등재) |
 | `test/client` | 입력 래치(프레임 내 탭도 정확히 1엣지), 렌더러 Path2D 병합(fill 호출 상한), 오디오 이벤트 매핑 완전성, UI 템플릿(CSP·스크린 id·라이브 리전·PWA 태그), 셸(틱 스케줄러·FxBus·카메라·저장·API·메아리 락스텝·시나리오·제출 대기열), 서비스 워커(프리캐시 원자성·캐시 정리·라우팅·skip-waiting), PWA 등록/설치 프롬프트 |
 | `test/server` | 접수/거절 경로, 마스크 길이 예산과 협조적 검증(`/healthz` 응답성), 플레이어당 보드 항목 1개와 조건부 쓰기 충돌 재시도, `playerTag`/`you`(원본 id 미노출), 경쟁 순위와 샤드 타이브레이크, 데일리 시드 안정성, 고스트 404, 429, API 압축, 정적 캐시 헤더, DynamoDB 키·트랜잭션 형태 |
 | `test/infra` | prefix-list 전용 인그레스, 기본 403, 헤더 규칙, 동적 참조 2개·평문 0, HTTPS 리다이렉트, CSP(`unsafe-inline` 없음·`object-src 'none'`), HSTS 1년, 404/403 에지 캐시 TTL 0, ARM64, 서킷 브레이커, on-demand + PITR, 로그 보존, 오토스케일, 이미지 컨텍스트 최소화, 설명 문자열 ASCII, **VPC/NAT/엔드포인트 생성 0** |

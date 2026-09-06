@@ -1,0 +1,12 @@
+{
+  "levelId": "t2",
+  "sim": 2,
+  "rev": 0,
+  "seed": 13,
+  "masks": "EQUBGxIKAgoSCgIEIgMCGwEFIgMBCBELMgMRAgIQEAYABBAGEgUCGxIMAgwSDAIMIgMCHyQDAgsSCgIEIgMCHyIDAhESDgIOEgoCChIKAgQiAwILARAqAwIdIgMCHQEMIgMBESoDABIQCAADKgMCHSIDAi0SDAIOEgYiAwIREg4CDhIcAgQSCgIEIgMCHyQDAB0iAwIdIgMCLQEIIgMBBQIIEhoCHiIDAkEiAwIY",
+  "ticks": 1050,
+  "time": 8.75,
+  "shards": 7,
+  "deaths": 0,
+  "recordedAt": "2026-09-06T16:11:51.935Z"
+}

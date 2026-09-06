@@ -1,0 +1,12 @@
+{
+  "levelId": "s3",
+  "sim": 2,
+  "rev": 0,
+  "seed": 79,
+  "masks": "AjASCgIEIgMCHyIDAhESDgIOEgoCBCIDAh8qAwIdIgMCLSIDAhESDgIOIgMCNRISAgQiAwIfKgMCHSIDAh0iAwIREg4CDiIDAi0iAwIdIgMCHSIDAh0iAwIdIgMCHSIDAh0iAwIdIgMCHSIDAh0iAwIdIgMCERIOAg4iAwADEAoCAxIENAMSBgggJgMCHSoDAj8=",
+  "ticks": 1069,
+  "time": 8.908,
+  "shards": 4,
+  "deaths": 0,
+  "recordedAt": "2026-09-06T16:21:12.508Z"
+}

@@ -10,6 +10,9 @@
  *                     (br/gzip over 1 KB — CloudFront does not compress under
  *                     CachingDisabled), Cache-Control: no-store on every response
  *   /* (static)       root context, only when deps.staticDir is set
+ *
+ * Before returning, every empty story board is seeded with the developer's
+ * goal run when the repo supports `putIfBoardEmpty` (env SEED_BOARDS=0 disables).
  */
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
@@ -25,6 +28,7 @@ import { RUN_BODY_LIMIT, runsRoute } from './routes/runs.js';
 import { leaderboardRoute } from './routes/leaderboard.js';
 import { ghostRoute } from './routes/ghost.js';
 import { eventsRoute } from './routes/events.js';
+import { seedBoards, seedingEnabled } from './seed.js';
 
 export { clientIp } from './ip.js';
 
@@ -96,6 +100,13 @@ export const buildApp: BuildApp = async (deps: AppDeps): Promise<FastifyInstance
   }, { prefix: API_PREFIX });
 
   if (deps.staticDir) await registerStatic(app, deps.staticDir);
+
+  // Empty story boards get the developer's goal run (levels/solutions → GOAL_ECHOES)
+  // so a fresh board never looks dead. Repos without putIfBoardEmpty, and
+  // SEED_BOARDS=0, leave every board as it is.
+  if (deps.repo.putIfBoardEmpty && seedingEnabled()) {
+    await seedBoards(deps.repo, { now: deps.now, log: (line) => app.log.info(line) });
+  }
 
   return app;
 };

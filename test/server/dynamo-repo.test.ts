@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { DynamoRepo, KEY, SCORE_DIGITS, SHARD_DIGITS, padScore, padShards } from '../../src/server/repo/dynamo.js';
+import { DynamoRepo, KEY, SCORE_DIGITS, SEED_SK, SHARD_DIGITS, padScore, padShards } from '../../src/server/repo/dynamo.js';
 import type { StoredRun } from '../../src/server/repo/types.js';
 import { FakeClient } from './fakeDynamo.js';
 
@@ -142,8 +142,10 @@ describe('DynamoRepo', () => {
     expect(input.TableName).toBe(TABLE);
     expect(input.ScanIndexForward).toBe(true);
     expect(input.Limit).toBe(20);
-    expect(input.KeyConditionExpression).toBe('pk = :pk');
-    expect(input.ExpressionAttributeValues).toEqual({ ':pk': 'LB#story#t1#s2r0' });
+    // bounded below the seeding sentinel ('SEED' sorts after every digit-prefixed entry key)
+    expect(input.KeyConditionExpression).toBe('pk = :pk AND sk < :end');
+    expect(input.ExpressionAttributeValues).toEqual({ ':pk': 'LB#story#t1#s2r0', ':end': SEED_SK });
+    expect(KEY.lbSk(999_999_999_999, 0, 'zzz') < SEED_SK).toBe(true);
     expect(top.map((r) => r.runId)).toEqual(['a', 'b']);
     expect(top[0]).not.toHaveProperty('pk');
     expect(top[0].masks).toBe('');
@@ -163,7 +165,58 @@ describe('DynamoRepo', () => {
       ExpressionAttributeValues: { ':pk': 'LB#story#t1#s2r0', ':sk': '000000000700' },
     });
     expect(client.sent[1].input.ExclusiveStartKey).toEqual({ pk: 'x', sk: 'y' });
-    expect(client.sent[2].input).toMatchObject({ Select: 'COUNT', KeyConditionExpression: 'pk = :pk', ExpressionAttributeValues: { ':pk': 'LB#story#t1#s2r0' } });
+    expect(client.sent[2].input).toMatchObject({
+      Select: 'COUNT', KeyConditionExpression: 'pk = :pk AND sk < :end', ExpressionAttributeValues: { ':pk': 'LB#story#t1#s2r0', ':end': SEED_SK },
+    });
+  });
+
+  describe('putIfBoardEmpty (board seeding)', () => {
+    const seed = () => run({ runId: 'goal-t1-s2r0', mode: 'story', board: 't1', levelId: 't1', playerId: 'developer-goal-echo-0001', name: '개발자', score: 857, ticks: 857, shards: 8, deaths: 0, ttl: undefined });
+
+    it('counts the board first and writes nothing when it has entries', async () => {
+      const { client, repo } = setup();
+      client.responses.push({ Count: 3 });
+      expect(await repo.putIfBoardEmpty(seed())).toBe(false);
+      expect(client.sent.map((s) => s.name)).toEqual([QueryCommand.name]);
+      expect(client.sent[0].input).toMatchObject({
+        TableName: TABLE, Select: 'COUNT', KeyConditionExpression: 'pk = :pk AND sk < :end',
+        ExpressionAttributeValues: { ':pk': 'LB#story#t1#s2r0', ':end': SEED_SK },
+      });
+    });
+
+    it('on an empty board writes the sentinel (guarded by attribute_not_exists(pk)) with the RUN, LB and PLAYER items in one transaction', async () => {
+      const { client, repo } = setup();
+      client.responses.push({ Count: 0 }, {});
+      expect(await repo.putIfBoardEmpty(seed())).toBe(true);
+      expect(client.sent.map((s) => s.name)).toEqual([QueryCommand.name, TransactWriteCommand.name]);
+      const items = client.sent[1].input.TransactItems as TxItem[];
+      expect(items).toHaveLength(4);
+      const [sentinel, runItem, lbItem, playerItem] = items.map((i) => i.Put!);
+      expect(sentinel.TableName).toBe(TABLE);
+      expect(sentinel.Item).toMatchObject({ pk: 'LB#story#t1#s2r0', sk: SEED_SK, runId: 'goal-t1-s2r0', playerId: 'developer-goal-echo-0001' });
+      expect(sentinel.Item).not.toHaveProperty('masks');
+      expect(sentinel.ConditionExpression).toBe('attribute_not_exists(pk)');
+      expect(runItem.Item).toMatchObject({ pk: 'RUN#goal-t1-s2r0', sk: 'META', masks: 'QUJD', name: '개발자', score: 857 });
+      expect(lbItem.Item).toMatchObject({ pk: 'LB#story#t1#s2r0', sk: '000000000857#99991#goal-t1-s2r0', runId: 'goal-t1-s2r0' });
+      expect(lbItem.Item).not.toHaveProperty('masks');
+      expect(lbItem.Item!.sk as string < SEED_SK).toBe(true);
+      expect(playerItem.Item).toMatchObject({ pk: 'PLAYER#developer-goal-echo-0001', sk: 'BEST#story#t1#s2r0', runId: 'goal-t1-s2r0' });
+      expect(playerItem.ConditionExpression).toBe('attribute_not_exists(runId)');
+      for (const { Put } of items) expect(Object.values(Put!.Item!).some((v) => v === undefined)).toBe(false);
+    });
+
+    it('returns false when another task won the race (the sentinel condition cancels the transaction)', async () => {
+      const { client, repo } = setup();
+      client.responses.push({ Count: 0 }, Object.assign(new Error('cancelled'), { name: 'TransactionCanceledException' }));
+      expect(await repo.putIfBoardEmpty(seed())).toBe(false);
+      expect(client.sent).toHaveLength(2);
+    });
+
+    it('surfaces other store errors', async () => {
+      const { client, repo } = setup();
+      client.responses.push({ Count: 0 }, Object.assign(new Error('boom'), { name: 'ProvisionedThroughputExceededException' }));
+      await expect(repo.putIfBoardEmpty(seed())).rejects.toThrow('boom');
+    });
   });
 
   it('getRun and getPlayerBest read single items and return null when absent', async () => {
