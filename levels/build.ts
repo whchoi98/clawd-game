@@ -14,8 +14,13 @@
  * recorded on another SIM_VERSION, geometry revision or seed — or one that no
  * longer replays to a death-free clear — is never emitted.
  *
+ * And it emits the authored tower chunks (levels/chunks/*.ts) as
+ * src/sim/chunks.generated.ts: every chunk passes validateChunk() and its solo
+ * room passes the DSL validator before anything is written. The generator
+ * splices from that list, so its contents are part of GEN_VERSION.
+ *
  *   npx tsx levels/build.ts        (npm run levels)
- *   npx tsx levels/build.ts --check   exit 1 if either file on disk is stale
+ *   npx tsx levels/build.ts --check   exit 1 if any generated file on disk is stale
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -24,9 +29,12 @@ import { SIM_VERSION } from '../src/sim/types.js';
 import type { LevelDef } from '../src/sim/types.js';
 import { decodeMasks, verifyReplay } from '../src/sim/replay.js';
 import { BIOMES, BIOME_ORDER } from '../src/shared/biomes.js';
+import { chunkRoom, validateChunk } from '../src/sim/gen/chunks.js';
+import type { ChunkDef } from '../src/sim/gen/chunks.js';
 import { census, validate } from './dsl.js';
 import { readSolutions, staleReason } from './solutions.js';
 import type { Solution } from './solutions.js';
+import { CHUNK_SOURCES } from './chunks/index.js';
 import { t1 } from './zones/t1.js';
 import { t2 } from './zones/t2.js';
 import { t3 } from './zones/t3.js';
@@ -42,6 +50,7 @@ export const ZONES: LevelDef[] = [t1, t2, t3, s1, s2, s3, v1, v2, v3];
 
 export const GENERATED_PATH = fileURLToPath(new URL('../src/sim/levels.generated.ts', import.meta.url));
 export const ECHOES_PATH = fileURLToPath(new URL('../src/sim/echoes.generated.ts', import.meta.url));
+export const CHUNKS_PATH = fileURLToPath(new URL('../src/sim/chunks.generated.ts', import.meta.url));
 
 /** Single-quoted TS string literal. */
 const q = (s: string) => `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
@@ -200,6 +209,60 @@ export function renderEchoes(
   return { src, warnings, sources };
 }
 
+/** Every problem with the authored chunks: geometry rules, duplicate ids, and the DSL validator on each solo room. */
+export function chunkProblems(chunks: readonly ChunkDef[]): string[] {
+  const problems: string[] = [];
+  const ids = new Set<string>();
+  for (const c of chunks) {
+    if (ids.has(c.id)) problems.push(`${c.id}: duplicate id`);
+    ids.add(c.id);
+    const own = validateChunk(c);
+    problems.push(...own);
+    if (!own.length) problems.push(...validate(chunkRoom(c)).map((e) => `${c.id} (solo room): ${e}`));
+  }
+  return problems;
+}
+
+/** Render src/sim/chunks.generated.ts, sorted by id. Throws if any chunk fails validation. */
+export function renderChunks(chunks: readonly ChunkDef[]): string {
+  const problems = chunkProblems(chunks);
+  if (problems.length) throw new Error(`chunk validation failed:\n  ${problems.join('\n  ')}`);
+  const sorted = [...chunks].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const out: string[] = [
+    '/**',
+    ' * GENERATED — do not edit. Source: levels/chunks/*.ts, built by levels/build.ts',
+    ' * (`npm run levels`). Authored tower chunks the daily / endless generator splices',
+    ' * into every band (src/sim/gen/endless.ts); each passed validateChunk() and its',
+    ' * solo room passed the DSL validator when this file was written. The list order',
+    ' * (by id) is part of the generator output: any change here needs a GEN_VERSION bump.',
+    ' */',
+    "import type { ChunkDef } from './gen/chunks.js';",
+    '',
+    '/** Authored chunks, sorted by id. */',
+    'export const CHUNKS: readonly ChunkDef[] = [',
+  ];
+  for (const c of sorted) {
+    out.push('  {');
+    out.push(`    id: ${q(c.id)}, name: ${q(c.name)}, tags: [${c.tags.map(q).join(', ')}],`);
+    out.push(`    entry: { x0: ${c.entry.x0}, x1: ${c.entry.x1} }, exit: { x0: ${c.exit.x0}, x1: ${c.exit.x1} },`);
+    out.push('    rows: [');
+    for (const r of c.rows) out.push(`      ${q(r)},`);
+    out.push('    ],');
+    out.push('  },');
+  }
+  out.push('];', '');
+  return out.join('\n');
+}
+
+/** One line per chunk for the console. */
+export function chunkSummary(chunks: readonly ChunkDef[]): string {
+  return chunks.map((c) => {
+    const flat = c.rows.join('');
+    const n = (ch: string) => flat.split(ch).length - 1;
+    return `${c.id.padEnd(15)} ${c.name.padEnd(9)} ${c.rows[0].length}x${String(c.rows.length).padEnd(3)} [${c.tags.join(', ')}]  entry ${c.entry.x0}..${c.entry.x1}  exit ${c.exit.x0}..${c.exit.x1}  shards ${n('o')}  crystals ${n('D')}  toggles ${n('k')}`;
+  }).join('\n');
+}
+
 /** One line per zone for the console. */
 export function summary(zones: readonly LevelDef[]): string {
   return zones.map((z) => {
@@ -212,10 +275,11 @@ function main(argv: string[]): number {
   const src = render(ZONES);
   const ids = ZONES.map((z) => z.id);
   const echoes = renderEchoes(ZONES, readSolutions(ids, 'par'), readSolutions(ids, 'fast'));
+  const chunks = renderChunks(CHUNK_SOURCES);
   for (const w of echoes.warnings) process.stderr.write(`warning: ${w}\n`);
   if (argv.includes('--check')) {
     let stale = 0;
-    for (const [path, want] of [[GENERATED_PATH, src], [ECHOES_PATH, echoes.src]] as const) {
+    for (const [path, want] of [[GENERATED_PATH, src], [ECHOES_PATH, echoes.src], [CHUNKS_PATH, chunks]] as const) {
       let cur = '';
       try { cur = readFileSync(path, 'utf8'); } catch { /* missing */ }
       if (cur !== want) {
@@ -224,14 +288,15 @@ function main(argv: string[]): number {
       }
     }
     if (stale) return 1;
-    process.stdout.write('levels.generated.ts and echoes.generated.ts are up to date\n');
+    process.stdout.write('levels.generated.ts, echoes.generated.ts and chunks.generated.ts are up to date\n');
     return 0;
   }
   writeFileSync(GENERATED_PATH, src);
   writeFileSync(ECHOES_PATH, echoes.src);
+  writeFileSync(CHUNKS_PATH, chunks);
   const solved = Object.keys(echoes.sources).length;
   const fast = Object.values(echoes.sources).filter((s) => s === 'fast').length;
-  process.stdout.write(`${summary(ZONES)}\nwrote ${GENERATED_PATH} (${src.length} bytes)\nwrote ${ECHOES_PATH} (${solved}/${ZONES.length} goal echoes${fast ? `, ${fast} from the fast corpus` : ', all human-paced'})\n`);
+  process.stdout.write(`${summary(ZONES)}\n${chunkSummary(CHUNK_SOURCES)}\nwrote ${GENERATED_PATH} (${src.length} bytes)\nwrote ${ECHOES_PATH} (${solved}/${ZONES.length} goal echoes${fast ? `, ${fast} from the fast corpus` : ', all human-paced'})\nwrote ${CHUNKS_PATH} (${CHUNK_SOURCES.length} chunks)\n`);
   return 0;
 }
 

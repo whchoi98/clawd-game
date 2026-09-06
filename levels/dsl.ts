@@ -16,6 +16,7 @@ import {
   CRUMBLE, MAX_PIT_TILES, ONE_WAY, SHAFT_WIDTH_TILES, SPAWN_CH, SPIKES,
   SWITCH_A, SWITCH_B, WATER_BODY, WATER_SURFACE,
 } from '../src/sim/legend.js';
+import type { ChunkDef, ChunkTag } from '../src/sim/gen/chunks.js';
 import { hasRawKeyName } from '../src/client/ui/hints.js';
 
 export const EMPTY = '.';
@@ -51,6 +52,19 @@ export interface ZoneMeta {
   baseY?: number;
   /** Geometry revision: bump whenever a shipped zone's cells (terrain or spawns) change. Missing = 0. */
   rev?: number;
+}
+
+/**
+ * Metadata of an authored tower chunk (levels/chunks/*.ts → Room.chunk()).
+ * `entry` / `exit` are inclusive column spans of the ledge on the bottom / top
+ * row; the generator lands the player on the entry and continues from the exit.
+ */
+export interface ChunkMeta {
+  id: string;
+  name: string;
+  tags: readonly ChunkTag[];
+  entry: readonly [number, number];
+  exit: readonly [number, number];
 }
 
 export interface ShaftOpts {
@@ -231,6 +245,19 @@ export class Room {
     if (meta.baseY !== undefined) d.baseY = meta.baseY;
     if (meta.rev !== undefined && meta.rev > 0) d.rev = meta.rev;
     return d;
+  }
+
+  /**
+   * Finish as an authored tower chunk (src/sim/gen/chunks.ts). The room must be
+   * CHUNK_W wide; the geometry rules are checked by validateChunk() at build time.
+   */
+  chunk(meta: ChunkMeta): ChunkDef {
+    return {
+      id: meta.id, name: meta.name, tags: [...meta.tags],
+      entry: { x0: meta.entry[0], x1: meta.entry[1] },
+      exit: { x0: meta.exit[0], x1: meta.exit[1] },
+      rows: this.rows(),
+    };
   }
 }
 

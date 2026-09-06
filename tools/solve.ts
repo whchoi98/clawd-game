@@ -10,6 +10,11 @@
  *         (pace ± tolerance) × par that looks like a competent human and feeds
  *         GOAL_ECHOES (the '목표' echo and the seeded '개발자' board entry)
  *
+ *   npx tsx tools/solve.ts --chunks [chunkId...]
+ *       → levels/chunks/solutions/<chunkId>.json — a fast clear of each authored
+ *         tower chunk's SOLO ROOM (src/sim/gen/chunks.ts chunkRoom): the proof
+ *         that the chunk can be climbed. test/levels/chunks.test.ts replays them.
+ *
  * Without zone ids every zone in tower order is attempted (tidepool → storm →
  * void). Zones that already have a valid solution are skipped unless --force.
  * A zone the solver cannot clear within its budget is recorded in the corpus's
@@ -69,6 +74,8 @@ import { IN, SIM_VERSION, TICK_HZ, TILE } from '../src/sim/types.js';
 import type { InputMask, LevelDef } from '../src/sim/types.js';
 import { CRUMBLE, ONE_WAY, SPIKES, SWITCH_A, SWITCH_B, WATER_BODY, WATER_SURFACE } from '../src/sim/legend.js';
 import { ZONES } from '../levels/build.js';
+import { CHUNK_SOLUTIONS_DIR, CHUNK_SOURCES } from '../levels/chunks/index.js';
+import { chunkRoom } from '../src/sim/gen/chunks.js';
 import {
   PACE_WINDOW, SOLUTIONS_DIR, corpusDir, inPaceWindow, pendingPath, readPendingFile, readSolution, readSolutionFile, staleReason,
 } from '../levels/solutions.js';
@@ -1083,7 +1090,7 @@ function solveZonePaced(def: LevelDef, opts: SolveOptions, pace: PaceOptions, ct
 
 // ---------------------------------------------------------------- cli
 const VALUE_FLAGS = new Set(['budget', 'beam', 'random', 'seed', 'pace', 'pace-tolerance', 'passes', 'out']);
-const BOOL_FLAGS = new Set(['nohurt', 'force', 'no-dash-chain']);
+const BOOL_FLAGS = new Set(['nohurt', 'force', 'no-dash-chain', 'chunks']);
 
 /** `--name=value`, `--name value` and boolean `--name`; everything else is a zone id. */
 export function parseArgs(argv: string[]): { flags: Map<string, string>; ids: string[] } {
@@ -1116,12 +1123,14 @@ function main(argv: string[]): number {
   };
   const force = flags.has('force');
   const paced = flags.has('pace');
+  const chunkMode = flags.has('chunks');
+  if (chunkMode && paced) throw new Error('--chunks solves the fast corpus only (no --pace)');
   const noDashChain = flags.has('no-dash-chain');
   const pace: PaceOptions | null = paced
     ? { pace: num('pace', (PACE_WINDOW.lo + PACE_WINDOW.hi) / 2), tolerance: num('pace-tolerance', (PACE_WINDOW.hi - PACE_WINDOW.lo) / 2), passes: num('passes', 3) }
     : null;
   const outFlag = flags.get('out');
-  const dir = outFlag ? resolve(process.cwd(), outFlag) : paced ? corpusDir('par') : SOLUTIONS_DIR;
+  const dir = outFlag ? resolve(process.cwd(), outFlag) : chunkMode ? CHUNK_SOLUTIONS_DIR : paced ? corpusDir('par') : SOLUTIONS_DIR;
   const opts: SolveOptions = {
     budgetSec: num('budget', paced ? 180 : 300),
     beam: num('beam', 40),
@@ -1131,11 +1140,14 @@ function main(argv: string[]): number {
     seed: num('seed', 1),
   };
   const log = (s: string) => process.stdout.write(`${s}\n`);
+  const targets: readonly LevelDef[] = chunkMode ? CHUNK_SOURCES.map(chunkRoom) : ZONES;
+  const kind = chunkMode ? 'chunk' : 'zone';
   const zones = ids.length ? ids.map((id) => {
-    const z = ZONES.find((d) => d.id === id);
-    if (!z) throw new Error(`unknown zone '${id}'`);
+    const z = targets.find((d) => d.id === id);
+    if (!z) throw new Error(`unknown ${kind} '${id}'`);
     return z;
-  }) : ZONES;
+  }) : targets;
+  if (chunkMode) log(`chunk solo rooms → ${dir}`);
   if (pace) log(`paced corpus → ${dir} (target ${pct(pace.pace)} of par, window ${pct(pace.pace - pace.tolerance)}–${pct(pace.pace + pace.tolerance)}, ${noDashChain ? 'dash penalty on' : 'dashes free'})`);
   const ctx: ZoneCtx = { dir, solved: new Set<string>(), pending: {}, log };
   let failed = 0;

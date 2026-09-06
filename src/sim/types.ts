@@ -17,8 +17,11 @@ export const TICK_HZ = 120;
  * v1 = launch · v2 = free-failure loop (fast respawn, RETRY input).
  */
 export const SIM_VERSION = 2;
-/** Bumped when the daily / endless tower generators change their output. */
-export const GEN_VERSION = 1;
+/**
+ * Bumped when the daily / endless tower generators change their output.
+ * v1 = launch · v2 = authored chunks spliced into every band (levels/chunks).
+ */
+export const GEN_VERSION = 2;
 export const DT = 1 / TICK_HZ;
 /** Hard cap on replay length accepted anywhere (10 minutes at 120 Hz). */
 export const MAX_TICKS = TICK_HZ * 60 * 10;
