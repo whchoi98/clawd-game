@@ -48,9 +48,172 @@ export interface StageOptions {
   createCanvas?: () => HTMLCanvasElement;
   /** Viewport probe; defaults to window inner size and devicePixelRatio. */
   viewport?: () => Viewport;
+  /** Where the settled auto tier is remembered (AUTOTIER_KEY); defaults to localStorage, `null` = nowhere. */
+  storage?: TierStorage | null;
+}
+
+/** The subset of the Storage interface the adaptive scaler uses. */
+export interface TierStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
 }
 
 export type CompositeFx = Partial<FxState> & { fadeColor?: string };
+
+// ============================================================ adaptive quality v2 (P3-13)
+/** localStorage key of the tier the auto scaler settled on; the next session starts there. */
+export const AUTOTIER_KEY = 'clawd-echo.autotier.v1';
+/** Seconds of frames per decision window. */
+export const FRAME_WINDOW_S = 2;
+/** Frame-time histogram: 32 buckets of 1 ms, the last one open-ended (31 ms and slower). */
+export const HIST_BUCKETS = 32;
+/** Step down when the window's p95 frame interval exceeds this many display periods (24 ms at 60 Hz). */
+export const STEP_DOWN_RATIO = 1.44;
+/** A window counts as smooth (no dropped frames) when its p95 interval stays inside this many periods. */
+export const SMOOTH_RATIO = 1.1;
+/** A step up also needs the p95 render cost under this fraction of the period (13 ms at 60 Hz) — when the cost is measured. */
+export const STEP_UP_RATIO = 0.78;
+/** Seconds of consecutive smooth windows before the single step up of a session. */
+export const STEP_UP_AFTER_S = 60;
+/** Seconds after a step down during which no step up is considered. */
+export const STEP_DOWN_LOCK_S = 60;
+/**
+ * Fewer samples than this in a window decide nothing. Deliberately tiny: the
+ * shell clamps a frame's dt to 0.25 s, so a hidden-tab gap is one sample that
+ * cannot move a p95 — while a device crawling at 2 fps must still be judged,
+ * and at 2 fps a 2 s window holds exactly four frames.
+ */
+export const MIN_WINDOW_SAMPLES = 4;
+/**
+ * Menu backdrops are throttled to 30 fps by the shell, so their intervals say
+ * nothing — but their render cost does: a backdrop that alone costs more than
+ * this many display periods at p95 cannot carry the (heavier) world at this
+ * tier, and the scaler steps down before play starts. Every device used to get
+ * this probe by accident (the throttled intervals read as 30 fps); it is now
+ * deliberate and cost-based, so a fast device is never punished for the throttle.
+ */
+export const MENU_COST_RATIO = 1.0;
+/** The shell redraws menu backdrops at most this often (Scenes.MENU_FRAME_DT = 1/30 s). */
+export const MENU_FRAME_MS = 1000 / 30;
+/**
+ * The second menu signal: Canvas2D rasterises off the main thread, so a
+ * raster-bound device can report a cheap JS draw while its frames crawl. The
+ * draw interval cannot hide that — a window whose p95 interval exceeds this
+ * many throttle periods (48 ms) cannot even hold the 30 fps backdrop.
+ */
+export const MENU_SLOW_RATIO = 1.44;
+/** Bucket width (ms) of the menu-interval histogram: 0..124 ms, last bucket open. */
+export const MENU_BUCKET_MS = 4;
+/** Fewer menu frames than this in a window decide nothing (see MIN_WINDOW_SAMPLES for why it is tiny). */
+export const MIN_MENU_SAMPLES = 4;
+/** Display refresh rates the median rAF interval is snapped to; anything slower reads as a 60 Hz display dropping frames. */
+export const REFRESH_RATES: readonly number[] = [60, 72, 75, 90, 120, 144, 165, 240];
+const TIERS: readonly QualityTier[] = ['high', 'balanced', 'low'];
+
+/**
+ * Fixed-width frame-time histogram (1 ms buckets). Percentiles come back as
+ * the upper edge of the bucket that crosses the rank — a conservative read
+ * that never under-reports a slow frame — and `meanAt` is exact, which is
+ * what the refresh-rate estimate needs (8.33 ms and 6.94 ms share a bucket
+ * edge at 1 ms resolution, but their means are far apart).
+ */
+export class FrameHistogram {
+  readonly counts = new Uint32Array(HIST_BUCKETS);
+  readonly sums = new Float64Array(HIST_BUCKETS);
+  n = 0;
+
+  /** `msPerBucket` widens the grid (4 → 0..124 ms, last bucket open) for slow, throttled menu frames. */
+  constructor(readonly msPerBucket = 1) {}
+
+  add(ms: number): void {
+    if (!(ms >= 0)) return;
+    const b = Math.min(HIST_BUCKETS - 1, Math.floor(ms / this.msPerBucket));
+    this.counts[b]++;
+    this.sums[b] += ms;
+    this.n++;
+  }
+
+  reset(): void {
+    this.counts.fill(0);
+    this.sums.fill(0);
+    this.n = 0;
+  }
+
+  /** Index of the bucket holding the p-th percentile (0..100), or -1 when empty. */
+  bucketOf(p: number): number {
+    if (this.n === 0) return -1;
+    const rank = Math.max(1, Math.ceil((clamp(p, 0, 100) / 100) * this.n));
+    let acc = 0;
+    for (let b = 0; b < HIST_BUCKETS; b++) {
+      acc += this.counts[b];
+      if (acc >= rank) return b;
+    }
+    return HIST_BUCKETS - 1;
+  }
+
+  /** Upper edge (ms) of the bucket holding the p-th percentile; 0 when empty. */
+  percentile(p: number): number {
+    const b = this.bucketOf(p);
+    return b < 0 ? 0 : (b + 1) * this.msPerBucket;
+  }
+
+  /** Exact mean of the samples in the bucket holding the p-th percentile; 0 when empty. */
+  meanAt(p: number): number {
+    const b = this.bucketOf(p);
+    return b < 0 || this.counts[b] === 0 ? 0 : this.sums[b] / this.counts[b];
+  }
+}
+
+/**
+ * The display refresh rate a median rAF interval implies, snapped to a known
+ * rate — or null when the interval is not within 12% of any of them, which
+ * means the loop is not vsync-locked and says nothing about the display.
+ */
+export function snapRefreshRate(medianMs: number): number | null {
+  if (!(medianMs > 0)) return null;
+  const hz = 1000 / medianMs;
+  let best = REFRESH_RATES[0], err = Infinity;
+  for (const r of REFRESH_RATES) {
+    const e = Math.abs(r - hz);
+    if (e < err) { err = e; best = r; }
+  }
+  return err <= best * 0.12 ? best : null;
+}
+
+/** The tier stored by a previous session, when the document is one of ours. */
+export function readStoredTier(storage: TierStorage | null): QualityTier | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(AUTOTIER_KEY);
+    if (!raw) return null;
+    const doc = JSON.parse(raw) as { v?: unknown; tier?: unknown } | null;
+    if (!doc || doc.v !== 1 || typeof doc.tier !== 'string') return null;
+    return (TIERS as readonly string[]).includes(doc.tier) ? doc.tier as QualityTier : null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultTierStorage(): TierStorage | null {
+  try {
+    const ls = (globalThis as { localStorage?: TierStorage }).localStorage;
+    return ls ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Frame statistics of the last completed window plus the tier — the ?fps=1 overlay and the shot stamp. */
+export interface FpsStats {
+  /** Upper-edge ms of the p50 / p95 frame interval of the last window (0 before the first). */
+  p50: number;
+  p95: number;
+  /** p95 of the measured render cost (ms), 0 when nothing was measured. */
+  workP95: number;
+  /** Estimated display refresh rate. */
+  hz: number;
+  tier: QualityTier;
+}
 
 // ============================================================ helpers
 export const TAU = Math.PI * 2;
@@ -165,18 +328,39 @@ export class Stage {
   settings: StageSettings = { bloom: true, grain: true, flashes: true, quality: 'auto' };
   /** Smoothed frames per second. */
   fps = 60;
+  /** Estimated display refresh rate (Hz): the median rAF interval snapped to a known rate, never lowered within a session. */
+  hz = 60;
+  /** Auto tier changes this session (the overlay and the tests). */
+  autoChanges = 0;
 
   // camera state of the current world transform
   camX = 0; camY = 0; zoom = 1;
   wLeft = 0; wRight = VIEW_W; wTop = 0; wBottom = VIEW_H;
 
-  private fpsAcc = 0; private fpsN = 0; private autoTimer = 0;
+  private readonly hist = new FrameHistogram();
+  private readonly workHist = new FrameHistogram();
+  private windowT = 0;
+  /** Render cost and draw interval of menu backdrop frames (see noteFrame). */
+  private readonly menuHist = new FrameHistogram();
+  private readonly menuIntHist = new FrameHistogram(MENU_BUCKET_MS);
+  private menuT = 0;
+  private lastP50 = 0; private lastP95 = 0; private lastWorkP95 = 0;
+  /** Consecutive seconds of smooth windows; the single step up of the session fires at STEP_UP_AFTER_S. */
+  private smoothS = 0;
+  private steppedUp = false;
+  /** Seconds left of the post-step-down lock. */
+  private lockT = 0;
+  private readonly tierStorage: TierStorage | null;
   private vg: CanvasGradient | null = null;
   private grainPat: CanvasPattern | null = null;
 
   constructor(cv: HTMLCanvasElement, opts: StageOptions = {}) {
     const create = opts.createCanvas ?? defaultCreateCanvas;
     this.viewport = opts.viewport ?? defaultViewport;
+    this.tierStorage = opts.storage === undefined ? defaultTierStorage() : opts.storage;
+    // Start where the last session's auto scaler settled: the first frame already runs at that tier.
+    const stored = readStoredTier(this.tierStorage);
+    if (stored) this.quality = stored;
     this.cv = cv;
     this.ctx = ctx2d(cv, { alpha: false, desynchronized: true });
     this.gcv = create(); this.gctx = ctx2d(this.gcv);
@@ -252,19 +436,127 @@ export class Stage {
     this.resize();
   }
 
-  /** Adaptive quality: sustained low frame-rate steps the renderer down a notch. */
-  sampleFps(dt: number): void {
+  /** Frame statistics of the last completed window (the ?fps=1 overlay and the shot stamp). */
+  fpsStats(): FpsStats {
+    return { p50: this.lastP50, p95: this.lastP95, workP95: this.lastWorkP95, hz: this.hz, tier: this.quality };
+  }
+
+  /**
+   * A menu backdrop frame (title vista) — the pre-play capability probe. The
+   * shell throttles these to 30 fps, so the interval is judged against that
+   * cadence (p95 > MENU_SLOW_RATIO × MENU_FRAME_MS = the device cannot hold
+   * even the backdrop) and `workMs`, the measured render cost of the previous
+   * backdrop frame, against the display period (p95 > MENU_COST_RATIO
+   * periods). Either steps the tier down (and locks step-ups) before the world
+   * is ever drawn at it; menu frames never step up.
+   */
+  noteFrame(dt: number, workMs?: number): void {
+    this.smoothFps(dt);
+    if (this.settings.quality !== 'auto') { this.resetMenu(); return; }
+    if (!(dt > 0) || dt > 0.5) return;
+    this.menuIntHist.add(dt * 1000);
+    if (typeof workMs === 'number' && workMs >= 0) this.menuHist.add(workMs);
+    this.menuT += dt;
+    if (this.lockT > 0) this.lockT = Math.max(0, this.lockT - dt);
+    if (this.menuT < FRAME_WINDOW_S) return;
+    const n = this.menuIntHist.n;
+    const intP95 = this.menuIntHist.percentile(95);
+    const costP95 = this.menuHist.n > 0 ? this.menuHist.percentile(95) : 0;
+    this.resetMenu();
+    if (n < MIN_MENU_SAMPLES) return;
+    if (intP95 > MENU_SLOW_RATIO * MENU_FRAME_MS || costP95 > MENU_COST_RATIO * (1000 / this.hz)) {
+      this.smoothS = 0;
+      this.lockT = STEP_DOWN_LOCK_S;
+      this.autoStep(-1);
+    }
+  }
+
+  private resetMenu(): void {
+    this.menuHist.reset();
+    this.menuIntHist.reset();
+    this.menuT = 0;
+  }
+
+  /** The smoothed frame rate (HUD / diagnostics only); shared by play and menu frames. */
+  private smoothFps(dt: number): void {
     if (dt > 0) this.fps = damp(this.fps, 1 / dt, 0.4, dt);
-    if (this.settings.quality !== 'auto') { this.setQuality(this.settings.quality); return; }
-    this.fpsAcc += dt; this.fpsN++;
-    this.autoTimer += dt;
-    if (this.autoTimer < 2.5) return;
-    const avg = this.fpsN / Math.max(1e-6, this.fpsAcc);
-    this.fpsAcc = 0; this.fpsN = 0; this.autoTimer = 0;
-    if (avg < 42 && this.quality === 'high') this.setQuality('balanced');
-    else if (avg < 34 && this.quality === 'balanced') this.setQuality('low');
-    else if (avg > 58 && this.quality === 'low') this.setQuality('balanced');
-    else if (avg > 58 && this.quality === 'balanced') this.setQuality('high');
+  }
+
+  /**
+   * Adaptive quality v2. `dt` is this frame's rAF interval (seconds), `workMs`
+   * the measured render cost when the caller has one. Intervals are binned
+   * into a 1 ms histogram over FRAME_WINDOW_S; when a window closes:
+   *   • the median interval, snapped to a known refresh rate, estimates the
+   *     display Hz (a slower median reads as dropped frames, never as a slow
+   *     display), so every threshold below is in display periods;
+   *   • p95 interval > STEP_DOWN_RATIO periods → one tier down, and step-ups
+   *     are locked for STEP_DOWN_LOCK_S;
+   *   • STEP_UP_AFTER_S of consecutive smooth windows (p95 interval within
+   *     SMOOTH_RATIO periods and, when measured, p95 render cost under
+   *     STEP_UP_RATIO periods) → one tier up, once per session.
+   * The tier a change lands on is written to AUTOTIER_KEY for the next boot.
+   */
+  sampleFps(dt: number, workMs?: number): void {
+    this.smoothFps(dt);
+    if (this.settings.quality !== 'auto') {
+      this.setQuality(this.settings.quality);
+      this.hist.reset(); this.workHist.reset(); this.windowT = 0; this.smoothS = 0;
+      this.resetMenu();
+      return;
+    }
+    // Back from a menu: its probe window is stale.
+    if (this.menuT > 0) this.resetMenu();
+    // A hidden tab hands the whole absence to one frame: that is not a sample.
+    if (!(dt > 0) || dt > 0.5) return;
+    this.hist.add(dt * 1000);
+    if (typeof workMs === 'number' && workMs >= 0) this.workHist.add(workMs);
+    this.windowT += dt;
+    if (this.lockT > 0) this.lockT = Math.max(0, this.lockT - dt);
+    if (this.windowT < FRAME_WINDOW_S) return;
+    this.closeWindow(this.windowT);
+  }
+
+  private closeWindow(seconds: number): void {
+    const hist = this.hist, work = this.workHist;
+    const n = hist.n;
+    this.lastP50 = hist.percentile(50);
+    this.lastP95 = hist.percentile(95);
+    this.lastWorkP95 = work.n > 0 ? work.percentile(95) : 0;
+    const medianMs = hist.meanAt(50);
+    const hasWork = work.n > 0;
+    hist.reset(); work.reset();
+    this.windowT = 0;
+    if (n < MIN_WINDOW_SAMPLES) return;
+
+    const snapped = snapRefreshRate(medianMs);
+    if (snapped !== null && snapped > this.hz) this.hz = snapped;
+    const period = 1000 / this.hz;
+
+    if (this.lastP95 > STEP_DOWN_RATIO * period) {
+      this.smoothS = 0;
+      this.lockT = STEP_DOWN_LOCK_S;
+      this.autoStep(-1);
+      return;
+    }
+    const smooth = this.lastP95 <= SMOOTH_RATIO * period + 1e-9 && (!hasWork || this.lastWorkP95 < STEP_UP_RATIO * period);
+    if (!smooth || this.steppedUp || this.lockT > 0 || this.quality === 'high') { this.smoothS = 0; return; }
+    this.smoothS += seconds;
+    if (this.smoothS >= STEP_UP_AFTER_S) {
+      this.smoothS = 0;
+      this.steppedUp = true;
+      this.autoStep(1);
+    }
+  }
+
+  /** Move one tier (−1 = lower quality) and remember where the scaler now stands. */
+  private autoStep(dir: -1 | 1): void {
+    const i = TIERS.indexOf(this.quality);
+    const next = TIERS[clamp(i - dir, 0, TIERS.length - 1)];
+    if (next === this.quality) return;
+    this.setQuality(next);
+    this.autoChanges++;
+    if (!this.tierStorage) return;
+    try { this.tierStorage.setItem(AUTOTIER_KEY, JSON.stringify({ v: 1, tier: next })); } catch { /* private mode / quota */ }
   }
 
   /** Reset transforms and clear the glow buffer. The sky paints the opaque backdrop. */

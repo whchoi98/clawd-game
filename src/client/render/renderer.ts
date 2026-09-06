@@ -18,7 +18,7 @@ import { BIOMES, C, type Biome } from '../../shared/biomes.js';
 import type { FxState, GhostView, RendererPort, Settings, WorldView } from '../contracts.js';
 import {
   Stage, UI_FONT, TAU, alpha, clamp01, defaultCreateCanvas, fbm, lerp,
-  type QualityTier, type StageOptions,
+  type FpsStats, type QualityTier, type StageOptions,
 } from './stage.js';
 import { Sky } from './sky.js';
 import { Terrain } from './tiles.js';
@@ -44,9 +44,21 @@ const GOAL_EDGE_MARGIN = 10;
 /** Distance of the edge beacon's centre from the rendered box's edge, in world units. */
 const BEACON_INSET = 20;
 
+/** Monotonic milliseconds for the render-cost sample; -1 when the platform has no clock (the scaler then ignores cost). */
+function nowMs(): number {
+  const p = (globalThis as { performance?: { now?: () => number } }).performance;
+  return p && typeof p.now === 'function' ? p.now() : -1;
+}
+
 export class Renderer implements RendererPort {
   /** Goal projection after the last draw in CSS px relative to the canvas; see RendererPort. */
   goalScreen: { x: number; y: number; onScreen: boolean } | null = null;
+  /** `?fps=1`: draw the frame-statistics line on the world canvas (main.ts sets it from the query string). */
+  showFps = false;
+  /** Render cost (ms) of the previous draw(), handed to the adaptive scaler with the next frame; undefined without a clock. */
+  private lastWorkMs: number | undefined = undefined;
+  /** Render cost (ms) of the previous drawTitle(): the pre-play capability probe (Stage.noteFrame). */
+  private lastTitleWorkMs: number | undefined = undefined;
   readonly stage: Stage;
   readonly sky: Sky;
   readonly particles: Particles;
@@ -135,9 +147,12 @@ export class Renderer implements RendererPort {
     const st = this.stage, level = sim.level, state = sim.state, biome = this.biome!;
     const dt = Math.min(Math.max(0, dtFrame), 0.1);
     this.t += dt;
+    const t0 = nowMs();
+    // The adaptive scaler sees this frame's interval and the previous frame's render cost — before anything
+    // is drawn, so a tier change (a canvas resize) never blanks the frame it was decided on.
+    st.sampleFps(dtFrame, this.lastWorkMs);
 
     // ---- advance visual-only state ----
-    st.sampleFps(dtFrame);
     this.sky.update(dt, view.camX, view.camY);
     this.particles.update(dt, (x, y) => level.solid(Math.floor(x / TILE), Math.floor(y / TILE)));
     this.playerVis.update(dt, state.player);
@@ -179,6 +194,28 @@ export class Renderer implements RendererPort {
 
     // HUD-like, so after the film pass: never bloomed, vignetted or grained
     this.goalBeacon(state, fx, biome);
+
+    if (this.showFps) this.fpsOverlay();
+    this.lastWorkMs = t0 >= 0 ? Math.max(0, nowMs() - t0) : undefined;
+  }
+
+  /** Frame statistics of the adaptive scaler's last window (p50 / p95 interval, render cost, display Hz, tier). */
+  fpsStats(): FpsStats { return this.stage.fpsStats(); }
+
+  /** `?fps=1` diagnostics: one line of canvas text, top-left of the rendered box. Never drawn without the flag. */
+  private fpsOverlay(): void {
+    const st = this.stage, ctx = st.ctx, s = st.fpsStats();
+    st.screen();
+    ctx.save();
+    ctx.font = `600 7px ${UI_FONT}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const text = `p50 ${s.p50}ms · p95 ${s.p95}ms · draw ${s.workP95}ms · ${s.hz}Hz · ${s.tier} · ${Math.round(st.fps)}fps`;
+    ctx.fillStyle = 'rgba(5,10,18,0.7)';
+    ctx.fillRect(4, 4, text.length * 3.6 + 6, 11);
+    ctx.fillStyle = '#CFFBF4';
+    ctx.fillText(text, 7, 6);
+    ctx.restore();
   }
 
   /**
@@ -387,7 +424,10 @@ export class Renderer implements RendererPort {
       this.titleProfile = this.profile(7 + (TITLE_SEEDS[biome.id] ?? 3) * 13);
       this.particles.clear();
     }
-    st.sampleFps(dtFrame);
+    // Menu backdrops are throttled to 30 fps by the shell, so only their measured render cost reaches the
+    // scaler (the previous backdrop frame's, before anything is drawn — a tier change resizes the canvas).
+    const t0 = nowMs();
+    st.noteFrame(dtFrame, this.lastTitleWorkMs);
     this.titleCamX += dt * 12;
     this.sky.update(dt, this.titleCamX, 0);
     this.particles.update(dt, null);
@@ -453,6 +493,7 @@ export class Renderer implements RendererPort {
     ctx.restore();
 
     st.composite({ vignette: 0.25, fade: 0 });
+    this.lastTitleWorkMs = t0 >= 0 ? Math.max(0, nowMs() - t0) : undefined;
   }
 
   drawPortrait(ctx: CanvasRenderingContext2D, skin: string, size: number, t: number): void {

@@ -10,8 +10,9 @@
 import type { z } from 'zod';
 import {
   API_PREFIX, DailyResponse, ErrorResponse, GhostResponse, HealthResponse, LeaderboardResponse, RunResponse,
+  TransferCode, TransferCreateResponse, TransferGetResponse,
 } from '../../shared/protocol.js';
-import type { LeaderboardQuery, RunSubmit } from '../../shared/protocol.js';
+import type { LeaderboardQuery, RunSubmit, TransferCreateRequest } from '../../shared/protocol.js';
 import type { ApiPort } from '../contracts.js';
 
 export const API_TIMEOUT_MS = 8000;
@@ -40,6 +41,7 @@ function reasonFor(status: number, body: unknown): string {
   if (parsed.success && parsed.data.error) return parsed.data.error;
   if (status === 429) return 'rate-limited';
   if (status === 404) return 'not-found';
+  if (status === 410) return 'gone';
   if (status === 413) return 'too-long';
   if (status >= 400 && status < 500) return 'bad-request';
   return 'server-error';
@@ -83,6 +85,28 @@ export class Api implements ApiPort {
 
   health(): Promise<HealthResponse> {
     return this.request(`${API_PREFIX}/health`, {}, HealthResponse);
+  }
+
+  // ------------------------------------------------------------ progress transfer (P3-5)
+  /** Store a snapshot; the server answers with a one-time 8-char code (413 past MAX_TRANSFER_BYTES, 429 when rate-limited). */
+  transferCreate(body: TransferCreateRequest): Promise<TransferCreateResponse> {
+    return this.request(`${API_PREFIX}/transfer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }, TransferCreateResponse);
+  }
+
+  /**
+   * Redeem a code. The code is checked against the wire alphabet here so a typo
+   * never becomes a request: a malformed code fails with status 400 / 'bad-code'
+   * exactly like the server's answer. 410 ('gone') = already used or expired.
+   */
+  transferGet(code: string): Promise<TransferGetResponse> {
+    if (!TransferCode.safeParse(code).success) {
+      return Promise.reject(new ApiError('bad transfer code', 400, 'bad-code'));
+    }
+    return this.request(`${API_PREFIX}/transfer/${encodeURIComponent(code)}`, {}, TransferGetResponse);
   }
 
   // ------------------------------------------------------------ core

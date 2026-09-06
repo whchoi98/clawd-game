@@ -31,6 +31,7 @@ import {
 import { Hud, fmtTicks, fmtTime } from './hud.js';
 import { renderHint } from './hints.js';
 import { SettingsPanel, type PortraitPainter } from './settings.js';
+import { TRANSFER_KR, TransferPanel, normalizeCode, type TransferStatusKind } from './transfer.js';
 import { TouchControls, wantsRotatePrompt } from './touch.js';
 import { renderLeaderboard, type LbStatus } from './leaderboard.js';
 
@@ -160,6 +161,8 @@ export class UI implements UIPort {
   private readonly nav: Navigator;
   private readonly hudCtl: Hud;
   private readonly settingsPanel: SettingsPanel;
+  /** 다른 기기로 옮기기 widgets of the data pane (P3-5). */
+  private readonly transferPanel: TransferPanel;
   private readonly touchCtl: TouchControls;
   private readonly audio: Pick<AudioPort, 'ui' | 'init'> | null;
   private readonly skins: Record<string, { name: string; kr: string }>;
@@ -235,9 +238,11 @@ export class UI implements UIPort {
       onCancel: () => this.cancel(),
       onAdjust: (target, dir) => this.adjust(target, dir),
     });
+    this.transferPanel = new TransferPanel({ doc: this.doc, sound: (n) => this.sound(n), onSubmit: () => this.importTransfer() });
     this.settingsPanel = new SettingsPanel({
       doc: this.doc,
       settings: () => this.settings,
+      extraDataRows: () => this.transferPanel.rows(),
       skins: () => this.skins,
       keyLabel: (code) => this.input?.keyLabel(code) ?? code,
       capture: (cb) => {
@@ -984,6 +989,13 @@ export class UI implements UIPort {
         break;
       }
       case 'resetProgress': this.resetProgress(btn); break;
+      case 'transferExport':
+        this.sound('confirm');
+        this.transferPanel.setStatus(TRANSFER_KR.creating, 'busy');
+        this.emit({ type: 'transferExport' });
+        break;
+      case 'transferImport': this.importTransfer(); break;
+      case 'transferCopy': void this.copyTransferCode(); break;
       case 'dismissNag': this.dismissNag(); break;
       case 'install':
         this.sound('confirm');
@@ -993,6 +1005,46 @@ export class UI implements UIPort {
       case 'applyUpdate': this.applyUpdate(); break;
       default: break;
     }
+  }
+
+  // ================================================================ progress transfer (P3-5)
+  /** The shell created a one-time code: show it big with the code picture. Not part of UIPort. */
+  showTransferCode(code: string, expiresAt: string): void {
+    this.transferPanel.setCode(code, expiresAt);
+  }
+
+  /** Progress / error line under the transfer widgets ('이미 사용된 코드다' …); null clears it. Not part of UIPort. */
+  transferStatus(text: string | null, kind: TransferStatusKind = 'ok'): void {
+    this.transferPanel.setStatus(text, kind);
+    // A redeemed code is spent: clear the field. A refused one stays put so a typo can be fixed.
+    if (text && kind === 'ok') this.transferPanel.clearInput();
+  }
+
+  /** 가져오기: a typed code is normalised (case, separators) and checked against the wire alphabet before it leaves the UI. */
+  private importTransfer(): void {
+    const code = normalizeCode(this.transferPanel.inputValue());
+    if (!code) {
+      this.transferPanel.setStatus(TRANSFER_KR.badCodeHint, 'error');
+      this.sound('error');
+      return;
+    }
+    this.sound('confirm');
+    this.transferPanel.setStatus(TRANSFER_KR.importing, 'busy');
+    this.emit({ type: 'transferImport', code });
+  }
+
+  /** 복사: the clipboard when the platform grants it, else the code text is selected for a manual copy. */
+  private async copyTransferCode(): Promise<void> {
+    const code = this.transferPanel.code;
+    if (!code) return;
+    let ok = false;
+    try {
+      const clip = this.win?.navigator?.clipboard;
+      if (clip && typeof clip.writeText === 'function') { await clip.writeText(code); ok = true; }
+    } catch { ok = false; }
+    if (!ok) ok = this.transferPanel.selectCode();
+    this.sound(ok ? 'confirm' : 'error');
+    this.toast(ok ? TRANSFER_KR.copied : TRANSFER_KR.copyFailed);
   }
 
   /** Two presses within the same visit to the settings screen. */

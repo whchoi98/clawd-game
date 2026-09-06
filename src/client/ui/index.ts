@@ -11,6 +11,8 @@ export type { NavHooks, NavDir } from './screens.js';
 export { Hud, fmtTime, fmtTicks, LIVE_INTERVAL, TOAST_SECONDS, BANNER_SECONDS } from './hud.js';
 export { SettingsPanel, BIND_ROWS, findBindConflict, bindLabel } from './settings.js';
 export type { SettingsPanelDeps, PortraitPainter } from './settings.js';
+export { TransferPanel, TRANSFER_KR, CODE_MODULES, codeModules, drawCodeCanvas, fmtCode, normalizeCode } from './transfer.js';
+export type { TransferPanelDeps, TransferStatusKind } from './transfer.js';
 export {
   TouchControls, makeTouchState, isCoarsePointer, isPortraitViewport, isPhoneViewport, wantsRotatePrompt, PHONE_MAX_SHORT_SIDE,
 } from './touch.js';

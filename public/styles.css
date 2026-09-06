@@ -578,6 +578,23 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
 .bindbtn--armed{background:rgba(255,77,99,.2);border-color:rgba(255,77,99,.55);color:var(--danger-hi)}
 .row__note{font-size:.7rem;color:var(--muted-2);padding:.4rem .1rem 0;line-height:1.5}
 
+/* progress transfer (설정 → 데이터 → 다른 기기로 옮기기) */
+.transfer{display:flex;gap:1rem;align-items:center;padding:.6rem .1rem .7rem;border-bottom:1px solid rgba(255,255,255,.05)}
+.transfer__qr{width:7rem;height:7rem;flex:0 0 auto;border-radius:10px;background:#F3F6F4;image-rendering:pixelated}
+.transfer__side{display:flex;flex-direction:column;align-items:flex-start;gap:.4rem;min-width:0}
+.transfer__code{font-family:var(--f-num);font-size:1.9rem;font-weight:700;letter-spacing:.14em;line-height:1.1;color:var(--teal-hi);
+  font-variant-numeric:tabular-nums;user-select:all;-webkit-user-select:all}
+.transfer__note{font-size:.68rem;color:var(--muted-2);font-family:var(--f-kr)}
+.transfer__import{gap:.4rem}
+.transfer__input{width:7.6rem;padding:.3rem .5rem;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.3);color:var(--paper);
+  font:inherit;font-family:var(--f-num);font-size:.9rem;letter-spacing:.12em;text-transform:uppercase;user-select:text;-webkit-user-select:text;
+  transition:border-color .18s,background .18s}
+.transfer__input:focus{outline:none;border-color:rgba(127,227,214,.6);background:rgba(127,227,214,.08)}
+.transfer__status{font-family:var(--f-kr);color:var(--muted)}
+.transfer__status.is-error{color:var(--danger-hi)}
+.transfer__status.is-ok{color:var(--teal-hi)}
+@media (max-width:560px){.transfer{flex-direction:column;align-items:flex-start}}
+
 /* credits */
 .credits h3{font-size:.68rem;letter-spacing:.24em;color:var(--teal);margin:1.1rem 0 .35rem;font-weight:700}
 .credits h3:first-child{margin-top:0}

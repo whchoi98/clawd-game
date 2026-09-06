@@ -8,7 +8,8 @@
  * query, the id generator) is injectable so the layer runs in Node.
  */
 import type { Binds, LevelRecord, Progress, Settings } from './contracts.js';
-import type { DailyResponse } from '../shared/protocol.js';
+import type { DailyResponse, TransferGetResponse } from '../shared/protocol.js';
+import { MAX_TRANSFER_BYTES } from '../shared/protocol.js';
 import type { LevelDef } from '../sim/types.js';
 import { SIM_VERSION, GEN_VERSION } from '../sim/types.js';
 import { BIND_ACTIONS, DEFAULT_BINDS, cloneBinds } from './input/binds.js';
@@ -203,11 +204,18 @@ export interface SaveOptions {
   defaultBinds?: Binds;
   /** `prefers-reduced-motion: reduce` — seeds shake/flashes/grain off on a FIRST run only. */
   reducedMotion?: boolean;
+  /** `(pointer: coarse)` — with reducedMotion, decides the haptics default of a save that never set it. */
+  coarsePointer?: boolean;
   /** Debounce timer hooks (defaults: setTimeout / clearTimeout). */
   schedule?: (fn: () => void, ms: number) => unknown;
   cancel?: (handle: unknown) => void;
   /** Player id generator (defaults to crypto.randomUUID). */
   newId?: () => string;
+}
+
+/** Settings.haptics when the player never chose: on for touch devices, off under prefers-reduced-motion. */
+export function defaultHaptics(coarsePointer: boolean, reducedMotion: boolean): boolean {
+  return coarsePointer && !reducedMotion;
 }
 
 const QUALITIES = new Set(['auto', 'high', 'balanced', 'low']);
@@ -332,6 +340,8 @@ export function repairSettings(raw: unknown, defaults: Settings): Settings {
   s.echoWorld = bool(s.echoWorld, defaults.echoWorld);
   // 세계 메아리 = 1위 / 라이벌: anything but the two known modes reads as the default.
   setEchoWorldMode(s, echoWorldMode(s));
+  // Haptics: a boolean the player chose, or absent (the Save seeds the device default at boot).
+  if (typeof s.haptics !== 'boolean') delete s.haptics;
   if (!QUALITIES.has(s.quality as string)) s.quality = 'auto';
   if (typeof s.skin !== 'string' || !s.skin) s.skin = defaults.skin;
   s.binds = repairBinds(isObj(raw) ? raw.binds : undefined, defaults.binds);
@@ -440,6 +450,8 @@ export class Save {
     const rawSettings = this.read(SETTINGS_KEY);
     this.firstRun = rawSettings === undefined;
     this.settings = repairSettings(rawSettings, defaultSettings(this.defaultBinds));
+    // Never chosen: the device decides (touch → on, reduced motion → off); persisted with the next settings write.
+    if (typeof this.settings.haptics !== 'boolean') this.settings.haptics = defaultHaptics(!!opts.coarsePointer, !!opts.reducedMotion);
     this.progress = repairProgress(this.read(PROGRESS_KEY), defaultProgress(this.newId()));
 
     // The stylesheet honours prefers-reduced-motion for UI animation, but the
@@ -525,4 +537,171 @@ export class Save {
     if (this.prgTimer !== null) { this.cancel(this.prgTimer); this.prgTimer = null; }
     this.write(PROGRESS_KEY, this.progress);
   }
+
+  // ------------------------------------------------------------ transfer (P3-5)
+  /** The stripped Progress that travels to another device (see snapshotProgress). */
+  snapshot(): Record<string, unknown> {
+    return snapshotProgress(this.progress);
+  }
+
+  /** Restore a snapshot from another device into this save (see mergeProgress) and write it through at once. */
+  importSnapshot(snap: TransferGetResponse): void {
+    mergeProgress(this.progress, snap);
+    if (this.prgTimer !== null) { this.cancel(this.prgTimer); this.prgTimer = null; }
+    this.write(PROGRESS_KEY, this.progress);
+  }
+}
+
+// ---------------------------------------------------------------- progress transfer (P3-5)
+/** progress.seen flag: navigator.storage.persist() was requested once (after the first story clear). */
+export const PERSIST_ASKED_KEY = 'storage:persist';
+/** Bytes left for the `player` envelope and JSON framing inside MAX_TRANSFER_BYTES. */
+export const TRANSFER_MARGIN_BYTES = 512;
+
+/** UTF-8 size of a document's JSON. */
+export function jsonBytes(doc: unknown): number {
+  const json = JSON.stringify(doc);
+  const enc = (globalThis as { TextEncoder?: new () => { encode(s: string): Uint8Array } }).TextEncoder;
+  if (enc) return new enc().encode(json).length;
+  let n = 0;
+  for (let i = 0; i < json.length; i++) {
+    const c = json.charCodeAt(i);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c >= 0xd800 && c <= 0xdbff ? (i++, 4) : 3;
+  }
+  return n;
+}
+
+/**
+ * The Progress document as it travels to another device: records, stars,
+ * run ids, daily and endless bests, totals, seen flags and the retention
+ * fields — never a replay. Zone and daily masks, the endless best climb,
+ * segment bests and session death counts stay on this device (they are this
+ * install's, or would never verify on another sim). Oldest daily records are
+ * dropped until the JSON fits `maxBytes`.
+ */
+export function snapshotProgress(p: Progress, maxBytes = MAX_TRANSFER_BYTES - TRANSFER_MARGIN_BYTES): Record<string, unknown> {
+  const levels: Record<string, unknown> = {};
+  for (const [id, rec] of Object.entries(p.levels)) {
+    if (!isObj(rec)) continue;
+    levels[id] = {
+      done: !!rec.done, bestTicks: int(rec.bestTicks), bestShards: int(rec.bestShards), stars: Math.min(3, int(rec.stars)),
+      relics: int(rec.relics), deaths: int(rec.deaths), ...(typeof rec.runId === 'string' ? { runId: rec.runId } : {}),
+    };
+  }
+  const dailyDates = Object.keys(p.daily).sort();
+  const dailyOf = (dates: string[]): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const date of dates) {
+      const d = p.daily[date];
+      if (!isObj(d)) continue;
+      out[date] = {
+        bestTicks: int(d.bestTicks), cleared: !!d.cleared, height: Math.floor(num(d.height, 0, 1e6, 0)), seed: int(d.seed) >>> 0,
+        ...(typeof d.runId === 'string' ? { runId: d.runId } : {}), ...(int(d.rank) > 0 ? { rank: int(d.rank) } : {}),
+      };
+    }
+    return out;
+  };
+  const e = p.endless;
+  const seen: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(p.seen)) if (v === true) seen[k] = true;
+  const base = {
+    v: 1,
+    levels,
+    endless: { bestHeight: Math.floor(num(e.bestHeight, 0, 1e6, 0)), bestShards: int(e.bestShards), runs: int(e.runs) },
+    totals: { deaths: int(p.totals.deaths), shards: int(p.totals.shards) },
+    seen,
+    lastLevel: typeof p.lastLevel === 'string' ? p.lastLevel : null,
+    player: { id: p.player.id, name: p.player.name },
+    ...(typeof p.firstSeen === 'number' && p.firstSeen > 0 ? { firstSeen: Math.floor(p.firstSeen) } : {}),
+    ...(int(p.playDays) > 0 ? { playDays: int(p.playDays) } : {}),
+    ...(typeof p.lastPlayDay === 'string' ? { lastPlayDay: p.lastPlayDay } : {}),
+  };
+  // Daily history is the only unbounded part: shed the oldest dates until the document fits.
+  let keep = dailyDates.length;
+  let doc: Record<string, unknown> = { ...base, daily: dailyOf(dailyDates) };
+  while (keep > 0 && jsonBytes(doc) > maxBytes) {
+    keep = Math.max(0, keep - Math.max(1, Math.ceil(keep / 4)));
+    doc = { ...base, daily: dailyOf(dailyDates.slice(dailyDates.length - keep)) };
+  }
+  return doc;
+}
+
+/** The better of two zone records: faster clear wins the time (and its run id), everything else takes the max. */
+function mergeLevelRecord(local: LevelRecord, remote: LevelRecord): LevelRecord {
+  const out: LevelRecord = { ...local };
+  out.done = local.done || remote.done;
+  const lt = local.bestTicks > 0 ? local.bestTicks : Infinity;
+  const rt = remote.bestTicks > 0 ? remote.bestTicks : Infinity;
+  if (rt < lt) {
+    // The other device's clear is the best now: the local replay no longer belongs to the record.
+    out.bestTicks = remote.bestTicks;
+    if (remote.runId) out.runId = remote.runId; else delete out.runId;
+    delete out.masks; delete out.sim;
+  } else if (rt === lt && !out.runId && remote.runId) out.runId = remote.runId;
+  out.bestShards = Math.max(local.bestShards, remote.bestShards);
+  out.stars = Math.max(local.stars, remote.stars);
+  out.relics = Math.max(local.relics, remote.relics);
+  out.deaths = Math.max(local.deaths, remote.deaths);
+  return out;
+}
+
+type DailyRec = Progress['daily'][string];
+
+/** A cleared record beats an uncleared one; then the faster clear, or the greater height. */
+function mergeDailyRecord(local: DailyRec, remote: DailyRec): DailyRec {
+  const remoteBetter = remote.cleared
+    ? !local.cleared || local.bestTicks === 0 || (remote.bestTicks > 0 && remote.bestTicks < local.bestTicks)
+    : !local.cleared && Math.floor(remote.height) > Math.floor(local.height);
+  const height = Math.max(Math.floor(local.height), Math.floor(remote.height));
+  if (!remoteBetter) return { ...local, height };
+  return {
+    bestTicks: remote.bestTicks, cleared: remote.cleared, height, seed: remote.seed,
+    ...(remote.runId ? { runId: remote.runId } : {}),
+    ...(remote.rank ? { rank: remote.rank } : {}),
+  };
+}
+
+/**
+ * Restore a snapshot from another device into `local` (mutated and returned):
+ *   • the player identity (id, name) becomes the snapshot's — the other
+ *     device's boards, run ids and player tag follow the id;
+ *   • zone, daily and endless records keep the better of the two per zone /
+ *     date; totals take the max; seen flags are OR-ed; lastLevel is kept
+ *     unless empty; firstSeen takes the earlier, playDays the greater;
+ *   • no replay is ever imported — masks, the endless best climb, segment
+ *     bests and session deaths are the local device's, and a local replay whose
+ *     record was beaten is dropped.
+ * The snapshot passes `repairProgress` first, so its shape is never trusted.
+ */
+export function mergeProgress(local: Progress, snap: TransferGetResponse): Progress {
+  const id = isValidPlayerId(snap.playerId) ? snap.playerId : local.player.id;
+  const name = isValidName(snap.name) ? snap.name.trim() : local.player.name;
+  const remote = repairProgress(snap.progress, defaultProgress(id, name));
+
+  for (const [zone, rec] of Object.entries(remote.levels)) {
+    const clean: LevelRecord = { ...rec };
+    delete clean.masks; delete clean.sim; delete clean.sessionDeaths; delete clean.segBest;
+    local.levels[zone] = local.levels[zone] ? mergeLevelRecord(local.levels[zone], clean) : clean;
+  }
+  for (const [date, rec] of Object.entries(remote.daily)) {
+    const clean: DailyRec = { ...rec };
+    delete clean.masks; delete clean.sim;
+    local.daily[date] = local.daily[date] ? mergeDailyRecord(local.daily[date], clean) : clean;
+  }
+  const le = local.endless, re = remote.endless;
+  if (Math.floor(re.bestHeight) > Math.floor(le.bestHeight)) {
+    le.bestHeight = Math.floor(re.bestHeight);
+    delete le.bestMasks; delete le.bestSeed; delete le.bestSim; delete le.bestGen;
+  }
+  le.bestShards = Math.max(le.bestShards, re.bestShards);
+  le.runs = Math.max(le.runs, re.runs);
+  local.totals.deaths = Math.max(local.totals.deaths, remote.totals.deaths);
+  local.totals.shards = Math.max(local.totals.shards, remote.totals.shards);
+  for (const [k, v] of Object.entries(remote.seen)) if (v === true) local.seen[k] = true;
+  if (!local.lastLevel && remote.lastLevel) local.lastLevel = remote.lastLevel;
+  if (typeof remote.firstSeen === 'number') local.firstSeen = typeof local.firstSeen === 'number' ? Math.min(local.firstSeen, remote.firstSeen) : remote.firstSeen;
+  if ((remote.playDays ?? 0) > (local.playDays ?? 0)) local.playDays = remote.playDays;
+  if (remote.lastPlayDay && (!local.lastPlayDay || remote.lastPlayDay > local.lastPlayDay)) local.lastPlayDay = remote.lastPlayDay;
+  local.player = { id, name };
+  return local;
 }

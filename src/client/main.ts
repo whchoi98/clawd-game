@@ -25,6 +25,7 @@ import { Api } from './net/api.js';
 import { SubmitQueue } from './net/queue.js';
 import { Telemetry, errorData, uaFamily } from './net/telemetry.js';
 import { Save } from './save.js';
+import { Haptics } from './haptics.js';
 import { Scenes } from './scenes.js';
 import { parseShotQuery, runShot } from './shot.js';
 import { loadFonts } from './fonts.js';
@@ -84,6 +85,11 @@ function reducedMotion(): boolean {
   try { return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
 }
 
+/** A touch-first device: seeds the haptics default of a save that never chose. */
+function coarsePointer(): boolean {
+  try { return typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches; } catch { return false; }
+}
+
 async function start(): Promise<void> {
   // First thing: kick off the webfont fetch without letting it block anything,
   // and start listening for the browser's install offer (it can fire early).
@@ -96,9 +102,12 @@ async function start(): Promise<void> {
   const spec = parseShotQuery(new URLSearchParams(location.search));
   const shot = spec !== null || isShotHarness(window);
 
-  const save = new Save({ defaultBinds: DEFAULT_BINDS, reducedMotion: reducedMotion() });
+  const save = new Save({ defaultBinds: DEFAULT_BINDS, reducedMotion: reducedMotion(), coarsePointer: coarsePointer() });
   const renderer = new Renderer(canvas);
+  // ?fps=1: frame statistics (p50 / p95 / display Hz / tier) as canvas text — never without the flag.
+  renderer.showFps = new URLSearchParams(location.search).get('fps') === '1';
   const audio = createAudio();
+  const haptics = new Haptics();
   const input = new Input({ binds: save.settings.binds });
   // Anonymous telemetry: a random session id, device facts as coarse tokens, never the player id or name.
   const telemetry = new Telemetry({ build: BUILD, sim: SIM_VERSION, enabled: !shot });
@@ -120,6 +129,7 @@ async function start(): Promise<void> {
   let swReady: Promise<{ update?(): Promise<unknown> } | null> = Promise.resolve(null);
   const scenes = new Scenes({
     renderer, audio, ui, input, api, save, queue, levels: LEVELS, build: BUILD,
+    haptics,
     telemetry,
     telemetryEnv: {
       uaFamily: uaFamily(navigator.userAgent),
