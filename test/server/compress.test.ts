@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { LeaderboardResponse } from '../../src/shared/protocol.js';
 import { COMPRESS_THRESHOLD } from '../../src/server/app.js';
-import { makeApp, postRun, submitBody } from './fixtures.js';
+import { makeApp, postRun, submitBody, uniqueMasks } from './fixtures.js';
 
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
 
@@ -13,7 +13,7 @@ describe('API compression', () => {
   beforeAll(async () => {
     ctx = await makeApp();
     for (let i = 0; i < 9; i++) {
-      const res = await postRun(ctx.app, submitBody({ player: { id: `compress-p-${i}`, name: `주자${i}` }, claim: { ticks: 500 + i } }));
+      const res = await postRun(ctx.app, submitBody({ player: { id: `compress-p-${i}`, name: `주자${i}` }, claim: { ticks: 500 + i }, masks: uniqueMasks() }));
       expect(res.statusCode).toBe(200);
     }
   });

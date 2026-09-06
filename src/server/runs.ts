@@ -5,7 +5,12 @@
  *
  * Order of checks (cheapest first): assist → sim / generator version → mode
  * eligibility (level, date, seed) → mask decoding → mask budget for the claim
- * → replay verification → story must be cleared → personal-best bookkeeping.
+ * → replay verification → story must be cleared → personal-best bookkeeping,
+ * where the replay hash refuses a copy of another player's run ('duplicate').
+ *
+ * Every verification emits one EMF line (VerifyMs, dimension build) and every
+ * new personal best one `hx` line with the replay heuristics — through the
+ * optional `log` sink, which the route wires to the instance logger.
  */
 import { randomUUID } from 'node:crypto';
 import type { LevelDef, Replay, RunClaim, RunSummary, VerifyResult } from '../sim/types.js';
@@ -14,14 +19,20 @@ import { DYING_T, INTRO_T, RESPAWN_INTRO_T } from '../sim/sim.js';
 import { decodeMasks } from '../sim/replay.js';
 import { boardScore } from '../sim/config.js';
 import { RejectReason, type Mode, type RunResponse, type RunSubmit } from '../shared/protocol.js';
-import { isSaveConflict } from './repo/errors.js';
+import { isDuplicateReplay, isSaveConflict } from './repo/errors.js';
 import type { Repo, StoredRun } from './repo/types.js';
 import { dailySeed, isFreshDate } from './daily.js';
 import { resolveLevel } from './levels.js';
+import { replayHash } from './hash.js';
+import { replayHeuristics, type Heuristics } from './heuristics.js';
+import { METRIC_MSG, verifyMetric, type LogSink } from './metrics.js';
+import { playerTag, tagSecretFor } from './players.js';
 import type { AppDeps } from './types.js';
 
 /** Daily runs (and their board entries) expire after 30 days. */
 export const DAILY_TTL_SECONDS = 30 * 86_400;
+/** pino message of the replay-heuristics line written for every new personal best. */
+export const HX_MSG = 'hx';
 
 export interface SubmitDeps {
   repo: Repo;
@@ -31,6 +42,8 @@ export interface SubmitDeps {
   verify: (def: LevelDef, replay: Replay, claim?: RunClaim) => VerifyResult | Promise<VerifyResult>;
   /** Level resolution; defaults to the real table + generator. Injectable for tests. */
   resolve?: (mode: Mode, levelId: string, seed: number) => LevelDef | null;
+  /** Structured lines (VerifyMs metric, hx); default: dropped. */
+  log?: LogSink;
 }
 
 export interface SubmitOutcome {
@@ -124,43 +137,71 @@ interface BestOutcome {
   personalBest: boolean;
 }
 
+interface VerifiedRun {
+  board: string;
+  seed: number;
+  summary: RunSummary;
+  score: number;
+  /** replayHash of the decoded masks. */
+  hash: string;
+  hx: Heuristics;
+}
+
+/** The hx line: who (tag, never the id), which run, and the numbers. */
+export function hxRecord(run: StoredRun, tag: string, hx: Heuristics): Record<string, unknown> {
+  return { evt: 'hx', runId: run.runId, playerTag: tag, mode: run.mode, board: run.board, levelId: run.levelId, ...hx };
+}
+
 /**
  * Personal-best bookkeeping. `saveBest` is conditional on the best we read; when
  * a concurrent submission of the same player wins the race the store refuses
  * the write, so we re-read and decide again — answering personalBest:false when
  * the other run was at least as good, retrying once when this run still beats it.
+ *
+ * The same replay (hash) submitted again by its owner is a no-op
+ * (personalBest:false, the existing run); submitted by anyone else it is a
+ * 'duplicate' and nothing is written.
  */
-async function persistBest(deps: SubmitDeps, body: RunSubmit, board: string, seed: number, summary: RunSummary, score: number): Promise<BestOutcome> {
+async function persistBest(deps: SubmitDeps, body: RunSubmit, v: VerifiedRun): Promise<BestOutcome | { duplicate: true }> {
   const { repo } = deps;
-  let prev = await repo.getPlayerBest(body.player.id, body.mode, board);
+  let prev = await repo.getPlayerBest(body.player.id, body.mode, v.board);
   for (let attempt = 0; ; attempt++) {
-    if (prev && score >= prev.score) return { runId: prev.runId, bestScore: prev.score, personalBest: false };
+    if (prev && (prev.hash === v.hash || v.score >= prev.score)) return { runId: prev.runId, bestScore: prev.score, personalBest: false };
     const now = deps.now();
     const run: StoredRun = {
       runId: randomUUID(),
       mode: body.mode,
-      board,
+      board: v.board,
       levelId: body.levelId,
-      seed,
+      seed: v.seed,
       assist: false,
       masks: body.masks,
       playerId: body.player.id,
       name: body.player.name,
-      score,
-      ticks: summary.ticks,
-      shards: summary.shards,
-      deaths: summary.deaths,
-      cleared: summary.cleared,
-      height: summary.height,
+      score: v.score,
+      ticks: v.summary.ticks,
+      shards: v.summary.shards,
+      deaths: v.summary.deaths,
+      cleared: v.summary.cleared,
+      height: v.summary.height,
       createdAt: now.toISOString(),
+      hash: v.hash,
+      hx: { ...v.hx },
     };
     if (body.mode === 'daily') run.ttl = Math.floor(now.getTime() / 1000) + DAILY_TTL_SECONDS;
     try {
       await repo.saveBest(run, prev?.runId);
-      return { runId: run.runId, bestScore: score, personalBest: true };
+      deps.log?.(hxRecord(run, playerTag(body.player.id, tagSecretFor(deps.dailySecret)), v.hx), HX_MSG);
+      return { runId: run.runId, bestScore: v.score, personalBest: true };
     } catch (err) {
+      if (isDuplicateReplay(err)) {
+        if (err.playerId === body.player.id) {
+          return { runId: err.runId ?? prev?.runId ?? run.runId, bestScore: prev?.score ?? v.score, personalBest: false };
+        }
+        return { duplicate: true };
+      }
       if (!isSaveConflict(err) || attempt >= 1) throw err;
-      prev = await repo.getPlayerBest(body.player.id, body.mode, board);
+      prev = await repo.getPlayerBest(body.player.id, body.mode, v.board);
     }
   }
 }
@@ -186,13 +227,21 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmit): Promise<Subm
   if (masks.length > maxMasksFor(body.claim)) return reject('too-long');
 
   const replay: Replay = { v: SIM_VERSION, levelId: body.levelId, seed, assist: false, masks };
+  const t0 = performance.now();
   const result = await Promise.resolve(deps.verify(def, replay, body.claim));
+  deps.log?.(verifyMetric(deps.now(), body.client.build, performance.now() - t0), METRIC_MSG);
   if (!result.ok) return reject(toRejectReason(result.reason), result.summary);
   const summary = result.summary;
   if (body.mode === 'story' && !summary.cleared) return reject('not-finished', summary);
 
   const score = boardScore(summary);
-  const best = await persistBest(deps, body, elig.board, seed, summary, score);
+  const verified: VerifiedRun = {
+    board: elig.board, seed, summary, score,
+    hash: replayHash(masks, body.levelId, seed),
+    hx: replayHeuristics(masks),
+  };
+  const best = await persistBest(deps, body, verified);
+  if ('duplicate' in best) return reject('duplicate', summary);
   const { better, total } = await deps.repo.rankOf(body.mode, elig.board, best.bestScore);
   return {
     status: 200,

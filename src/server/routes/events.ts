@@ -16,9 +16,9 @@
  * and the event lines go to the instance logger without a request id.
  *
  * `js_error`, `submit_result` and `fps_sample` additionally emit a CloudWatch
- * Embedded Metric Format line ('metric') so the log group yields metrics
- * (JsErrorCount, SubmitAccepted / SubmitRejected by reason, FrameMsP95 /
- * FrameMsP50 by tier) without a separate pipeline.
+ * Embedded Metric Format line ('metric', see ../metrics.ts) so the log group
+ * yields metrics (JsErrorCount, SubmitAccepted / SubmitRejected by reason,
+ * FrameMsP95 / FrameMsP50 by tier) without a separate pipeline.
  *
  * `sendBeacon` may post the JSON as text/plain; a string body is parsed as JSON
  * before validation so page-hide flushes are not lost.
@@ -28,22 +28,23 @@ import {
   EventBatch, MAX_EVENT_BODY_BYTES, RejectReason, type TelemetryEvent,
 } from '../../shared/protocol.js';
 import { clientIp } from '../ip.js';
+import { dimension, emfRecord, type LogRecord, type LogSink, type Metric } from '../metrics.js';
 import type { AppDeps } from '../types.js';
 import { badRequest } from './parse.js';
+
+export { METRIC_MSG, METRIC_NAMESPACE, emfRecord } from '../metrics.js';
+export type { LogRecord } from '../metrics.js';
 
 export const EVENTS_BODY_LIMIT = MAX_EVENT_BODY_BYTES;
 /** Telemetry batches one viewer address may post per minute. */
 export const EVENTS_PER_IP_PER_MINUTE = 30;
 const WINDOW_MS = 60_000;
-/** CloudWatch namespace of the EMF metrics. */
-export const METRIC_NAMESPACE = 'ClawdEchoTower';
-/** Message of an event line / a metric line. */
+/** Message of an event line. */
 export const EVENT_MSG = 'evt';
-export const METRIC_MSG = 'metric';
+const METRIC_LINE_MSG = 'metric';
 
-export type LogRecord = Record<string, unknown>;
 /** Where the lines go; the default is the instance logger at info. */
-export type EventSink = (record: LogRecord, msg: string) => void;
+export type EventSink = LogSink;
 
 /** `d` keys that must never reach a log line, whatever a client sends. */
 export const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['ip', 'playerId', 'player', 'playerTag', 'name', 'email']);
@@ -64,32 +65,8 @@ export function eventFields(batch: Batch, ev: TelemetryEvent): LogRecord {
   return out;
 }
 
-const DIM_TOKEN = /^[A-Za-z0-9._-]{1,64}$/;
-/** EMF dimension values must be short, non-empty strings; anything else collapses to `fallback`. */
-function dimension(v: unknown, fallback: string): string {
-  return typeof v === 'string' && DIM_TOKEN.test(v) ? v : fallback;
-}
-
 function finiteNumber(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
-}
-
-interface Metric { name: string; value: number; unit: 'Count' | 'Milliseconds' }
-
-/** One CloudWatch Embedded Metric Format record (the `_aws` envelope plus dimensions and values as root members). */
-export function emfRecord(now: Date, dimensions: Record<string, string>, metrics: Metric[]): LogRecord {
-  return {
-    _aws: {
-      Timestamp: now.getTime(),
-      CloudWatchMetrics: [{
-        Namespace: METRIC_NAMESPACE,
-        Dimensions: [Object.keys(dimensions)],
-        Metrics: metrics.map(({ name, unit }) => ({ Name: name, Unit: unit })),
-      }],
-    },
-    ...dimensions,
-    ...Object.fromEntries(metrics.map((m) => [m.name, m.value])),
-  };
 }
 
 /**
@@ -163,7 +140,7 @@ export function eventsRoute(app: FastifyInstance, deps: AppDeps, opts: EventsRou
     for (const ev of batch.events) {
       sink(eventFields(batch, ev), EVENT_MSG);
       const metric = metricFields(batch, ev, now);
-      if (metric) sink(metric, METRIC_MSG);
+      if (metric) sink(metric, METRIC_LINE_MSG);
     }
     return reply.code(204).send();
   });

@@ -16,6 +16,7 @@
 import type { LevelDef, Replay, RunClaim, RunSummary, VerifyResult } from '../../src/sim/types.js';
 import type { RunSubmit } from '../../src/shared/protocol.js';
 import type { AppDeps } from '../../src/server/types.js';
+import type { LogRecord } from '../../src/server/metrics.js';
 import { encodeMasks } from '../../src/sim/replay.js';
 import { GEN_VERSION, SIM_VERSION } from '../../src/sim/types.js';
 import { MemoryRepo } from '../../src/server/repo/memory.js';
@@ -41,6 +42,18 @@ export const MASKS = (() => {
   return m;
 })();
 export const MASKS_B64 = encodeMasks(MASKS);
+
+let uniqueSeq = 0;
+/**
+ * A fresh 720-tick log for every call: the same replay may be on a board only
+ * once (P3-1 'duplicate'), so a test that posts several players must give
+ * each their own masks. One RIGHT tick inside the first 600 is cleared per call.
+ */
+export function uniqueMasks(): string {
+  const m = new Uint8Array(MASKS);
+  m[uniqueSeq++ % 590] = 0;
+  return encodeMasks(m);
+}
 
 export const BASE_SUMMARY: RunSummary = {
   levelId: 't1', cleared: true, ticks: 720, time: 6, shards: 3, totalShards: 20,
@@ -100,6 +113,8 @@ export function dailyBody(seed: number, over: SubmitOverride = {}): RunSubmit {
 
 export interface MakeAppOpts {
   now?: Date;
+  /** A live clock (wins over `now`); pair it with a MemoryRepo built on the same clock for ttl tests. */
+  clock?: () => Date;
   verify?: AppDeps['verify'];
   rateLimit?: AppDeps['rateLimit'];
   repo?: MemoryRepo;
@@ -112,7 +127,7 @@ export async function makeApp(opts: MakeAppOpts = {}) {
   const repo = opts.repo ?? new MemoryRepo();
   const deps: AppDeps = {
     repo,
-    now: () => opts.now ?? FIXED_NOW,
+    now: opts.clock ?? (() => opts.now ?? FIXED_NOW),
     dailySecret: opts.dailySecret ?? SECRET,
     verify: opts.verify ?? echoVerify(),
     staticDir: opts.staticDir,
@@ -126,4 +141,27 @@ export async function makeApp(opts: MakeAppOpts = {}) {
 
 export async function postRun(app: Awaited<ReturnType<typeof makeApp>>['app'], body: unknown, headers: Record<string, string> = {}) {
   return app.inject({ method: 'POST', url: '/api/runs', payload: body as object, headers: { 'content-type': 'application/json', ...headers } });
+}
+
+export interface LogLine { record: LogRecord; msg: string }
+
+/**
+ * A recording logger standing in for `app.log`: every info line is captured as
+ * pino would receive it. Install with `captureLog(ctx.app)` — the api child
+ * instance inherits `log` from the root, so the routes' default sinks land here.
+ */
+export function captureLog(app: Awaited<ReturnType<typeof makeApp>>['app']): LogLine[] {
+  const lines: LogLine[] = [];
+  const noop = () => {};
+  const logger = {
+    info: (record: LogRecord | string, msg?: string) => {
+      if (typeof record === 'string') lines.push({ record: {}, msg: record });
+      else lines.push({ record, msg: msg ?? '' });
+    },
+    warn: noop, error: noop, debug: noop, trace: noop, fatal: noop, silent: noop,
+    level: 'info',
+    child() { return logger; },
+  };
+  (app as unknown as { log: unknown }).log = logger;
+  return lines;
 }

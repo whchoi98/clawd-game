@@ -5,6 +5,7 @@
  *   PORT          listen port (default 8080)
  *   TABLE_NAME    DynamoDB table; unset → in-memory repo (local dev only)
  *   DAILY_SECRET  HMAC key for daily seeds; unset → random per process (seeds differ across tasks!)
+ *   TAG_SECRET    HMAC key for playerTag and transfer-code check characters; unset → DAILY_SECRET
  *   STATIC_DIR    built client to serve (dist/public); unset → API only
  *   APP_VERSION   reported by /api/health
  *   SEED_BOARDS   0 → do not seed empty story boards with the goal runs at boot (default: seed)
@@ -15,6 +16,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { verifyReplayChunked } from '../sim/replay.js';
 import { buildApp } from './app.js';
 import { asyncVerifier } from './runs.js';
+import { configureTagSecret } from './players.js';
 import { MemoryRepo } from './repo/memory.js';
 import { DynamoRepo } from './repo/dynamo.js';
 import type { Repo } from './repo/types.js';
@@ -39,6 +41,16 @@ async function main(): Promise<void> {
   if (!dailySecret) {
     dailySecret = randomBytes(32).toString('hex');
     warnings.push('DAILY_SECRET is not set: using a random per-process secret; daily seeds will differ between tasks and restarts');
+  }
+
+  // Player tags and transfer-code check characters are keyed separately when the
+  // deployment provides TAG_SECRET; otherwise they fall back to the daily secret.
+  const tagSecret = process.env.TAG_SECRET;
+  if (tagSecret) {
+    configureTagSecret(tagSecret);
+  } else {
+    configureTagSecret(undefined);
+    warnings.push('TAG_SECRET is not set: player tags and transfer codes fall back to DAILY_SECRET');
   }
 
   const app = await buildApp({
