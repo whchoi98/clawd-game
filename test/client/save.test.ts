@@ -9,10 +9,12 @@ import { describe, expect, it } from 'vitest';
 import { GEN_VERSION, SIM_VERSION } from '../../src/sim/types.js';
 import type { Progress } from '../../src/client/contracts.js';
 import type { LevelDef } from '../../src/sim/types.js';
+import { MAX_TRANSFER_BYTES, TransferCreateRequest, TransferGetResponse } from '../../src/shared/protocol.js';
 import {
-  DEFAULT_ECHO_WORLD_MODE, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, daysBucket, defaultLevelRecord, defaultProgress,
-  defaultSettings, echoMasks, echoWorldMode, fallbackName, isValidName, markEcho, recordSegmentBest, repairProgress,
-  retentionBuckets, segmentBests, setEchoWorldMode, streakFor, touchPlayDay, unlockedZones, type StorageLike,
+  DEFAULT_ECHO_WORLD_MODE, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, TRANSFER_MARGIN_BYTES, daysBucket, defaultLevelRecord,
+  defaultProgress, defaultSettings, echoMasks, echoWorldMode, fallbackName, isValidName, jsonBytes, markEcho, mergeProgress,
+  recordSegmentBest, repairProgress, repairSettings, retentionBuckets, segmentBests, setEchoWorldMode, snapshotProgress, streakFor,
+  touchPlayDay, unlockedZones, type StorageLike,
 } from '../../src/client/save.js';
 
 class MemStorage implements StorageLike {
@@ -290,5 +292,238 @@ describe('P2-4 · 세계 메아리 mode and segment bests', () => {
     expect(segmentBests(save.progress.levels.plain)).toEqual([]);
     // the other fields are untouched
     expect(save.progress.levels.ok.bestTicks).toBe(10);
+  });
+});
+
+// ================================================================ P3-5 · progress transfer
+const LOCAL_ID = 'local-device-id-01';
+const REMOTE_ID = 'remote-device-id-0001';
+
+/** A lived-in local save: replays everywhere a replay can live, plus install-only fields. */
+function richProgress(): Progress {
+  const p = defaultProgress(LOCAL_ID, '로컬');
+  p.levels.t1 = { done: true, bestTicks: 6000, bestShards: 10, stars: 2, relics: 0, deaths: 4, runId: 'run-local-1', masks: 'AAEA', sim: SIM_VERSION, sessionDeaths: 3, segBest: [100, 200] };
+  p.levels.t2 = { done: true, bestTicks: 8000, bestShards: 4, stars: 1, relics: 1, deaths: 9, runId: 'run-local-2', masks: 'BBBB', sim: SIM_VERSION };
+  p.daily['2026-09-05'] = { bestTicks: 7000, cleared: true, height: 40, seed: 5, runId: 'run-d5', masks: 'AAEA', sim: SIM_VERSION, rank: 3 };
+  p.daily['2026-09-04'] = { bestTicks: 0, cleared: false, height: 30, seed: 4 };
+  p.daily['2026-09-02'] = { bestTicks: 6100, cleared: true, height: 90, seed: 2, runId: 'run-d2' };
+  p.endless = { bestHeight: 80, bestShards: 5, runs: 3, bestMasks: 'AAEA', bestSeed: 9, bestSim: SIM_VERSION, bestGen: GEN_VERSION };
+  p.seen = { t1: true, 'name:asked': true };
+  p.totals = { deaths: 20, shards: 100 };
+  p.lastLevel = 't2';
+  p.firstSeen = T0 - 3 * DAY;
+  p.playDays = 3;
+  p.lastPlayDay = '2026-09-06';
+  return p;
+}
+
+describe('P3-5 · snapshotProgress (what travels to the other device)', () => {
+  it('strips every replay and install-only field, keeps records, run ids, identity, seen flags and retention', () => {
+    const snap = snapshotProgress(richProgress());
+    const json = JSON.stringify(snap);
+    for (const forbidden of ['masks', 'bestMasks', 'bestSeed', 'bestSim', 'bestGen', 'segBest', 'sessionDeaths', '"sim"']) {
+      expect(json, forbidden).not.toContain(forbidden);
+    }
+    expect(snap.levels).toEqual({
+      t1: { done: true, bestTicks: 6000, bestShards: 10, stars: 2, relics: 0, deaths: 4, runId: 'run-local-1' },
+      t2: { done: true, bestTicks: 8000, bestShards: 4, stars: 1, relics: 1, deaths: 9, runId: 'run-local-2' },
+    });
+    expect((snap.daily as Record<string, unknown>)['2026-09-05']).toEqual({ bestTicks: 7000, cleared: true, height: 40, seed: 5, runId: 'run-d5', rank: 3 });
+    expect((snap.daily as Record<string, unknown>)['2026-09-04']).toEqual({ bestTicks: 0, cleared: false, height: 30, seed: 4 });
+    expect(snap.endless).toEqual({ bestHeight: 80, bestShards: 5, runs: 3 });
+    expect(snap.player).toEqual({ id: LOCAL_ID, name: '로컬' });
+    expect(snap.seen).toEqual({ t1: true, 'name:asked': true });
+    expect(snap.totals).toEqual({ deaths: 20, shards: 100 });
+    expect(snap.lastLevel).toBe('t2');
+    expect(snap.firstSeen).toBe(T0 - 3 * DAY);
+    expect(snap.playDays).toBe(3);
+    expect(snap.lastPlayDay).toBe('2026-09-06');
+    // it is a valid wire body and a valid Progress on the other side
+    const body: TransferCreateRequest = { player: { id: LOCAL_ID, name: '로컬' }, progress: snap };
+    expect(TransferCreateRequest.safeParse(body).success).toBe(true);
+    expect(jsonBytes(body)).toBeLessThanOrEqual(MAX_TRANSFER_BYTES);
+    const back = repairProgress(snap, defaultProgress('other-device-id'));
+    expect(back.levels.t1.bestTicks).toBe(6000);
+    expect(back.levels.t1.masks).toBeUndefined();
+  });
+
+  it('trims a long daily history oldest-first until the document fits the byte cap', () => {
+    const p = richProgress();
+    const first = Date.UTC(2025, 0, 1);
+    for (let i = 0; i < 400; i++) {
+      const date = new Date(first + i * DAY).toISOString().slice(0, 10);
+      p.daily[date] = { bestTicks: 5000 + i, cleared: true, height: 60, seed: i, runId: `run-${i}-abcdefghijklmnop`, rank: i + 1 };
+    }
+    const newest = Object.keys(p.daily).sort().at(-1)!;
+    const full = snapshotProgress(p, Number.MAX_SAFE_INTEGER);
+    expect(jsonBytes(full)).toBeGreaterThan(MAX_TRANSFER_BYTES);
+    const snap = snapshotProgress(p);
+    expect(jsonBytes(snap)).toBeLessThanOrEqual(MAX_TRANSFER_BYTES - TRANSFER_MARGIN_BYTES);
+    expect(jsonBytes({ player: p.player, progress: snap })).toBeLessThanOrEqual(MAX_TRANSFER_BYTES);
+    const dates = Object.keys(snap.daily as Record<string, unknown>).sort();
+    expect(dates.length).toBeGreaterThan(30);
+    expect(dates.length).toBeLessThan(403);
+    expect(dates.at(-1)).toBe(newest);
+    // everything but the daily history is intact
+    expect(snap.levels).toEqual(snapshotProgress(richProgress()).levels);
+  });
+
+  it('jsonBytes counts UTF-8 bytes (Korean names are three bytes a code point)', () => {
+    expect(jsonBytes({ a: 1 })).toBe(7);
+    expect(jsonBytes('클')).toBe(5); // quotes + 3
+  });
+});
+
+describe('P3-5 · mergeProgress (restoring on the other device)', () => {
+  function remoteSnap(over: Record<string, unknown> = {}): TransferGetResponse {
+    return {
+      playerId: REMOTE_ID, name: '리모트',
+      progress: {
+        v: 1,
+        levels: {
+          // slower than the local t1 (6000) but with more stars
+          t1: { done: true, bestTicks: 7000, bestShards: 12, stars: 3, relics: 1, deaths: 2, runId: 'run-remote-1' },
+          // faster than the local t2 (8000); a replay that must never be imported
+          t2: { done: true, bestTicks: 5000, bestShards: 2, stars: 3, relics: 0, deaths: 1, runId: 'run-remote-2', masks: 'ZZZZ', sim: SIM_VERSION, segBest: [1, 2], sessionDeaths: 7 },
+          // unknown locally
+          t3: { done: true, bestTicks: 9000, bestShards: 0, stars: 1, relics: 0, deaths: 0, runId: 'run-remote-3', masks: 'ZZZZ', sim: SIM_VERSION },
+        },
+        daily: {
+          '2026-09-05': { bestTicks: 6500, cleared: true, height: 40, seed: 5, runId: 'run-r5', rank: 1, masks: 'ZZZZ', sim: SIM_VERSION }, // faster clear
+          '2026-09-04': { bestTicks: 0, cleared: false, height: 50, seed: 4 },                                                          // higher, both uncleared
+          '2026-09-03': { bestTicks: 7200, cleared: true, height: 40, seed: 3, runId: 'run-r3' },                                        // only remote
+          '2026-09-02': { bestTicks: 0, cleared: false, height: 150, seed: 2 },                                                         // local clear beats a height
+        },
+        endless: { bestHeight: 120, bestShards: 1, runs: 5 },
+        totals: { deaths: 15, shards: 140 },
+        seen: { t3: true, 'assist:t1': true, junk: false },
+        lastLevel: 't3',
+        player: { id: REMOTE_ID, name: '리모트' },
+        firstSeen: T0 - 10 * DAY, playDays: 8, lastPlayDay: '2026-09-07',
+        ...over,
+      },
+    };
+  }
+
+  it('keeps the better record per zone, replaces the player identity, and never imports a replay', () => {
+    const local = richProgress();
+    const out = mergeProgress(local, remoteSnap());
+    expect(out).toBe(local);
+    // t1: the local clear is faster → local time, local run id, local replay kept; stars / shards / relics take the max
+    expect(local.levels.t1.bestTicks).toBe(6000);
+    expect(local.levels.t1.runId).toBe('run-local-1');
+    expect(local.levels.t1.masks).toBe('AAEA');
+    expect(echoMasks(local.levels.t1)).toBe('AAEA');
+    expect(local.levels.t1.stars).toBe(3);
+    expect(local.levels.t1.bestShards).toBe(12);
+    expect(local.levels.t1.relics).toBe(1);
+    expect(local.levels.t1.deaths).toBe(4);
+    expect(local.levels.t1.segBest).toEqual([100, 200]);
+    expect(local.levels.t1.sessionDeaths).toBe(3);
+    // t2: the other device's clear is faster → its time and run id; the local replay no longer fits the record, the remote one is never taken
+    expect(local.levels.t2.bestTicks).toBe(5000);
+    expect(local.levels.t2.runId).toBe('run-remote-2');
+    expect(local.levels.t2.masks).toBeUndefined();
+    expect(local.levels.t2.sim).toBeUndefined();
+    expect(local.levels.t2.segBest).toBeUndefined();
+    expect(local.levels.t2.sessionDeaths).toBeUndefined();
+    // t3: new here, replay stripped
+    expect(local.levels.t3.done).toBe(true);
+    expect(local.levels.t3.bestTicks).toBe(9000);
+    expect(local.levels.t3.masks).toBeUndefined();
+    expect(JSON.stringify(local.levels)).not.toContain('ZZZZ');
+    // identity: the other device's
+    expect(local.player).toEqual({ id: REMOTE_ID, name: '리모트' });
+  });
+
+  it('daily, endless, totals, seen, lastLevel and retention follow the same rules', () => {
+    const local = richProgress();
+    mergeProgress(local, remoteSnap());
+    const d = local.daily;
+    expect(d['2026-09-05']).toEqual({ bestTicks: 6500, cleared: true, height: 40, seed: 5, runId: 'run-r5', rank: 1 });
+    expect(d['2026-09-04']).toEqual({ bestTicks: 0, cleared: false, height: 50, seed: 4 });
+    expect(d['2026-09-03']).toEqual({ bestTicks: 7200, cleared: true, height: 40, seed: 3, runId: 'run-r3' });
+    expect(d['2026-09-02']).toEqual({ bestTicks: 6100, cleared: true, height: 150, seed: 2, runId: 'run-d2' });
+    expect(JSON.stringify(d)).not.toContain('ZZZZ');
+    // endless: the higher climb wins and the local best replay, which belonged to the lower one, is dropped
+    expect(local.endless).toEqual({ bestHeight: 120, bestShards: 5, runs: 5 });
+    expect(local.totals).toEqual({ deaths: 20, shards: 140 });
+    expect(local.seen).toEqual({ t1: true, 'name:asked': true, t3: true, 'assist:t1': true });
+    expect(local.lastLevel).toBe('t2');
+    expect(local.firstSeen).toBe(T0 - 10 * DAY);
+    expect(local.playDays).toBe(8);
+    expect(local.lastPlayDay).toBe('2026-09-07');
+  });
+
+  it('a lower remote endless climb leaves the local best replay alone; an empty local save takes everything', () => {
+    const local = richProgress();
+    mergeProgress(local, remoteSnap({ endless: { bestHeight: 40, bestShards: 9, runs: 1 }, lastLevel: null }));
+    expect(local.endless.bestHeight).toBe(80);
+    expect(local.endless.bestMasks).toBe('AAEA');
+    expect(local.endless.bestShards).toBe(9);
+    expect(local.endless.runs).toBe(3);
+
+    const fresh = defaultProgress('fresh-device-id');
+    mergeProgress(fresh, remoteSnap());
+    expect(fresh.player.id).toBe(REMOTE_ID);
+    expect(fresh.levels.t2.bestTicks).toBe(5000);
+    expect(fresh.levels.t2.masks).toBeUndefined();
+    expect(fresh.lastLevel).toBe('t3');
+    expect(fresh.daily['2026-09-05'].runId).toBe('run-r5');
+  });
+
+  it('sanitises a hostile snapshot: junk records are repaired, an invalid identity keeps the local one, nothing throws', () => {
+    const local = richProgress();
+    mergeProgress(local, {
+      playerId: 'bad id!', name: '<x>',
+      progress: { levels: { t1: 'nope', t9: { done: 'yes', bestTicks: -5, stars: 99 } }, daily: { nope: { bestTicks: 1 } }, endless: 3, seen: 'x', totals: null },
+    });
+    expect(local.player).toEqual({ id: LOCAL_ID, name: '로컬' });
+    expect(local.levels.t1.bestTicks).toBe(6000);
+    expect(local.levels.t9).toEqual({ done: false, bestTicks: 0, bestShards: 0, stars: 3, relics: 0, deaths: 0 });
+    expect(local.daily.nope).toBeUndefined();
+    expect(local.endless.bestHeight).toBe(80);
+  });
+
+  it('Save.importSnapshot writes through at once and Save.snapshot() is snapshotProgress of the live progress', () => {
+    const storage = new MemStorage();
+    storage.setItem(PROGRESS_KEY, JSON.stringify(richProgress()));
+    let scheduled = 0;
+    const save = new Save({ storage, schedule: () => { scheduled++; return 0; }, cancel: () => {} });
+    expect(save.snapshot()).toEqual(snapshotProgress(save.progress));
+    save.importSnapshot(remoteSnap());
+    const stored = JSON.parse(storage.getItem(PROGRESS_KEY)!) as Progress;
+    expect(stored.player.id).toBe(REMOTE_ID);
+    expect(stored.levels.t2.bestTicks).toBe(5000);
+    expect(stored.levels.t2.masks).toBeUndefined();
+    expect(stored.levels.t1.masks).toBe('AAEA');
+    expect(scheduled).toBe(0); // no debounce: the write was immediate
+  });
+});
+
+describe('P3-8 · Settings.haptics default', () => {
+  it('repairSettings keeps a boolean, drops junk; the Save seeds the device default only when the player never chose', () => {
+    expect(repairSettings({ haptics: false }, defaultSettings()).haptics).toBe(false);
+    expect(repairSettings({ haptics: true }, defaultSettings()).haptics).toBe(true);
+    expect('haptics' in repairSettings({ haptics: 'yes' }, defaultSettings())).toBe(false);
+    expect('haptics' in repairSettings(undefined, defaultSettings())).toBe(false);
+
+    const fresh = (opts: { coarsePointer?: boolean; reducedMotion?: boolean }) => new Save({ storage: null, ...opts }).settings.haptics;
+    expect(fresh({ coarsePointer: true })).toBe(true);
+    expect(fresh({ coarsePointer: true, reducedMotion: true })).toBe(false);
+    expect(fresh({})).toBe(false);
+    expect(fresh({ reducedMotion: true })).toBe(false);
+
+    // a stored choice wins over the device default, either way
+    const storage = new MemStorage();
+    storage.setItem(SETTINGS_KEY, JSON.stringify({ ...defaultSettings(), haptics: true }));
+    expect(new Save({ storage, coarsePointer: false, reducedMotion: true }).settings.haptics).toBe(true);
+    storage.setItem(SETTINGS_KEY, JSON.stringify({ ...defaultSettings(), haptics: false }));
+    expect(new Save({ storage, coarsePointer: true }).settings.haptics).toBe(false);
+    // an old save without the field gets the device default and keeps its other choices
+    storage.setItem(SETTINGS_KEY, JSON.stringify({ ...defaultSettings(), music: 0.1 }));
+    const s = new Save({ storage, coarsePointer: true });
+    expect(s.settings.haptics).toBe(true);
+    expect(s.settings.music).toBeCloseTo(0.1);
   });
 });

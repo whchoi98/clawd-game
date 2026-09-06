@@ -15,8 +15,12 @@ import { PLAYER_H, PLAYER_W } from '../../src/sim/config.js';
 import type { EntityState, FoeState, LevelDef, PlayerState, SimEvent, SimState } from '../../src/sim/types.js';
 import { BIOMES, BIOME_ORDER, C } from '../../src/shared/biomes.js';
 import type { FxState, GhostView, Settings, WorldView } from '../../src/client/contracts.js';
-import { Renderer, SKINS } from '../../src/client/render/index.js';
-import type { SimView } from '../../src/client/render/index.js';
+import {
+  AUTOTIER_KEY, FRAME_WINDOW_S, FrameHistogram, MENU_BUCKET_MS, MENU_COST_RATIO, MENU_FRAME_MS, MENU_SLOW_RATIO, MIN_MENU_SAMPLES,
+  MIN_WINDOW_SAMPLES, Renderer, SKINS, STEP_DOWN_LOCK_S, STEP_UP_AFTER_S, Stage, readStoredTier, snapRefreshRate,
+} from '../../src/client/render/index.js';
+import { MENU_FRAME_DT } from '../../src/client/scenes.js';
+import type { SimView, TierStorage } from '../../src/client/render/index.js';
 import { DEATH_MARK_COLOR } from '../../src/client/render/actors.js';
 
 // ------------------------------------------------------------------ stubs
@@ -123,11 +127,13 @@ class StubCanvas {
   toDataURL(): string { return ''; }
 }
 
-function makeRenderer(w = 960, h = 540, dpr = 1) {
+function makeRenderer(w = 960, h = 540, dpr = 1, storage: TierStorage | null = null) {
   const canvas = new StubCanvas();
   const r = new Renderer(canvas as unknown as HTMLCanvasElement, {
     createCanvas: () => new StubCanvas() as unknown as HTMLCanvasElement,
     viewport: () => ({ w, h, dpr }),
+    // never happy-dom's shared localStorage: each test decides where the auto tier is remembered
+    storage,
   });
   return { r, canvas, ctx: canvas.ctx };
 }
@@ -528,5 +534,339 @@ describe('Renderer', () => {
     ctx.__sets.strokeStyle = [];
     r.draw(sim, VIEW, FX, [], 1 / 60);
     expect(marksDrawn()).toBe(0);
+  });
+});
+
+// ------------------------------------------------------------------ adaptive quality v2 (P3-13)
+class MemTier implements TierStorage {
+  readonly map = new Map<string, string>();
+  writes = 0;
+  getItem(k: string): string | null { return this.map.has(k) ? this.map.get(k)! : null; }
+  setItem(k: string, v: string): void { this.map.set(k, v); this.writes++; }
+}
+
+function makeStage(storage: TierStorage | null = null): Stage {
+  return new Stage(new StubCanvas() as unknown as HTMLCanvasElement, {
+    createCanvas: () => new StubCanvas() as unknown as HTMLCanvasElement,
+    viewport: () => ({ w: 960, h: 540, dpr: 1 }),
+    storage,
+  });
+}
+
+/** Feed `seconds` of frames whose interval is `dtOf(frameIndex)` seconds; `work` is the render cost handed along, if any. */
+function feed(st: Stage, seconds: number, dtOf: (i: number) => number, work?: (i: number) => number): void {
+  let t = 0;
+  for (let i = 0; t < seconds; i++) {
+    const dt = dtOf(i);
+    st.sampleFps(dt, work ? work(i) : undefined);
+    t += dt;
+  }
+}
+
+/** Auto tier changes across a run of frames, with the tiers visited. */
+function changesDuring(st: Stage, run: () => void): { changes: number; tiers: string[] } {
+  const before = st.autoChanges;
+  const tiers = [st.quality as string];
+  const origSet = st.setQuality.bind(st);
+  st.setQuality = (q) => { origSet(q); if (tiers.at(-1) !== q) tiers.push(q); };
+  run();
+  return { changes: st.autoChanges - before, tiers };
+}
+
+describe('Stage · adaptive quality v2 (P3-13)', () => {
+  it('FrameHistogram: 1 ms buckets, conservative percentiles, exact bucket means, an open last bucket', () => {
+    const h = new FrameHistogram();
+    expect(h.percentile(95)).toBe(0);
+    for (let i = 0; i < 95; i++) h.add(16.67);
+    for (let i = 0; i < 5; i++) h.add(28.5);
+    expect(h.n).toBe(100);
+    expect(h.percentile(50)).toBe(17);
+    expect(h.percentile(95)).toBe(17);
+    h.add(28.5); // 6 of 101 slow frames → the 95th percentile crosses into the slow bucket
+    expect(h.percentile(95)).toBe(29);
+    expect(h.meanAt(50)).toBeCloseTo(16.67, 5);
+    expect(h.meanAt(99)).toBeCloseTo(28.5, 5);
+    h.add(250); h.add(33.4); h.add(-1); h.add(NaN);
+    expect(h.counts[31]).toBe(2); // 31 ms and slower share the open last bucket
+    expect(h.percentile(100)).toBe(32);
+    expect(h.n).toBe(103);
+    h.reset();
+    expect(h.n).toBe(0);
+    expect(h.percentile(50)).toBe(0);
+    // a wider grid for throttled menu frames: 4 ms buckets up to 124 ms, then open
+    const wide = new FrameHistogram(MENU_BUCKET_MS);
+    wide.add(33.3);
+    expect(wide.percentile(50)).toBe(36);
+    wide.reset();
+    wide.add(250);
+    expect(wide.percentile(50)).toBe(128);
+    wide.reset();
+    wide.add(50);
+    expect(wide.percentile(50)).toBe(52);
+  });
+
+  it('snapRefreshRate reads the median rAF interval as a known refresh rate, or nothing when the loop is not vsync-locked', () => {
+    expect(snapRefreshRate(1000 / 60)).toBe(60);
+    expect(snapRefreshRate(1000 / 120)).toBe(120);
+    expect(snapRefreshRate(1000 / 144)).toBe(144);
+    expect(snapRefreshRate(1000 / 165)).toBe(165);
+    expect(snapRefreshRate(1000 / 90)).toBe(90);
+    expect(snapRefreshRate(18.2)).toBe(60);   // 55 fps on a 60 Hz display, slightly late
+    expect(snapRefreshRate(24.4)).toBeNull(); // 41 fps: dropped frames, not a 41 Hz display
+    expect(snapRefreshRate(33.3)).toBeNull();
+    expect(snapRefreshRate(0)).toBeNull();
+  });
+
+  it('alternating 58 / 41 fps for 60 s changes the tier at most twice (down, down) and never flaps back up', () => {
+    // per frame
+    const a = makeStage();
+    const perFrame = changesDuring(a, () => feed(a, 60, (i) => (i % 2 ? 1 / 41 : 1 / 58)));
+    expect(perFrame.changes).toBeLessThanOrEqual(2);
+    expect(perFrame.tiers.slice(1).every((t, i, arr) => i === 0 || t !== arr[i - 1])).toBe(true);
+    expect(a.quality).toBe('low');
+    expect(a.hz).toBe(60);
+    // per 2 s window: 2 s at 58 fps, 2 s at 41 fps, …
+    const b = makeStage();
+    const perWindow = changesDuring(b, () => feed(b, 60, (i) => {
+      const at = i * (1 / 50);
+      return Math.floor(at / 2) % 2 ? 1 / 41 : 1 / 58;
+    }));
+    expect(perWindow.changes).toBeLessThanOrEqual(2);
+    expect(perWindow.tiers).not.toContain('high-again');
+    expect(['balanced', 'low']).toContain(b.quality);
+    expect(b.hz).toBe(60);
+  });
+
+  it('a steady 55 fps never changes the tier (not slow enough to drop, not smooth enough to rise)', () => {
+    const st = makeStage();
+    const r = changesDuring(st, () => feed(st, 60, () => 1 / 55, () => 4));
+    expect(r.changes).toBe(0);
+    expect(st.quality).toBe('high');
+    expect(st.hz).toBe(60);
+    const s = st.fpsStats();
+    expect(s.p50).toBe(19);
+    expect(s.p95).toBe(19);
+    expect(s.tier).toBe('high');
+  });
+
+  it('sustained 20 fps steps down twice, window by window; the smoothed fps follows', () => {
+    const st = makeStage();
+    feed(st, FRAME_WINDOW_S + 0.1, () => 1 / 20);
+    expect(st.quality).toBe('balanced');
+    feed(st, FRAME_WINDOW_S + 0.1, () => 1 / 20);
+    expect(st.quality).toBe('low');
+    feed(st, FRAME_WINDOW_S + 0.1, () => 1 / 20);
+    expect(st.quality).toBe('low');
+    expect(st.autoChanges).toBe(2);
+    expect(st.fps).toBeLessThan(25);
+  });
+
+  it('thresholds are in display periods: a steady 60 fps on a 120 Hz display is dropped frames and steps down', () => {
+    const st = makeStage();
+    feed(st, 4.1, () => 1 / 120, () => 2);
+    expect(st.hz).toBe(120);
+    expect(st.quality).toBe('high');
+    expect(st.fpsStats().p95).toBe(9);
+    feed(st, FRAME_WINDOW_S + 0.1, () => 1 / 60, () => 2);
+    expect(st.quality).toBe('balanced');
+    // the estimate never drops within a session, even when the loop slows to 60
+    expect(st.hz).toBe(120);
+  });
+
+  it('steps up once per session, only after 60 s of smooth cheap frames and never inside the 60 s lock after a step down', () => {
+    const st = makeStage();
+    feed(st, FRAME_WINDOW_S + 0.1, () => 1 / 20);
+    expect(st.quality).toBe('balanced');
+    // smooth 60 fps with a cheap render: locked for STEP_DOWN_LOCK_S, then STEP_UP_AFTER_S of smooth windows
+    feed(st, STEP_DOWN_LOCK_S - 2, () => 1 / 60, () => 3);
+    expect(st.quality).toBe('balanced');
+    feed(st, STEP_UP_AFTER_S - 2, () => 1 / 60, () => 3);
+    expect(st.quality).toBe('balanced');
+    feed(st, 8, () => 1 / 60, () => 3);
+    expect(st.quality).toBe('high');
+    expect(st.autoChanges).toBe(2);
+    // once per session: after another step down (the slow burst may straddle two windows and cost a
+    // second step), 130 s of the same smooth frames never raise the tier again
+    feed(st, FRAME_WINDOW_S + 0.1, () => 1 / 20);
+    expect(st.quality).not.toBe('high');
+    feed(st, 2 * FRAME_WINDOW_S + 0.1, () => 1 / 60, () => 3);
+    const settled = st.quality, changes = st.autoChanges;
+    feed(st, 130, () => 1 / 60, () => 3);
+    expect(st.quality).toBe(settled);
+    expect(st.autoChanges).toBe(changes);
+  });
+
+  it('a measured render cost near the budget blocks the step up; without a measurement smooth intervals suffice', () => {
+    const costly = makeStage();
+    feed(costly, FRAME_WINDOW_S + 0.1, () => 1 / 20);
+    feed(costly, STEP_DOWN_LOCK_S + STEP_UP_AFTER_S + 10, () => 1 / 60, () => 14); // 14 ms > 0.78 × 16.7
+    expect(costly.quality).toBe('balanced');
+    const blind = makeStage();
+    feed(blind, FRAME_WINDOW_S + 0.1, () => 1 / 20);
+    feed(blind, STEP_DOWN_LOCK_S + STEP_UP_AFTER_S + 10, () => 1 / 60);
+    expect(blind.quality).toBe('high');
+  });
+
+  it('ignores a tab-switch gap and a single hiccup, still judges a crawling device, and cheap menu frames change nothing', () => {
+    const st = makeStage();
+    feed(st, 1.9, () => 1 / 60);
+    st.sampleFps(3);     // hidden tab: not a sample
+    st.sampleFps(0);
+    st.sampleFps(-1);
+    feed(st, 0.3, () => 1 / 60);
+    expect(st.quality).toBe('high');
+    // one 250 ms hiccup (the shell's dt clamp) inside a smooth window is one sample: no decision
+    const hiccup = makeStage();
+    feed(hiccup, 1.5, () => 1 / 60);
+    hiccup.sampleFps(0.25);
+    feed(hiccup, 0.6, () => 1 / 60);
+    expect(hiccup.quality).toBe('high');
+    // a device crawling at 2 fps (four 500 ms frames in a window) is judged, not excused for being too slow to sample
+    const crawling = makeStage();
+    for (let i = 0; i < MIN_WINDOW_SAMPLES; i++) crawling.sampleFps(0.5);
+    expect(crawling.quality).toBe('balanced');
+    expect(crawling.fpsStats().p95).toBe(32);
+    // fewer than MIN_WINDOW_SAMPLES frames never close a window (dt caps at 0.5 s)
+    const few = makeStage();
+    for (let i = 0; i < MIN_WINDOW_SAMPLES - 1; i++) few.sampleFps(0.5);
+    expect(few.quality).toBe('high');
+    // the title backdrop runs at 30 fps: its intervals move the smoothed fps only, and a cheap backdrop changes nothing
+    const menu = makeStage();
+    for (let i = 0; i < 300; i++) menu.noteFrame(1 / 30);
+    for (let i = 0; i < 300; i++) menu.noteFrame(1 / 30, 4);
+    expect(menu.quality).toBe('high');
+    expect(menu.autoChanges).toBe(0);
+    expect(menu.fps).toBeLessThan(35);
+  });
+
+  it('menu frames are an interval probe too: a backdrop that cannot hold the 30 fps throttle steps down even when its JS cost reads cheap', () => {
+    expect(MENU_FRAME_MS).toBeCloseTo(1000 * MENU_FRAME_DT, 9);
+    expect(MENU_SLOW_RATIO * MENU_FRAME_MS).toBeCloseTo(48, 5);
+    // a fast device draws the backdrop every 33 ms (60 Hz) or every 33–42 ms (120 Hz): never slow
+    const fast = makeStage();
+    for (let i = 0; i < 70; i++) fast.noteFrame(1 / 30, 2);
+    for (let i = 0; i < 70; i++) fast.noteFrame(i % 2 ? 5 / 120 : 4 / 120, 2);
+    expect(fast.quality).toBe('high');
+    // a raster-bound device: 20 fps backdrop frames whose JS-side cost is tiny
+    const raster = makeStage();
+    for (let i = 0; i < 41; i++) raster.noteFrame(1 / 20, 2);
+    expect(raster.quality).toBe('balanced');
+    for (let i = 0; i < 41; i++) raster.noteFrame(1 / 20, 2);
+    expect(raster.quality).toBe('low');
+    // without any cost measurement the interval alone still judges
+    const blind = makeStage();
+    for (let i = 0; i < 9; i++) blind.noteFrame(0.25);
+    expect(blind.quality).toBe('balanced');
+  });
+
+  it('menu frames are a cost probe: a backdrop costing more than a display period steps down before play, once per window, never up', () => {
+    const storage = new MemTier();
+    const st = makeStage(storage);
+    // 2 s of 30 fps title frames whose render cost is 40 ms (a weak device at high on a big canvas)
+    for (let i = 0; i < 50; i++) st.noteFrame(1 / 30, 40);
+    expect(st.quality).toBe('high'); // the window has not closed yet
+    for (let i = 0; i < 11; i++) st.noteFrame(1 / 30, 40);
+    expect(st.quality).toBe('balanced');
+    expect(JSON.parse(storage.getItem(AUTOTIER_KEY)!)).toEqual({ v: 1, tier: 'balanced' });
+    for (let i = 0; i < 62; i++) st.noteFrame(1 / 30, 30);
+    expect(st.quality).toBe('low');
+    expect(st.autoChanges).toBe(2);
+    // a cheap backdrop never steps up, and neither does a long smooth play stretch inside the lock
+    for (let i = 0; i < 400; i++) st.noteFrame(1 / 30, 2);
+    expect(st.quality).toBe('low');
+    feed(st, 30, () => 1 / 60, () => 2);
+    expect(st.quality).toBe('low');
+    // a crawling device (250 ms title frames, the shell's clamp) is judged after eight of them; fewer than
+    // MIN_MENU_SAMPLES frames never close a window; an explicit setting stops the probe
+    const crawling = makeStage();
+    for (let i = 0; i < 8; i++) crawling.noteFrame(0.25, 240);
+    expect(crawling.quality).toBe('balanced');
+    const few = makeStage();
+    for (let i = 0; i < MIN_MENU_SAMPLES - 1; i++) few.noteFrame(0.5, 200);
+    expect(few.quality).toBe('high');
+    const fixed = makeStage();
+    fixed.setSettings({ bloom: true, grain: true, flashes: true, quality: 'high' });
+    for (let i = 0; i < 200; i++) fixed.noteFrame(1 / 30, 200);
+    expect(fixed.quality).toBe('high');
+    // the probe judges cost in display periods: 12 ms backdrops are fine at 60 Hz but not on a 120 Hz display
+    const hz60 = makeStage();
+    for (let i = 0; i < 70; i++) hz60.noteFrame(1 / 30, 12);
+    expect(hz60.quality).toBe('high');
+    const hz120 = makeStage();
+    feed(hz120, 2.1, () => 1 / 120, () => 2);
+    expect(hz120.hz).toBe(120);
+    for (let i = 0; i < 70; i++) hz120.noteFrame(1 / 30, 12);
+    expect(hz120.quality).toBe('balanced');
+    expect(MENU_COST_RATIO).toBe(1);
+  });
+
+  it('Renderer.drawTitle measures its own cost for the probe and a stub-canvas title never changes the tier', () => {
+    const { r } = makeRenderer();
+    for (let i = 0; i < 120; i++) r.drawTitle(i / 30, 1 / 30, BIOMES.tidepool);
+    expect(r.qualityTier).toBe('high');
+    expect(r.fps).toBeLessThan(35);
+  });
+
+  it('persists the settled tier under clawd-echo.autotier.v1 and a new Stage starts from it on its first frame', () => {
+    const storage = new MemTier();
+    const a = makeStage(storage);
+    feed(a, 2 * FRAME_WINDOW_S + 0.2, () => 1 / 20);
+    expect(a.quality).toBe('low');
+    expect(AUTOTIER_KEY).toBe('clawd-echo.autotier.v1');
+    expect(JSON.parse(storage.getItem(AUTOTIER_KEY)!)).toEqual({ v: 1, tier: 'low' });
+    expect(readStoredTier(storage)).toBe('low');
+
+    const b = makeStage(storage);
+    expect(b.quality).toBe('low');
+    expect(b.fpsStats().tier).toBe('low');
+    // the renderer built on it draws its first frame at that tier too
+    const r = makeRenderer(960, 540, 1, storage);
+    expect(r.r.qualityTier).toBe('low');
+
+    // junk or a foreign document → the default
+    storage.setItem(AUTOTIER_KEY, '{"v":1,"tier":"ultra"}');
+    expect(readStoredTier(storage)).toBeNull();
+    expect(makeStage(storage).quality).toBe('high');
+    storage.setItem(AUTOTIER_KEY, 'not json');
+    expect(makeStage(storage).quality).toBe('high');
+    expect(makeStage(null).quality).toBe('high');
+    // an explicit setting overrides the remembered tier
+    storage.setItem(AUTOTIER_KEY, JSON.stringify({ v: 1, tier: 'low' }));
+    const c = makeStage(storage);
+    c.setSettings({ bloom: true, grain: true, flashes: true, quality: 'high' });
+    expect(c.quality).toBe('high');
+  });
+
+  it('an explicit quality setting stops the scaler and writes nothing', () => {
+    const storage = new MemTier();
+    const st = makeStage(storage);
+    st.setSettings({ bloom: true, grain: true, flashes: true, quality: 'balanced' });
+    feed(st, 10, () => 1 / 20);
+    expect(st.quality).toBe('balanced');
+    expect(st.autoChanges).toBe(0);
+    expect(storage.writes).toBe(0);
+    // back to auto: the scaler resumes from the current tier
+    st.setSettings({ bloom: true, grain: true, flashes: true, quality: 'auto' });
+    feed(st, FRAME_WINDOW_S + 0.1, () => 1 / 20);
+    expect(st.quality).toBe('low');
+    expect(storage.writes).toBe(1);
+  });
+
+  it('Renderer exposes fpsStats and draws the ?fps=1 overlay only when asked', () => {
+    const { r, ctx } = makeRenderer();
+    const sim = fakeSim(fixtureDef('tidepool'));
+    r.setLevel(sim, BIOMES.tidepool);
+    const texts = () => ctx.__calls.filter((c) => c.name === 'fillText').map((c) => String(c.args[0]));
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(texts().some((t) => t.includes('p95'))).toBe(false);
+    r.showFps = true;
+    ctx.__calls.length = 0;
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    const line = texts().find((t) => t.includes('p95'));
+    expect(line).toBeDefined();
+    expect(line).toMatch(/p50 \d+ms · p95 \d+ms · draw \d+ms · \d+Hz · (high|balanced|low) · \d+fps/);
+    const s = r.fpsStats();
+    expect(s.tier).toBe(r.qualityTier);
+    expect(s.hz).toBe(60);
   });
 });

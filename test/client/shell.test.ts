@@ -6,7 +6,7 @@
  * recorded mask log is replayed through `verifyReplay` exactly as the server
  * would.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DT, GEN_VERSION, IN, IN_ALL, MAX_TICKS, SIM_VERSION, TILE } from '../../src/sim/types.js';
 import type {
   InputMask, LevelDef, PlayerState, RunSummary, SimEvent,
@@ -17,9 +17,10 @@ import { LEVELS as REAL_LEVELS } from '../../src/sim/levels.generated.js';
 import { GUIDE_DELAY, GUIDE_LABEL, GUIDE_T1, guideFor } from '../../src/client/echo/guide.js';
 import { REHINT_HAZARD, REHINT_PIT } from '../../src/client/ui/hints.js';
 import { DEATH_FADE_AT, FADE_IN_HALF } from '../../src/client/fx.js';
-import { MAX_MASKS_B64, PlayerRef, RejectReason } from '../../src/shared/protocol.js';
+import { MAX_MASKS_B64, MAX_TRANSFER_BYTES, PlayerRef, RejectReason, TransferCode } from '../../src/shared/protocol.js';
 import type {
   DailyResponse, GhostResponse, LeaderboardEntry, LeaderboardQuery, LeaderboardResponse, RunResponse, RunSubmit,
+  TransferCreateRequest, TransferGetResponse,
 } from '../../src/shared/protocol.js';
 import type {
   ApiPort, AudioPort, Binds, FxState, GhostView, HudState, InputPort, LevelRecord, MenuAction, Progress, RendererPort, ResultView,
@@ -29,9 +30,12 @@ import { MAX_STEPS_PER_FRAME, TickScheduler, planTicks } from '../../src/client/
 import { FxBus } from '../../src/client/fx.js';
 import { Camera } from '../../src/client/camera.js';
 import {
-  DAILY_CACHE_KEY, DEFAULT_NAME, PROGRESS_KEY, SETTINGS_KEY, Save, deepMerge, fallbackName, markEcho, newPlayerId, streakFor, utcDateStr,
+  DAILY_CACHE_KEY, DEFAULT_NAME, PERSIST_ASKED_KEY, PROGRESS_KEY, SETTINGS_KEY, Save, deepMerge, fallbackName, jsonBytes, markEcho,
+  newPlayerId, streakFor, utcDateStr,
   type StorageLike,
 } from '../../src/client/save.js';
+import { TRANSFER_KR } from '../../src/client/ui/transfer.js';
+import type { HapticsPort } from '../../src/client/haptics.js';
 import { Api, ApiError } from '../../src/client/net/api.js';
 import { QUEUE_KEY, SubmitQueue } from '../../src/client/net/queue.js';
 import type { TelemetryData, TelemetryPort } from '../../src/client/net/telemetry.js';
@@ -43,6 +47,7 @@ import { SPLIT_NONE, SPLIT_SECONDS, fmtSplit, fmtVersus, pickWorldEcho, worldEch
 import { echoWorldMode, segmentBests, setEchoWorldMode } from '../../src/client/save.js';
 import {
   ASSIST_OFFER_DEATHS, DEATH_MARKS_MAX, NAME_ASKED_KEY, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, assistSeenKey,
+  transferErrorText,
   type DeathMark, type SegmentRow, type ShellUI, type VersusView, type YesterdayInfo,
 } from '../../src/client/scenes.js';
 import { ShotScript, parseShotQuery } from '../../src/client/shot.js';
@@ -148,6 +153,9 @@ interface FakeUI extends ShellUI {
   segmentCalls: (SegmentRow[] | null)[];
   /** Every setVersus() call (P2-4). */
   versusCalls: (VersusView | null)[];
+  /** Every showTransferCode() / transferStatus() call (P3-5). */
+  transferCodes: { code: string; expiresAt: string }[];
+  transferStatuses: { text: string | null; kind: string | undefined }[];
   emit(a: UIAction): void; setScreen(s: Screen): void;
 }
 function fakeUI(): FakeUI {
@@ -156,7 +164,9 @@ function fakeUI(): FakeUI {
   const u: FakeUI = {
     cbs: [], shown: [], result: null, over: null, huds: [], hints: [], toasts: [], banners: [], dailyCalls: [], selectRefreshes: 0,
     unlockCalls: [], goalScreens: [], versionBehind: [], offers: [], nameAsks: 0, nameAnswer: null, yesterdays: [],
-    splits: [], segmentCalls: [], versusCalls: [],
+    splits: [], segmentCalls: [], versusCalls: [], transferCodes: [], transferStatuses: [],
+    showTransferCode(code, expiresAt) { u.transferCodes.push({ code, expiresAt }); },
+    transferStatus(text, kind) { u.transferStatuses.push({ text, kind }); },
     split(text, sign) { u.splits.push({ text, sign }); },
     segments(rows) { u.segmentCalls.push(rows); },
     setVersus(v) { u.versusCalls.push(v); },
@@ -220,11 +230,35 @@ interface FakeApi extends ApiPort {
   /** Versions the fake server reports (undefined = field absent, like a pre-P1 server). */
   healthSim?: number; dailySim?: number; dailyGen?: number;
   healthCalls: number;
+  /** Progress transfer (P3-5): snapshots by code, redeemed once; every create body. */
+  snapshots: Map<string, TransferGetResponse>;
+  transferCreates: TransferCreateRequest[];
+  transferCreate(body: TransferCreateRequest): Promise<{ code: string; expiresAt: string }>;
+  transferGet(code: string): Promise<TransferGetResponse>;
 }
+/** Valid wire codes the fake hands out, in order. */
+const FAKE_CODES = ['ABCDEFGH', 'JKLMNPQR', 'STUVWXYZ', '23456789'];
 function fakeApi(levels: LevelDef[]): FakeApi {
   const a: FakeApi = {
     submissions: [], lbQueries: [], ghosts: {}, failWith: null, board: [], healthCalls: 0,
+    snapshots: new Map(), transferCreates: [],
     levels: Object.fromEntries(levels.map((l) => [l.id, l])),
+    async transferCreate(body) {
+      if (a.failWith) throw a.failWith;
+      a.transferCreates.push(body);
+      if (jsonBytes(body) > MAX_TRANSFER_BYTES) throw new ApiError('too large', 413, 'too-long');
+      const code = FAKE_CODES[a.transferCreates.length - 1] ?? FAKE_CODES[0];
+      a.snapshots.set(code, { playerId: body.player.id, name: body.player.name, progress: JSON.parse(JSON.stringify(body.progress)) as Record<string, unknown> });
+      return { code, expiresAt: '2026-09-13T00:00:00.000Z' };
+    },
+    async transferGet(code) {
+      if (a.failWith) throw a.failWith;
+      if (!TransferCode.safeParse(code).success) throw new ApiError('bad code', 400, 'bad-code');
+      const snap = a.snapshots.get(code);
+      if (!snap) throw new ApiError('gone', 410, 'gone');
+      a.snapshots.delete(code); // one-time
+      return snap;
+    },
     async daily(): Promise<DailyResponse> {
       return {
         date: '2026-09-06', seed: 12345, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z',
@@ -2522,5 +2556,226 @@ describe('Scenes · rival echo, live splits, death marks and segment bests (P2-4
     runFrames(alone.scenes, () => alone.ui.screen === 'result');
     expect(alone.ui.versusCalls.at(-1)).toBeNull();
     await alone.scenes.settle();
+  });
+});
+
+// ================================================================ Phase 3 A (P3-5 · P3-8)
+/** Play `def` (a flat room) to the result screen and settle the submission. */
+async function clearFlat(s: ReturnType<typeof makeScenes>): Promise<void> {
+  s.ui.emit({ type: 'start', levelId: 'flat' });
+  s.input.heldMask = IN.RIGHT;
+  runFrames(s.scenes, () => s.ui.screen === 'result');
+  await s.scenes.settle();
+  s.input.heldMask = 0;
+}
+
+describe('Scenes · progress transfer (P3-5)', () => {
+  it('export → import round trip: the other device gets the records, the run id and the player identity — never the replay', async () => {
+    const def = flatRoom();
+    const a = makeScenes([def]);
+    a.scenes.bootSync();
+    await clearFlat(a);
+    a.ui.emit({ type: 'quit' });
+    const aRec = a.save.progress.levels.flat;
+    expect(aRec.masks).toBeTruthy();
+    expect(aRec.runId).toBe('run-1');
+
+    // device A: 다른 기기로 옮기기
+    a.ui.emit({ type: 'transferExport' });
+    await a.scenes.settle();
+    expect(a.ui.transferCodes).toEqual([{ code: 'ABCDEFGH', expiresAt: '2026-09-13T00:00:00.000Z' }]);
+    expect(a.ui.transferStatuses.at(-1)).toEqual({ text: TRANSFER_KR.created, kind: 'ok' });
+    expect(a.ui.toasts).toContain(TRANSFER_KR.created);
+    const body = a.api.transferCreates[0];
+    expect(body.player).toEqual({ id: a.save.progress.player.id, name: a.save.progress.player.name });
+    expect(JSON.stringify(body.progress)).not.toContain('masks');
+    expect(JSON.stringify(body.progress)).not.toContain(aRec.masks!);
+    expect(jsonBytes(body)).toBeLessThanOrEqual(MAX_TRANSFER_BYTES);
+    // nothing changed locally
+    expect(a.save.progress.levels.flat.masks).toBe(aRec.masks);
+
+    // device B: a fresh install pointed at the same server
+    const bSave = makeSave();
+    const bUi = fakeUI();
+    const bIdBefore = bSave.save.progress.player.id;
+    const b = new Scenes({ renderer: fakeRenderer(), audio: fakeAudio(), ui: bUi, input: fakeInput(), api: a.api, save: bSave.save, levels: [def], build: 'test' });
+    b.bootSync();
+    const refreshes = bUi.selectRefreshes;
+    bUi.emit({ type: 'transferImport', code: 'ABCDEFGH' });
+    await b.settle();
+    expect(bUi.transferStatuses.map((s) => s.kind)).toEqual(['busy', 'ok']);
+    expect(bUi.transferStatuses.at(-1)!.text).toContain(TRANSFER_KR.imported);
+    expect(bUi.toasts).toContain(TRANSFER_KR.imported);
+    expect(bUi.selectRefreshes).toBe(refreshes + 1);
+    const p = bSave.save.progress;
+    expect(p.player.id).toBe(a.save.progress.player.id);
+    expect(p.player.id).not.toBe(bIdBefore);
+    expect(p.player.name).toBe(a.save.progress.player.name);
+    expect(p.levels.flat.done).toBe(true);
+    expect(p.levels.flat.bestTicks).toBe(aRec.bestTicks);
+    expect(p.levels.flat.stars).toBe(aRec.stars);
+    expect(p.levels.flat.runId).toBe('run-1');
+    expect(p.levels.flat.masks).toBeUndefined();
+    expect(p.totals.shards).toBe(a.save.progress.totals.shards);
+    // written through at once, not debounced
+    const stored = JSON.parse(bSave.storage.getItem(PROGRESS_KEY)!) as Progress;
+    expect(stored.player.id).toBe(a.save.progress.player.id);
+    expect(stored.levels.flat.masks).toBeUndefined();
+
+    // the code was one-time: a second redeem is refused
+    bUi.emit({ type: 'transferImport', code: 'ABCDEFGH' });
+    await b.settle();
+    expect(bUi.transferStatuses.at(-1)).toEqual({ text: TRANSFER_KR.gone, kind: 'error' });
+    expect(bUi.toasts.at(-1)).toBe('이미 사용된 코드다');
+  });
+
+  it('import keeps the better local record and its replay when the snapshot is slower; the identity still moves', async () => {
+    const def = flatRoom();
+    const a = makeScenes([def]);
+    a.scenes.bootSync();
+    await clearFlat(a);
+    a.ui.emit({ type: 'quit' });
+    // A's record is made slow before the export
+    a.save.progress.levels.flat.bestTicks += 5000;
+    a.ui.emit({ type: 'transferExport' });
+    await a.scenes.settle();
+
+    const b = makeScenes([def]);
+    b.scenes.bootSync();
+    await clearFlat(b);
+    b.ui.emit({ type: 'quit' });
+    const bRec = { ...b.save.progress.levels.flat };
+    // B redeems A's code through A's fake server
+    const bScenes = new Scenes({ renderer: fakeRenderer(), audio: fakeAudio(), ui: b.ui, input: b.input, api: a.api, save: b.save, levels: [def], build: 'test' });
+    bScenes.bootSync();
+    b.ui.emit({ type: 'transferImport', code: 'ABCDEFGH' });
+    await bScenes.settle();
+    expect(b.save.progress.player.id).toBe(a.save.progress.player.id);
+    expect(b.save.progress.levels.flat.bestTicks).toBe(bRec.bestTicks);
+    expect(b.save.progress.levels.flat.masks).toBe(bRec.masks);
+    expect(b.save.progress.levels.flat.runId).toBe(bRec.runId);
+  });
+
+  it('errors: 400 → 코드가 틀렸다, offline → 서버에 닿지 않는다, mid-run → refused, a server without the endpoints → 지원하지 않는다', async () => {
+    const def = flatRoom();
+    const s = makeScenes([def]);
+    s.scenes.bootSync();
+    // a code that is not even shaped like one never reaches the API
+    s.ui.emit({ type: 'transferImport', code: 'abc' });
+    await s.scenes.settle();
+    expect(s.ui.transferStatuses.at(-1)).toEqual({ text: TRANSFER_KR.badCode, kind: 'error' });
+    // the server refuses the check character → 400
+    const realGet = s.api.transferGet;
+    s.api.transferGet = async () => { throw new ApiError('bad code', 400, 'bad-code'); };
+    s.ui.emit({ type: 'transferImport', code: 'ABCDEFGH' });
+    await s.scenes.settle();
+    expect(s.ui.transferStatuses.at(-1)).toEqual({ text: '코드가 틀렸다', kind: 'error' });
+    expect(s.ui.toasts.at(-1)).toBe('코드가 틀렸다');
+    // offline, both directions
+    s.api.transferGet = realGet;
+    s.api.failWith = new TypeError('fetch failed');
+    s.ui.emit({ type: 'transferImport', code: 'ABCDEFGH' });
+    await s.scenes.settle();
+    expect(s.ui.transferStatuses.at(-1)).toEqual({ text: '서버에 닿지 않는다', kind: 'error' });
+    s.ui.emit({ type: 'transferExport' });
+    await s.scenes.settle();
+    expect(s.ui.transferStatuses.at(-1)).toEqual({ text: '서버에 닿지 않는다', kind: 'error' });
+    expect(s.ui.transferCodes).toEqual([]);
+    s.api.failWith = null;
+    // a 413 on export
+    s.api.transferCreate = async () => { throw new ApiError('too large', 413, 'too-long'); };
+    s.ui.emit({ type: 'transferExport' });
+    await s.scenes.settle();
+    expect(s.ui.transferStatuses.at(-1)).toEqual({ text: TRANSFER_KR.tooBig, kind: 'error' });
+    // mid-run imports are refused before any request
+    s.ui.emit({ type: 'start', levelId: 'flat' });
+    let gets = 0;
+    s.api.transferGet = async () => { gets++; throw new ApiError('gone', 410, 'gone'); };
+    s.ui.emit({ type: 'transferImport', code: 'ABCDEFGH' });
+    await s.scenes.settle();
+    expect(gets).toBe(0);
+    expect(s.ui.transferStatuses.at(-1)).toEqual({ text: TRANSFER_KR.inRun, kind: 'error' });
+    s.ui.emit({ type: 'quit' });
+
+    // a server (or fake) without the transfer endpoints
+    const bare = makeScenes([def]);
+    delete (bare.api as Partial<FakeApi>).transferCreate;
+    delete (bare.api as Partial<FakeApi>).transferGet;
+    bare.scenes.bootSync();
+    bare.ui.emit({ type: 'transferExport' });
+    bare.ui.emit({ type: 'transferImport', code: 'ABCDEFGH' });
+    await bare.scenes.settle();
+    expect(bare.ui.transferStatuses.filter((t) => t.text === TRANSFER_KR.unsupported)).toHaveLength(2);
+
+    // the pure mapping
+    expect(transferErrorText(new ApiError('x', 410, 'gone'), 'import')).toBe('이미 사용된 코드다');
+    expect(transferErrorText(new ApiError('x', 400, 'bad-code'), 'import')).toBe('코드가 틀렸다');
+    expect(transferErrorText(new ApiError('x', 404, 'not-found'), 'import')).toBe('코드가 틀렸다');
+    expect(transferErrorText(new ApiError('x', 400, 'bad-request'), 'export')).toBe(TRANSFER_KR.createFailed);
+    expect(transferErrorText(new ApiError('x', 429, 'rate-limited'), 'export')).toBe(TRANSFER_KR.busyRate);
+    expect(transferErrorText(new ApiError('x', 0, 'network'), 'import')).toBe('서버에 닿지 않는다');
+    expect(transferErrorText(new ApiError('x', 503, 'server-error'), 'export')).toBe('서버에 닿지 않는다');
+    expect(transferErrorText(new TypeError('fetch failed'), 'import')).toBe('서버에 닿지 않는다');
+    expect(transferErrorText(new ApiError('x', 418, 'teapot'), 'import')).toBe(TRANSFER_KR.importFailed);
+  });
+
+  it('asks navigator.storage.persist() once per install, after the first story clear, and remembers it in progress.seen', async () => {
+    const def = flatRoom();
+    const persist = vi.fn(() => Promise.resolve(true));
+    const { save, storage, timers } = makeSave();
+    const ui = fakeUI(); const input = fakeInput(); const api = fakeApi([def]);
+    const scenes = new Scenes({ renderer: fakeRenderer(), audio: fakeAudio(), ui, input, api, save, levels: [def], build: 'test', persistStorage: persist });
+    scenes.bootSync();
+    expect(persist).not.toHaveBeenCalled();
+    const s = { scenes, ui, input, api, save, storage, timers } as unknown as ReturnType<typeof makeScenes>;
+    await clearFlat(s);
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(save.progress.seen[PERSIST_ASKED_KEY]).toBe(true);
+    ui.emit({ type: 'quit' });
+    await clearFlat(s);
+    expect(persist).toHaveBeenCalledTimes(1);
+    ui.emit({ type: 'quit' });
+
+    // a refusing / throwing platform is harmless, and a save already asked is never asked again
+    save.flush();
+    const again = makeSave(storage);
+    const throwing = vi.fn(() => { throw new Error('no storage api'); });
+    const s2 = new Scenes({ renderer: fakeRenderer(), audio: fakeAudio(), ui: fakeUI(), input: fakeInput(), api, save: again.save, levels: [def], build: 'test', persistStorage: throwing });
+    s2.bootSync();
+    expect(again.save.progress.seen[PERSIST_ASKED_KEY]).toBe(true);
+    const fresh = makeSave();
+    const rejecting = vi.fn(() => Promise.reject(new Error('denied')));
+    const s3ui = fakeUI(); const s3in = fakeInput();
+    const s3 = new Scenes({ renderer: fakeRenderer(), audio: fakeAudio(), ui: s3ui, input: s3in, api, save: fresh.save, levels: [def], build: 'test', persistStorage: rejecting });
+    s3.bootSync();
+    await clearFlat({ scenes: s3, ui: s3ui, input: s3in } as unknown as ReturnType<typeof makeScenes>);
+    expect(rejecting).toHaveBeenCalledTimes(1);
+    expect(fresh.save.progress.seen[PERSIST_ASKED_KEY]).toBe(true);
+    expect(throwing).not.toHaveBeenCalled();
+  });
+});
+
+describe('Scenes · haptics dispatch (P3-8)', () => {
+  it('hands every sim event to the haptics port and applies the setting at boot and on settingsChanged', async () => {
+    const def = flatRoom();
+    const seen: SimEvent[] = [];
+    const applied: (boolean | undefined)[] = [];
+    const haptics: HapticsPort = { onEvent(ev) { seen.push(ev); }, applySettings(s) { applied.push(s.haptics); } };
+    const { save } = makeSave();
+    save.settings.haptics = true;
+    const ui = fakeUI(); const input = fakeInput(); const api = fakeApi([def]); const audio = fakeAudio();
+    const scenes = new Scenes({ renderer: fakeRenderer(), audio, ui, input, api, save, levels: [def], build: 'test', haptics });
+    scenes.bootSync();
+    expect(applied).toEqual([true]);
+    ui.emit({ type: 'start', levelId: 'flat' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    // the same stream the audio engine saw, in the same order
+    expect(seen.map((e) => e.type)).toEqual(audio.events.map((e) => e.type));
+    expect(seen.some((e) => e.type === 'goal')).toBe(true);
+    save.settings.haptics = false;
+    ui.emit({ type: 'settingsChanged' });
+    expect(applied.at(-1)).toBe(false);
   });
 });

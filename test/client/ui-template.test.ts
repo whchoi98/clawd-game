@@ -401,6 +401,23 @@ describe('UI · data notice (#scr-data)', () => {
   });
 });
 
+describe('P3-5 · progress transfer surfaces', () => {
+  it('the data notice says what a transfer stores (no replay, 7 days, one-time code) and the stylesheet dresses the widgets', () => {
+    const data = html.slice(html.indexOf('<!-- DATA NOTICE'), html.indexOf('id="upbar"'));
+    expect(data).toContain('<h3>다른 기기로 옮길 때</h3>');
+    expect(data).toMatch(/다른 기기로 옮기기를 누르면 이 기기의 진행도/);
+    expect(data).toContain('<b>리플레이 없이</b>');
+    expect(data).toContain('7일');
+    expect(data).toContain('한 번 쓰면 사라진다');
+    for (const cls of ['.transfer{', '.transfer__qr{', '.transfer__code{', '.transfer__input{', '.transfer__status.is-error{', '.transfer__status.is-ok{']) {
+      expect(css, cls).toContain(cls);
+    }
+    // the code is selectable as one piece, the field is typeable (the body disables selection)
+    expect(css).toMatch(/\.transfer__code\{[^}]*user-select:all/);
+    expect(css).toMatch(/\.transfer__input\{[^}]*user-select:text/);
+  });
+});
+
 describe('public/favicon.svg', () => {
   it('is a standalone SVG with no scripts', () => {
     expect(svg.trim().startsWith('<svg')).toBe(true);

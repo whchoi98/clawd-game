@@ -25,6 +25,7 @@ import { LEVELS as REAL_LEVELS } from '../../src/sim/levels.generated.js';
 import { PHONE_MAX_SHORT_SIDE, isPhoneViewport, wantsRotatePrompt } from '../../src/client/ui/touch.js';
 import { renderLeaderboard } from '../../src/client/ui/leaderboard.js';
 import { findBindConflict } from '../../src/client/ui/settings.js';
+import { CODE_MODULES, TRANSFER_KR, codeModules, drawCodeCanvas, normalizeCode } from '../../src/client/ui/transfer.js';
 import { LIVE_INTERVAL, fmtTicks, fmtTime } from '../../src/client/ui/hud.js';
 import { echoWorldMode, setEchoWorldMode } from '../../src/client/save.js';
 import { validateName } from '../../src/client/ui/screens.js';
@@ -1682,5 +1683,151 @@ describe('UI rival echo surfaces (P2-4)', () => {
     ui.applySettings(settings);
     expect(rival.getAttribute('aria-checked')).toBe('true');
     expect(top.getAttribute('aria-checked')).toBe('false');
+  });
+});
+
+describe('UI settings · 진동 (P3-8) and 다른 기기로 옮기기 (P3-5)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  it('the accessibility pane has a 진동 switch bound to settings.haptics (absent reads as off)', () => {
+    const { ui, actions, settings } = setup();
+    ui.show('settings');
+    $('#set-tabs [data-tab="a11y"]').click();
+    const sw = $('#pane-a11y .switch[data-key="haptics"]');
+    expect(sw.getAttribute('aria-label')).toBe('진동');
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+    sw.click();
+    expect(settings.haptics).toBe(true);
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+    expect(actions.at(-1)).toEqual({ type: 'settingsChanged' });
+    sw.click();
+    expect(settings.haptics).toBe(false);
+    // applySettings re-syncs the switch from the object
+    settings.haptics = true;
+    ui.applySettings(settings);
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('the data pane renders both transfer rows; 코드 만들기 emits transferExport and shows the busy line', () => {
+    const { ui, actions } = setup();
+    ui.show('settings');
+    $('#set-tabs [data-tab="data"]').click();
+    const pane = $('#pane-data');
+    expect(pane.textContent).toContain(TRANSFER_KR.export);
+    expect(pane.textContent).toContain(TRANSFER_KR.import);
+    expect(pane.textContent).toContain('한 번만 쓸 수 있고 7일 뒤 사라진다');
+    expect($<HTMLElement>('#transfer-out').hidden).toBe(true);
+    expect($<HTMLElement>('#transfer-status').hidden).toBe(true);
+    // the rows sit between the name row and the wipe row
+    const rows = [...pane.querySelectorAll<HTMLElement>('.row')].map((r) => r.querySelector('.row__label')?.firstChild?.textContent);
+    expect(rows).toEqual(['이름', TRANSFER_KR.export, TRANSFER_KR.import, '진행도 초기화']);
+    $('#pane-data [data-act="transferExport"]').click();
+    expect(actions.at(-1)).toEqual({ type: 'transferExport' });
+    const status = $<HTMLElement>('#transfer-status');
+    expect(status.hidden).toBe(false);
+    expect(status.textContent).toBe(TRANSFER_KR.creating);
+    expect(status.classList.contains('is-busy')).toBe(true);
+  });
+
+  it('showTransferCode paints the code big with the code picture, labels it as not a QR, and 복사 copies the raw code', async () => {
+    const { ui } = setup();
+    ui.show('settings');
+    $('#set-tabs [data-tab="data"]').click();
+    ui.showTransferCode('ABCDEFGH', '2026-09-13T00:00:00.000Z');
+    const out = $<HTMLElement>('#transfer-out');
+    expect(out.hidden).toBe(false);
+    const code = $<HTMLElement>('#transfer-code');
+    expect(code.textContent).toBe('ABCD EFGH');
+    expect(code.dataset.code).toBe('ABCDEFGH');
+    expect(code.getAttribute('aria-live')).toBe('polite');
+    expect($('#transfer-note').textContent).toContain(TRANSFER_KR.display);
+    expect($('#transfer-note').textContent).toContain('09-13');
+    expect(out.querySelector('canvas.transfer__qr')).not.toBeNull();
+    ui.transferStatus(TRANSFER_KR.created, 'ok');
+    expect($('#transfer-status').textContent).toBe(TRANSFER_KR.created);
+    expect($('#transfer-status').classList.contains('is-ok')).toBe(true);
+
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(window.navigator, 'clipboard', { value: { writeText }, configurable: true });
+    $('#pane-data [data-act="transferCopy"]').click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith('ABCDEFGH');
+  });
+
+  it('가져오기 normalises the typed code (case, spaces, dashes) and refuses a malformed one without emitting', () => {
+    const { ui, actions, sounds } = setup();
+    ui.show('settings');
+    $('#set-tabs [data-tab="data"]').click();
+    const input = $<HTMLInputElement>('#transfer-input');
+    expect(input.getAttribute('maxlength')).toBe('10');
+    input.value = 'ab cd-ef23';
+    $('#pane-data [data-act="transferImport"]').click();
+    expect(actions.at(-1)).toEqual({ type: 'transferImport', code: 'ABCDEF23' });
+    expect($('#transfer-status').textContent).toBe(TRANSFER_KR.importing);
+
+    const before = actions.length;
+    for (const bad of ['ABCDEFG', 'ABCD EFG1', 'ABCDEFGO', '']) {
+      input.value = bad;
+      $('#pane-data [data-act="transferImport"]').click();
+      expect(actions.length, bad).toBe(before);
+      expect($('#transfer-status').textContent).toContain(TRANSFER_KR.badCode);
+      expect($('#transfer-status').classList.contains('is-error')).toBe(true);
+    }
+    expect(sounds.at(-1)).toBe('error');
+    // Enter inside the field submits too
+    input.value = 'jklmnpqr';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+    expect(actions.at(-1)).toEqual({ type: 'transferImport', code: 'JKLMNPQR' });
+  });
+
+  it('transferStatus shows the shell\'s verdict (이미 사용된 코드다 · 코드가 틀렸다 · offline) and clears the field; the code survives a rebuild', () => {
+    const { ui, settings } = setup();
+    ui.show('settings');
+    $('#set-tabs [data-tab="data"]').click();
+    const input = $<HTMLInputElement>('#transfer-input');
+    input.value = 'ABCDEFGH';
+    ui.transferStatus(TRANSFER_KR.gone, 'error');
+    expect($('#transfer-status').textContent).toBe('이미 사용된 코드다');
+    expect($('#transfer-status').classList.contains('is-error')).toBe(true);
+    expect(input.value).toBe('ABCDEFGH'); // a refused code stays so a typo can be fixed
+    ui.transferStatus(TRANSFER_KR.badCode, 'error');
+    expect($('#transfer-status').textContent).toBe('코드가 틀렸다');
+    ui.transferStatus(TRANSFER_KR.offline, 'error');
+    expect($('#transfer-status').textContent).toBe('서버에 닿지 않는다');
+    ui.transferStatus(`${TRANSFER_KR.imported} · 바다`, 'ok');
+    expect(input.value).toBe(''); // a redeemed code is spent
+    ui.transferStatus(null);
+    expect($<HTMLElement>('#transfer-status').hidden).toBe(true);
+
+    ui.showTransferCode('JKLMNPQR', '2026-09-13T00:00:00.000Z');
+    ui.transferStatus(TRANSFER_KR.created, 'ok');
+    // a new settings object rebuilds the panes: the code and the status line are still there
+    ui.applySettings({ ...settings });
+    expect($<HTMLElement>('#transfer-out').hidden).toBe(false);
+    expect($('#transfer-code').textContent).toBe('JKLM NPQR');
+    expect($('#transfer-status').textContent).toBe(TRANSFER_KR.created);
+  });
+
+  it('normalizeCode / codeModules / drawCodeCanvas are deterministic and honest about not being a QR', () => {
+    expect(normalizeCode(' ab-cd ef23 ')).toBe('ABCDEF23');
+    expect(normalizeCode('ABCDEFG1')).toBeNull();
+    expect(normalizeCode('ABCDEFGHJ')).toBeNull();
+    const a = codeModules('ABCDEFGH'), b = codeModules('ABCDEFGH'), c = codeModules('ABCDEFGJ');
+    expect(a).toEqual(b);
+    expect(a).not.toEqual(c);
+    expect(a.length).toBe(CODE_MODULES * CODE_MODULES);
+    // finder-like squares in three corners: dark outer ring, light ring, dark centre
+    const at = (x: number, y: number) => a[y * CODE_MODULES + x];
+    for (const [ox, oy] of [[0, 0], [CODE_MODULES - 7, 0], [0, CODE_MODULES - 7]] as const) {
+      expect(at(ox, oy)).toBe(1);
+      expect(at(ox + 1, oy + 1)).toBe(0);
+      expect(at(ox + 3, oy + 3)).toBe(1);
+      expect(at(ox + 6, oy + 6)).toBe(1);
+    }
+    expect(at(CODE_MODULES - 1, CODE_MODULES - 1) === 0 || at(CODE_MODULES - 1, CODE_MODULES - 1) === 1).toBe(true);
+    expect(TRANSFER_KR.display).toContain('스캔용 QR이 아니다');
+    // happy-dom has no 2D context: the painter reports it and does not throw
+    const cv = document.createElement('canvas');
+    expect(drawCodeCanvas(cv, 'ABCDEFGH')).toBe(false);
   });
 });

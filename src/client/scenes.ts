@@ -22,7 +22,7 @@ import { decodeMasks, encodeMasks } from '../sim/replay.js';
 import { bandBiome, makeDailyLevel } from '../sim/gen/daily.js';
 import { makeEndlessLevel } from '../sim/gen/endless.js';
 import { BIOMES, BIOME_ORDER, C, type Biome } from '../shared/biomes.js';
-import { MAX_MASKS_B64 } from '../shared/protocol.js';
+import { MAX_MASKS_B64, TransferCode } from '../shared/protocol.js';
 import type { DailyResponse, LeaderboardResponse, RunSubmit } from '../shared/protocol.js';
 import type {
   ApiPort, AudioPort, HudState, InputPort, Progress, RendererPort, ResultView, UIAction, UIPort,
@@ -31,11 +31,13 @@ import { MAX_FRAME_DT, TickScheduler } from './loop.js';
 import { FxBus } from './fx.js';
 import { Camera } from './camera.js';
 import {
-  DEFAULT_NAME, MS_PER_DAY, Save, echoMasks, echoWorldMode, fallbackName, isValidName, markEcho, recordSegmentBest, retentionBuckets,
-  segmentBests, unlockedZones, utcDateStr,
+  DEFAULT_NAME, MS_PER_DAY, PERSIST_ASKED_KEY, Save, echoMasks, echoWorldMode, fallbackName, isValidName, markEcho, recordSegmentBest,
+  retentionBuckets, segmentBests, unlockedZones, utcDateStr,
 } from './save.js';
 import { cloneBinds } from './input/binds.js';
+import type { HapticsPort } from './haptics.js';
 import { ApiError } from './net/api.js';
+import { TRANSFER_KR } from './ui/transfer.js';
 import type { FlushEvent, FlushResult, QueuedRun, SubmitQueue } from './net/queue.js';
 import type { TelemetryData, TelemetryPort } from './net/telemetry.js';
 import { Echo, checkpointKey } from './echo/echo.js';
@@ -112,6 +114,10 @@ export interface ShellUI extends UIPort {
   segments?(rows: SegmentRow[] | null): void;
   /** Result screen: the "라이벌보다 0.62s 빠름" row when a world echo was raced; null hides it. */
   setVersus?(v: VersusView | null): void;
+  /** Settings → 데이터: a one-time transfer code was created (P3-5). */
+  showTransferCode?(code: string, expiresAt: string): void;
+  /** Settings → 데이터: progress / error line under the transfer widgets; null clears it. */
+  transferStatus?(text: string | null, kind?: 'ok' | 'error' | 'busy'): void;
 }
 /** AudioPort plus the pause-menu muffle the concrete engine offers. */
 export interface ShellAudio extends AudioPort {
@@ -145,6 +151,14 @@ export interface ScenesDeps {
   /** Build id sent with submissions. */
   build?: string;
   now?: () => number;
+  /** Vibration / gamepad rumble on sim events (P3-8); none in tests without one. */
+  haptics?: HapticsPort;
+  /**
+   * `navigator.storage.persist()` — asked once per install after the first
+   * story clear so an idle iOS install is not evicted after 7 days. Default:
+   * the platform's, when it has one.
+   */
+  persistStorage?: () => Promise<boolean> | boolean | void;
   /** Anonymous telemetry sink (none in tests without one, and under the capture harness). */
   telemetry?: TelemetryPort;
   /** Device facts for the boot event (uaFamily, dpr, hwConcurrency) — never a raw UA string. */
@@ -318,6 +332,8 @@ export class Scenes {
   private readonly telemetry: TelemetryPort | null;
   private readonly telemetryEnv: TelemetryData;
   private readonly onServerNewer: ((serverSim: number | null) => void) | null;
+  private readonly haptics: HapticsPort | null;
+  private readonly persistStorage: (() => Promise<boolean> | boolean | void) | null;
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly runEndListeners: (() => void)[] = [];
   /** Per-zone session memory (death marks, segment deaths), keyed by mode · zone · seed. */
@@ -355,6 +371,8 @@ export class Scenes {
     this.telemetry = deps.telemetry ?? null;
     this.telemetryEnv = deps.telemetryEnv ?? {};
     this.onServerNewer = deps.onServerNewer ?? null;
+    this.haptics = deps.haptics ?? null;
+    this.persistStorage = deps.persistStorage ?? defaultPersistStorage();
     this.fx = new FxBus({ random: deps.random });
     this.fx.applySettings(this.save.settings);
     this.ui.on((a) => this.onAction(a));
@@ -434,6 +452,7 @@ export class Scenes {
     this.audio.applySettings(s);
     this.ui.applySettings(s);
     this.fx.applySettings(s);
+    this.haptics?.applySettings(s);
   }
 
   // ================================================================ async bookkeeping
@@ -498,9 +517,76 @@ export class Scenes {
       case 'requestLeaderboard':
         if (a.mode === 'daily') void this.track(this.refreshDailyBoard());
         break;
+      case 'transferExport': void this.track(this.transferExport()); break;
+      case 'transferImport': void this.track(this.transferImport(a.code)); break;
       default:
         break;
     }
+  }
+
+  // ================================================================ progress transfer (P3-5)
+  /**
+   * 다른 기기로 옮기기: the stripped Progress (no replay, see snapshotProgress)
+   * goes up with the player identity; the server answers with a one-time code
+   * the UI shows big. Nothing local changes.
+   */
+  private async transferExport(): Promise<void> {
+    if (!this.api.transferCreate) { this.transferFail(TRANSFER_KR.unsupported); return; }
+    this.ui.transferStatus?.(TRANSFER_KR.creating, 'busy');
+    const p = this.save.progress;
+    try {
+      const res = await this.api.transferCreate({ player: { id: p.player.id, name: p.player.name }, progress: this.save.snapshot() });
+      this.ui.showTransferCode?.(res.code, res.expiresAt);
+      this.ui.transferStatus?.(TRANSFER_KR.created, 'ok');
+      this.ui.toast(TRANSFER_KR.created);
+    } catch (err) {
+      this.transferFail(transferErrorText(err, 'export'));
+    }
+  }
+
+  /**
+   * 코드로 가져오기: the snapshot behind a code is merged into this save (the
+   * better record per zone wins, the player identity becomes the other
+   * device's, no replay is imported — see mergeProgress). Refused mid-run: the
+   * live run holds references into the records it would rewrite.
+   */
+  private async transferImport(code: string): Promise<void> {
+    if (this.run) { this.transferFail(TRANSFER_KR.inRun); return; }
+    if (!this.api.transferGet) { this.transferFail(TRANSFER_KR.unsupported); return; }
+    if (!TransferCode.safeParse(code).success) { this.transferFail(TRANSFER_KR.badCode); return; }
+    this.ui.transferStatus?.(TRANSFER_KR.importing, 'busy');
+    try {
+      const snap = await this.api.transferGet(code);
+      this.save.importSnapshot(snap);
+      this.ui.refreshSelect(this.save.progress, this.levels);
+      this.ui.transferStatus?.(`${TRANSFER_KR.imported} · ${snap.name}`, 'ok');
+      this.ui.toast(TRANSFER_KR.imported);
+    } catch (err) {
+      this.transferFail(transferErrorText(err, 'import'));
+    }
+  }
+
+  private transferFail(text: string): void {
+    this.ui.transferStatus?.(text, 'error');
+    this.ui.toast(text);
+  }
+
+  /**
+   * navigator.storage.persist(), once per install, after the first story
+   * clear: the moment the save is worth keeping. Remembered in progress.seen
+   * so a refused request is not repeated every clear; every failure is silent.
+   */
+  private requestPersist(): void {
+    const p = this.save.progress;
+    if (p.seen[PERSIST_ASKED_KEY]) return;
+    p.seen[PERSIST_ASKED_KEY] = true;
+    this.save.saveProgress();
+    if (!this.persistStorage) return;
+    try {
+      const r = this.persistStorage();
+      const maybe = r as { catch?: (fn: () => void) => unknown } | null | undefined;
+      if (maybe && typeof maybe.catch === 'function') maybe.catch(() => undefined);
+    } catch { /* no Storage API, or it refused */ }
   }
 
   // ================================================================ run lifecycle
@@ -896,6 +982,7 @@ export class Scenes {
       this.fx.onEvent(ev);
       this.renderer.onEvent(ev, sim);
       this.audio.onEvent(ev, sim);
+      this.haptics?.onEvent(ev);
       this.onSimEvent(run, ev);
     }
     return events;
@@ -1197,6 +1284,8 @@ export class Scenes {
       this.telemetry?.track(run.mode === 'daily' ? 'daily_clear' : 'clear', {
         levelId: run.def.id, mode: run.mode, ticks: summary.ticks, deaths: summary.deaths, shards: summary.shards,
       });
+      // The first story clear is when the save becomes worth keeping: ask the browser to keep it.
+      if (run.mode === 'story') this.requestPersist();
     } else if (run.mode === 'daily') {
       this.telemetry?.track('daily_over', { levelId: run.def.id, height: Math.floor(summary.height), deaths: summary.deaths, ticks: summary.ticks });
     }
@@ -1623,6 +1712,32 @@ export function dailyVersionOk(d: DailyResponse): boolean {
   if (typeof d.sim === 'number' && d.sim !== SIM_VERSION) return false;
   if (typeof d.gen === 'number' && d.gen !== GEN_VERSION) return false;
   return true;
+}
+
+/**
+ * Korean line for a failed transfer call. The API client's status carries the
+ * verdict: 410 = the code was used or expired, 400 / 404 = not a code, 413 =
+ * the snapshot is too large, 429 = rate-limited; a network failure (status 0,
+ * 5xx, or any non-ApiError) is '서버에 닿지 않는다'.
+ */
+export function transferErrorText(err: unknown, kind: 'export' | 'import'): string {
+  if (err instanceof ApiError) {
+    if (err.status === 410) return TRANSFER_KR.gone;
+    if (err.status === 400 || err.status === 404) return kind === 'import' ? TRANSFER_KR.badCode : TRANSFER_KR.createFailed;
+    if (err.status === 413) return TRANSFER_KR.tooBig;
+    if (err.status === 429) return TRANSFER_KR.busyRate;
+    if (err.offline) return TRANSFER_KR.offline;
+    return kind === 'import' ? TRANSFER_KR.importFailed : TRANSFER_KR.createFailed;
+  }
+  return TRANSFER_KR.offline;
+}
+
+/** `navigator.storage.persist` bound to its manager, or null where the platform has none (Node, old WebViews). */
+function defaultPersistStorage(): (() => Promise<boolean> | boolean | void) | null {
+  const nav = (globalThis as { navigator?: { storage?: { persist?: () => Promise<boolean> } } }).navigator;
+  const sm = nav?.storage;
+  if (!sm || typeof sm.persist !== 'function') return null;
+  return () => sm.persist!();
 }
 
 /** 32 random bits for endless seeds, from the platform CSPRNG when available. */

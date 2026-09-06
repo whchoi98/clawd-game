@@ -35,7 +35,7 @@ export function bindLabel(action: BindAction): string {
   return BIND_ROWS.find(([a]) => a === action)?.[1] ?? action;
 }
 
-type BoolKey = 'bloom' | 'grain' | 'flashes' | 'showTimer' | 'assist' | 'invincible' | 'echoSelf' | 'echoWorld';
+type BoolKey = 'bloom' | 'grain' | 'flashes' | 'showTimer' | 'assist' | 'invincible' | 'echoSelf' | 'echoWorld' | 'haptics';
 type NumKey = 'master' | 'music' | 'sfx' | 'shake';
 /** Segmented choices; `echoWorldMode` is not on the Settings contract yet and goes through save.ts's accessors. */
 type SegKey = 'quality' | 'skin' | 'echoWorldMode';
@@ -65,6 +65,8 @@ export interface SettingsPanelDeps {
   sound: (n: UiSound) => void;
   portrait: () => PortraitPainter | null;
   build?: string;
+  /** Extra rows for the 데이터 pane, rebuilt with it (the progress-transfer widgets). */
+  extraDataRows?: () => HTMLElement[];
 }
 
 export class SettingsPanel {
@@ -150,6 +152,7 @@ export class SettingsPanel {
       this.toggleRow('보조 모드', 'assist', '중력 완화 · 3단 점프 · 짧은 대시 쿨다운 · 순위표에는 오르지 않는다'),
       this.toggleRow('무적', 'invincible', '가시와 적에게 피해를 입지 않는다 (순위표 제외)'),
       this.toggleRow('섬광 효과', 'flashes', '끄면 전체 화면 번쩍임을 억제한다'),
+      this.toggleRow('진동', 'haptics', '착지 · 대시 · 사망에 기기가 떨린다 · 게임패드 럼블 포함'),
       this.sliderRow('화면 흔들림', 'shake'),
       this.toggleRow('타이머 표시', 'showTimer'),
     );
@@ -158,7 +161,7 @@ export class SettingsPanel {
     nameRow.ctl.appendChild(el(doc, 'button', { class: 'bindbtn', type: 'button', 'data-act': 'name' }, '바꾸기'));
     const wipeRow = this.row('진행도 초기화', '구역 기록과 메아리를 모두 지운다 · 되돌릴 수 없다');
     wipeRow.ctl.appendChild(el(doc, 'button', { class: 'bindbtn', type: 'button', 'data-act': 'resetProgress' }, 'WIPE'));
-    data.replaceChildren(nameRow.row, wipeRow.row);
+    data.replaceChildren(nameRow.row, ...(this.d.extraDataRows?.() ?? []), wipeRow.row);
     if (this.d.build) data.appendChild(el(doc, 'p', { class: 'row__note' }, `빌드 ${this.d.build}`));
 
     this.wasBuilt = true;
