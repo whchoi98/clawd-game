@@ -9,8 +9,8 @@
 [![play](https://img.shields.io/badge/▶_PLAY-clawd--game.whchoi.net-E8825C?style=for-the-badge&labelColor=07060B)](https://clawd-game.whchoi.net/)
 
 [![sim](https://img.shields.io/badge/simulation-isomorphic_·_120Hz-5BD8E0?labelColor=15121F)](#결정론적-시뮬레이션이-백엔드를-정당화한다)
-[![tests](https://img.shields.io/badge/tests-848_passing-8BE86A?labelColor=15121F)](#테스트)
-[![payload](https://img.shields.io/badge/client-364_KB_·_112_KB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
+[![tests](https://img.shields.io/badge/tests-1002_passing-8BE86A?labelColor=15121F)](#테스트)
+[![payload](https://img.shields.io/badge/client-382_KB_·_119_KB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
 [![pwa](https://img.shields.io/badge/PWA-installable_·_offline-8B7BF0?labelColor=15121F)](#pwa-설치와-오프라인)
 [![infra](https://img.shields.io/badge/edge-CloudFront_→_ALB_→_Fargate-FF9900?labelColor=15121F)](#아키텍처)
 [![license](https://img.shields.io/badge/license-MIT-8B7BF0?labelColor=15121F)](LICENSE)
@@ -113,6 +113,14 @@ DynamoDB 단일 테이블(`pk`/`sk`): `LB#<mode>#<board>` / `<score 12자리>#<9
 
 - **라이벌 메아리·스플릿** (P2-4) — 세계 메아리는 기본적으로 내 바로 위 순위의 '라이벌'을 따라가고(설정에서 1위로 전환), 체크포인트마다 `+0.84s / −1.20s` 스플릿 칩이 뜹니다. 최근 사망 위치는 X 마커로 남고, 일시정지 화면에 구간별 사망 수와 구간 PB, 결과 화면에 '라이벌보다 N초 빠름/느림'이 표시됩니다.
 - **데일리 저작 청크** (P2-9, `GEN_VERSION` 2) — 14개 손으로 만든 청크(`levels/chunks/`, 태그 dash·wall·crystal·switch)가 50행 밴드마다 1~2개 타워에 삽입되어 데일리가 매일 다른 기술 시험이 됩니다. 청크마다 솔로 룸 골든 리플레이로 완주를 증명하고(`npx tsx tools/solve.ts --chunks`), 서버는 같은 생성기로 검증합니다.
+
+## Phase 3 A: 신뢰·운영·기기 체감
+
+- **안티치트** — 제출된 리플레이의 해시(`HASH#` 항목, 조건부 쓰기)로 타인의 기록 재제출을 422 `duplicate`로 막고, 검증 시 입력 휴리스틱(1틱 프레스 비율·초당 엣지·프레임 정렬률·대시→점프 퍼펙트)을 기록만 합니다(자동 차단 없음). `npm run admin -- delist|rename|ban-name|export-board`, 한·영 금칙어 필터(`src/shared/names.ts`), `/api/ghost` IP당 60/분. 런북: `docs/runbooks/anticheat.md`.
+- **진행도 이전 코드** — 설정 → 데이터 → '다른 기기로 옮기기': 마스크를 뺀 진행도 스냅샷(≤16 KB)을 서버에 7일 보관하고 1회용 8자 코드(HMAC 검사 문자)로 다른 기기에서 복원합니다(플레이어 id·이름 유지, 더 좋은 기록 우선 병합). 첫 클리어 후 `navigator.storage.persist()`를 요청해 iOS의 7일 미사용 삭제에 대비합니다.
+- **햅틱** — 착지·대시·월점프·사망·체크포인트·골에 Vibration API와 게임패드 럼블(초당 80 ms 예산, 설정 '진동').
+- **적응 화질 v2** — 2초 창 프레임 시간 p95와 표시 주사율 추정(60~240 Hz)으로 티어를 조정하고(히스테리시스·60초 잠금) 정착 티어를 저장해 다음 세션 첫 프레임부터 적용합니다.
+- **운영 위생** — CloudWatch 알람 10종(ALB 5xx·p95·비정상 호스트, ECS CPU·메모리, DynamoDB 스로틀, CloudFront 5xx, `VerifyMs` p95, 거절 비율)과 대시보드, SNS(컨텍스트 `alarmEmail`), ALB 액세스 로그(30일), 테이블 RETAIN·삭제 보호·AWS Backup(일간 35일), `TAG_SECRET` 분리, 엣지 `s-maxage=60` 캐시(릴리스 스크립트가 무효화). 런북: `docs/runbooks/secrets.md`.
 
 ## 조작
 
@@ -253,8 +261,8 @@ npm run destroy              # 전부 삭제 (테이블·로그·시크릿 포�
 
 | | |
 |---|---|
-| 테스트 | 848개 |
-| 플레이어가 내려받는 것 | JS 364 KB (gz 112 KB) · CSS 41 KB · HTML 15 KB · SW 2 KB · 폰트 외 외부 요청 0 |
+| 테스트 | 1,002개 |
+| 플레이어가 내려받는 것 | JS 382 KB (gz 119 KB) · CSS 48 KB · HTML 15 KB · SW 2 KB · 폰트 외 외부 요청 0 |
 | 콘텐츠 | 9구역 · 3바이옴 · 데일리 타워 · 끝없는 등반 · 적 6종 · 오브젝트 11종 |
 
 ## 크레딧 · 라이선스
