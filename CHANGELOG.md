@@ -7,6 +7,11 @@
 
 ## [Unreleased]
 
+### Added (Phase 3 B)
+- P3-2 크로스 엔진 결정론 자가진단(`?shot=selftest`, `tools/qa/selftest.ts`, 코퍼스 다이제스트 고정값) · P3-10 GitHub Actions CI.
+- P3-7 터치 레이아웃 편집기(크기·투명도·오프셋·플로팅 스틱), 8방향 대시 조준, 게임패드 자동 숨김, 44px/11px 감사, 음소거 칩.
+- P3-3 친구 메아리 경주 링크(`?race=<runId>` 진입·결과 화면 공유).
+
 ### Added (Phase 3 A)
 - P3-1 리플레이 해시 중복 차단, 휴리스틱 기록, `VerifyMs` 지표, 관리자 CLI, 금칙어 필터, 고스트 속도 제한.
 - P3-5 진행도 이전 코드(서버 API + 설정 UI), `storage.persist` 요청.

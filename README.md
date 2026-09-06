@@ -9,8 +9,8 @@
 [![play](https://img.shields.io/badge/▶_PLAY-clawd--game.whchoi.net-E8825C?style=for-the-badge&labelColor=07060B)](https://clawd-game.whchoi.net/)
 
 [![sim](https://img.shields.io/badge/simulation-isomorphic_·_120Hz-5BD8E0?labelColor=15121F)](#결정론적-시뮬레이션이-백엔드를-정당화한다)
-[![tests](https://img.shields.io/badge/tests-1002_passing-8BE86A?labelColor=15121F)](#테스트)
-[![payload](https://img.shields.io/badge/client-382_KB_·_119_KB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
+[![tests](https://img.shields.io/badge/tests-1054_passing-8BE86A?labelColor=15121F)](#테스트)
+[![payload](https://img.shields.io/badge/client-396_KB_·_120_KB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
 [![pwa](https://img.shields.io/badge/PWA-installable_·_offline-8B7BF0?labelColor=15121F)](#pwa-설치와-오프라인)
 [![infra](https://img.shields.io/badge/edge-CloudFront_→_ALB_→_Fargate-FF9900?labelColor=15121F)](#아키텍처)
 [![license](https://img.shields.io/badge/license-MIT-8B7BF0?labelColor=15121F)](LICENSE)
@@ -304,8 +304,8 @@ docker buildx build --platform linux/arm64 -t clawd-echo-tower:ci .
 
 | | |
 |---|---|
-| 테스트 | 1,002개 |
-| 플레이어가 내려받는 것 | JS 382 KB (gz 119 KB) · CSS 48 KB · HTML 15 KB · SW 2 KB · 폰트 외 외부 요청 0 |
+| 테스트 | 1,054개 |
+| 플레이어가 내려받는 것 | JS 396 KB (gz 120 KB) · CSS 50 KB · HTML 15 KB · SW 2 KB · 폰트 외 외부 요청 0 |
 | 콘텐츠 | 9구역 · 3바이옴 · 데일리 타워 · 끝없는 등반 · 적 6종 · 오브젝트 11종 |
 
 ## 크레딧 · 라이선스
