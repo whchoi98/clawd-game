@@ -47,13 +47,14 @@ m.owp(60, 63, F - 8);
 m.ent('D', 62, F - 12);
 m.shards([[61, F - 3], [62, F - 3], [61, F - 6], [62, F - 6], [60, F - 9], [63, F - 9], [61, F - 14], [62, F - 14]]);
 
-// --- Act 4: summit shelf with the second checkpoint and a chaser; updraft pit to the high shelf
-m.ground(66, 80, F - 15);
+// --- Act 4: summit shelf with the second checkpoint and a chaser; updraft pit to the high shelf.
+// The column stands flush with the shelf edge so stepping off drops into it; spikes only beyond.
+m.ground(66, 82, F - 15);
 m.ent('C', 68, F - 16);
 m.ent('c', 74, F - 18);
 m.shards([[71, F - 17], [77, F - 17]]);
-m.ground(81, 86, F - 13);
-m.spikes(81, 86, F - 14);
+m.ground(83, 86, F - 13);
+m.spikes(84, 86, F - 14);
 m.ent('z', 83, F - 14);
 m.shards([[83, F - 18], [83, F - 22]]);
 m.plat(78, 79, 3);                            // relic perch: drift left off the top of the updraft

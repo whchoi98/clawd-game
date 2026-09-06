@@ -13,9 +13,9 @@ import type {
 } from '../../src/sim/types.js';
 import { Sim } from '../../src/sim/sim.js';
 import { decodeMasks, encodeMasks, verifyReplay } from '../../src/sim/replay.js';
-import { PlayerRef } from '../../src/shared/protocol.js';
+import { PlayerRef, RejectReason } from '../../src/shared/protocol.js';
 import type {
-  DailyResponse, GhostResponse, LeaderboardQuery, LeaderboardResponse, RunResponse, RunSubmit,
+  DailyResponse, GhostResponse, LeaderboardEntry, LeaderboardQuery, LeaderboardResponse, RunResponse, RunSubmit,
 } from '../../src/shared/protocol.js';
 import type {
   ApiPort, AudioPort, Binds, FxState, GhostView, HudState, InputPort, MenuAction, RendererPort, ResultView,
@@ -157,10 +157,16 @@ function fakeInput(): FakeInput {
   return i;
 }
 
+/**
+ * A board row as the fake server stores it: the owner's raw id stays server-side
+ * and is turned into `you` per query, exactly like the real leaderboard route.
+ */
+type StoredEntry = Omit<LeaderboardEntry, 'you'> & { ownerId: string };
+
 /** An API fake that verifies submissions with the real sim, like the server. */
 interface FakeApi extends ApiPort {
   submissions: RunSubmit[]; lbQueries: LeaderboardQuery[]; ghosts: Record<string, GhostResponse>; failWith: Error | null;
-  levels: Record<string, LevelDef>; board: LeaderboardResponse['entries'];
+  levels: Record<string, LevelDef>; board: StoredEntry[];
 }
 function fakeApi(levels: LevelDef[]): FakeApi {
   const a: FakeApi = {
@@ -175,14 +181,18 @@ function fakeApi(levels: LevelDef[]): FakeApi {
       const def = a.levels[body.levelId];
       const masks = decodeMasks(body.masks);
       const v = verifyReplay(def, { v: 1, levelId: body.levelId, seed: body.seed ?? def.seed, assist: body.assist, masks }, body.claim);
-      if (!v.ok) return { accepted: false, reason: v.reason ?? 'claim-mismatch' };
+      if (!v.ok) {
+        const parsed = RejectReason.safeParse(v.reason);
+        return { accepted: false, reason: parsed.success ? parsed.data : 'claim-mismatch' };
+      }
       const runId = `run-${a.submissions.length}`;
       a.ghosts[runId] = {
         runId, mode: body.mode, board: body.mode === 'daily' ? body.date ?? '' : body.levelId, levelId: body.levelId,
         seed: body.seed ?? def.seed, assist: body.assist, masks: body.masks, name: body.player.name, ticks: v.summary.ticks,
       };
       a.board = [{
-        rank: 1, runId, playerId: body.player.id, name: body.player.name, score: v.summary.ticks, ticks: v.summary.ticks,
+        rank: 1, runId, ownerId: body.player.id, playerTag: 'aaaaaaaaaaaa', name: body.player.name,
+        score: v.summary.ticks, ticks: v.summary.ticks,
         shards: v.summary.shards, deaths: v.summary.deaths, cleared: v.summary.cleared, height: v.summary.height,
         createdAt: '2026-09-06T00:00:00.000Z',
       }];
@@ -194,7 +204,8 @@ function fakeApi(levels: LevelDef[]): FakeApi {
     async leaderboard(q): Promise<LeaderboardResponse> {
       if (a.failWith) throw a.failWith;
       a.lbQueries.push(q);
-      return { mode: q.mode, board: q.board, total: a.board.length, entries: a.board.slice(0, q.limit ?? 20) };
+      const entries = a.board.slice(0, q.limit ?? 20).map(({ ownerId, ...e }) => ({ ...e, you: ownerId === q.playerId }));
+      return { mode: q.mode, board: q.board, total: a.board.length, entries };
     },
     async ghost(runId): Promise<GhostResponse> {
       const g = a.ghosts[runId];
@@ -707,8 +718,18 @@ describe('Scenes', () => {
     runFrames(scenes, () => ui.screen === 'result');
     await scenes.settle();
     expect(save.progress.levels.flat.masks).toBeTruthy();
+
+    // we hold the top spot ourselves: the server flags the row `you`, so no world echo doubles the self echo
+    ui.emit({ type: 'retry' });
+    await scenes.settle();
+    expect(scenes.run!.echoes.length).toBe(1);
+    expect(scenes.run!.echoes[0].label).toBe('나');
+    // every board query carries our player id so the server can flag the row; ids never come back
+    expect(api.lbQueries.length).toBeGreaterThan(0);
+    for (const q of api.lbQueries) expect(q.playerId).toBe(save.progress.player.id);
+
     // a different player holds the top spot now
-    api.board[0] = { ...api.board[0], playerId: 'someone-else-1', name: '라이벌' };
+    api.board[0] = { ...api.board[0], ownerId: 'someone-else-1', playerTag: 'bbbbbbbbbbbb', name: '라이벌' };
     api.ghosts[api.board[0].runId] = { ...api.ghosts[api.board[0].runId], name: '라이벌' };
 
     ui.emit({ type: 'retry' });
@@ -758,6 +779,125 @@ describe('Scenes', () => {
     expect(save.progress.daily['2026-09-06']).toBeTruthy();
     expect(save.progress.daily['2026-09-06'].seed).toBe(12345);
     expect(ui.result?.submit.state).toBe('accepted');
+  });
+
+  /** A Scenes wired to the tiny tide room as the daily generator. */
+  function tideScenes(opts: { echoWorld?: boolean } = {}) {
+    const tide = tideRoom();
+    const ui = fakeUI();
+    const input = fakeInput();
+    const api = fakeApi([flatRoom()]);
+    const { save } = makeSave();
+    save.settings.echoWorld = opts.echoWorld ?? false;
+    const scenes = new Scenes({
+      renderer: fakeRenderer(), audio: fakeAudio(), ui, input, api, save, levels: [flatRoom()], build: 'test',
+      makeDaily: () => ({ ...tide, id: 'daily' }), randomSeed: () => 1,
+    });
+    api.levels.daily = { ...tide, id: 'daily' };
+    scenes.bootSync();
+    return { scenes, ui, input, api, save };
+  }
+  const DAILY: DailyResponse = { date: '2026-09-06', seed: 12345, levelId: 'daily', expiresAt: '2026-09-07T00:00:00.000Z' };
+
+  it('a daily started offline stays offline through restart and retry: no board, no ghost, no submission', async () => {
+    const { scenes, ui, api } = tideScenes({ echoWorld: true });
+    scenes.startDaily(DAILY, { offline: true });
+    expect(scenes.run!.offline).toBe(true);
+    expect(scenes.run!.eligible).toBe(false);
+    await scenes.settle();
+    expect(api.lbQueries.length).toBe(0);
+
+    ui.emit({ type: 'restart' });
+    const restarted = scenes.run!;
+    expect(restarted.offline).toBe(true);
+    expect(restarted.eligible).toBe(false);
+    expect(restarted.daily?.seed).toBe(12345);
+    runFrames(scenes, () => ui.screen === 'over', 6000);
+    await scenes.settle();
+    expect(api.submissions.length).toBe(0);
+    expect(api.lbQueries.length).toBe(0);
+    expect(restarted.view?.submit.state).toBe('idle');
+
+    ui.emit({ type: 'retry' });
+    expect(scenes.run!.offline).toBe(true);
+    runFrames(scenes, () => ui.screen === 'over', 6000);
+    await scenes.settle();
+    expect(api.submissions.length).toBe(0);
+    expect(api.lbQueries.length).toBe(0);
+
+    // the same daily started with the server is online again
+    scenes.startDaily(DAILY);
+    expect(scenes.run!.offline).toBe(false);
+    expect(scenes.run!.eligible).toBe(true);
+  });
+
+  /**
+   * After the intro, press jump and hold it for `holdFrames` frames (0 = a bare
+   * tap, which is a sub-tile hop), then wait for the tide. Returns the summary.
+   */
+  function hopUntilOver(scenes: Scenes, ui: FakeUI, input: FakeInput, holdFrames: number): RunSummary {
+    runFrames(scenes, () => scenes.run!.sim.state.phase === 'play');
+    input.latchedMask = IN.JUMP;
+    input.heldMask = holdFrames > 0 ? IN.JUMP : 0;
+    let n = 0;
+    runFrames(scenes, () => ++n > holdFrames, holdFrames + 1);
+    input.heldMask = 0;
+    runFrames(scenes, () => ui.screen === 'over', 6000);
+    return scenes.run!.summary!;
+  }
+
+  it('records tide heights as whole tiles; a run that displays no higher is not a personal best', async () => {
+    const { scenes, ui, input, save } = tideScenes();
+    scenes.startDaily(DAILY, { offline: true });
+    // a bare tap is a sub-tile hop: it displays as 0 and must never be a record
+    const tap = hopUntilOver(scenes, ui, input, 0);
+    expect(tap.height).toBeGreaterThan(0);
+    expect(tap.height).toBeLessThan(1);
+    const rec = save.progress.daily['2026-09-06'];
+    expect(rec.height).toBe(0);
+    expect(scenes.run!.view!.personalBest).toBe(false);
+    expect(ui.over!.best).toBe(0);
+
+    // a full jump: a fractional height of a few tiles, stored as its floor
+    ui.emit({ type: 'retry' });
+    const full = hopUntilOver(scenes, ui, input, 20);
+    expect(full.height).toBeGreaterThan(1);
+    expect(Number.isInteger(full.height)).toBe(false);
+    expect(save.progress.daily['2026-09-06'].height).toBe(Math.floor(full.height));
+    expect(scenes.run!.view!.personalBest).toBe(true);
+    const best = save.progress.daily['2026-09-06'].height;
+
+    // the same jump again displays the same tile count: a tie, not a record; the floor is unchanged
+    ui.emit({ type: 'retry' });
+    const again = hopUntilOver(scenes, ui, input, 20);
+    expect(Math.floor(again.height)).toBe(best);
+    expect(scenes.run!.view!.personalBest).toBe(false);
+    expect(save.progress.daily['2026-09-06'].height).toBe(best);
+    expect(ui.over!.best).toBe(best);
+    await scenes.settle();
+  });
+
+  it('records endless heights as whole tiles', () => {
+    const tide = tideRoom();
+    const ui = fakeUI();
+    const input = fakeInput();
+    const { save } = makeSave();
+    const scenes = new Scenes({
+      renderer: fakeRenderer(), audio: fakeAudio(), ui, input, api: fakeApi([flatRoom()]), save, levels: [flatRoom()],
+      build: 'test', makeEndless: () => ({ ...tide, id: 'endless' }), randomSeed: () => 1,
+    });
+    scenes.bootSync();
+    ui.emit({ type: 'endless' });
+    const tap = hopUntilOver(scenes, ui, input, 0);
+    expect(tap.height).toBeGreaterThan(0);
+    expect(tap.height).toBeLessThan(1);
+    expect(save.progress.endless.bestHeight).toBe(0);
+    expect(scenes.run!.view!.personalBest).toBe(false);
+    ui.emit({ type: 'retry' });
+    const full = hopUntilOver(scenes, ui, input, 20);
+    expect(Number.isInteger(full.height)).toBe(false);
+    expect(save.progress.endless.bestHeight).toBe(Math.floor(full.height));
+    expect(scenes.run!.view!.personalBest).toBe(true);
   });
 
   it('never records more than MAX_TICKS masks', () => {

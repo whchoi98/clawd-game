@@ -3,21 +3,15 @@
  * echoes the claim, and `makeApp()` which assembles the Fastify app with the
  * in-memory repo and a fixed clock.
  *
- * Every test file that touches the app must hoist these two mocks itself
- * (vi.mock is file-scoped):
+ * Every test file that touches the app must hoist this mock itself (vi.mock is
+ * file-scoped); it routes `t1` and `daily` to the fixture levels so the tests
+ * do not depend on the shipped level data:
  *
- *   vi.mock('./sim.js', () => ({ Sim: class {} }));          // see note below
  *   vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
  *
- * The factories must import the leaf module `levelfix.ts`, never this file:
+ * The factory must import the leaf module `levelfix.ts`, never this file:
  * this file imports the app, whose graph imports the mocked module, whose
  * factory would then wait on this file — a deadlock.
- *
- * Note on the first mock: src/sim/replay.ts imports './sim.js', which Task A
- * is still writing. While that file is absent vitest resolves the import to
- * the raw specifier, and a mock registered under the same raw specifier
- * intercepts it. Once src/sim/sim.ts exists the mock no longer matches and
- * the real module loads — the stub verifier never touches Sim either way.
  */
 import type { LevelDef, Replay, RunClaim, RunSummary, VerifyResult } from '../../src/sim/types.js';
 import type { RunSubmit } from '../../src/shared/protocol.js';
@@ -33,7 +27,11 @@ export const TODAY = '2026-09-06';
 export const YESTERDAY = '2026-09-05';
 export const SECRET = 'test-secret';
 
-/** 600 ticks of RIGHT held, then 120 ticks of RIGHT|JUMP. */
+/**
+ * 600 ticks of RIGHT held, then 120 ticks of RIGHT|JUMP. The server refuses logs
+ * longer than `maxMasksFor(claim)` (ticks + 55 + 182·deaths + 240), so a test that
+ * steers the score through `claim.ticks` must keep it ≥ 425 or pass shorter masks.
+ */
 export const MASKS = (() => {
   const m = new Uint8Array(720);
   m.fill(2, 0, 600);

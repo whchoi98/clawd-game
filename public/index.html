@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#050A12">
 <meta name="color-scheme" content="dark">
 <title>CLAWD JUMP: ECHO TOWER — 메아리의 탑</title>
@@ -13,7 +13,8 @@
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800;900&family=Noto+Sans+KR:wght@400;500;700;900&display=swap">
+<!-- The webfont stylesheet is injected by the app at boot (src/client/fonts.ts) so a stalled
+     fonts.googleapis.com never blocks first paint; the preconnects above keep it fast. -->
 <!--CSS-->
 </head>
 <body>
@@ -252,20 +253,21 @@
   </section>
 
   <!-- ROTATE PROMPT (phones held upright) -->
-  <div class="nag" id="nag-rotate" hidden role="dialog" aria-label="기기를 가로로 돌려 주세요">
+  <div class="nag" id="nag-rotate" hidden role="dialog" aria-label="기기를 가로로 돌리자">
     <div class="nag__body">
       <svg class="nag__icon" viewBox="0 0 48 48" aria-hidden="true">
         <rect x="16" y="6" width="16" height="36" rx="3" fill="none" stroke="currentColor" stroke-width="2"/>
         <path d="M36 24a12 12 0 0 1-8 11.3M12 24a12 12 0 0 1 8-11.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
         <path d="M28 33l1 4-4-1M20 15l-1-4 4 1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
-      <div>기기를 가로로 돌려 주세요</div>
+      <div>기기를 가로로 돌리자</div>
       <small>탑은 가로 화면에서 가장 잘 보인다</small>
+      <button class="nag__skip" type="button" data-act="dismissNag" data-nonav>그래도 계속</button>
     </div>
   </div>
 </div>
 
-<noscript><div class="noscript">이 게임은 JavaScript가 필요합니다.</div></noscript>
+<noscript><div class="noscript">이 게임은 JavaScript가 필요하다.</div></noscript>
 <!--APP-->
 </body>
 </html>

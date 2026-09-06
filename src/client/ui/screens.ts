@@ -103,9 +103,9 @@ const NAME_RE = /^[^\p{C}<>&"'`]+$/u;
 /** Korean error text for an invalid display name, or null when it is fine. */
 export function validateName(raw: string): string | null {
   const s = raw.trim();
-  if (!s.length) return '이름을 입력해 주세요';
-  if (s.length > NAME_MAX) return `이름은 ${NAME_MAX}자 이하여야 해요`;
-  if (!NAME_RE.test(s)) return '사용할 수 없는 문자가 있어요 ( < > & " \' ` )';
+  if (!s.length) return '이름이 비어 있다';
+  if (s.length > NAME_MAX) return `이름은 ${NAME_MAX}자 이하여야 한다`;
+  if (!NAME_RE.test(s)) return '쓸 수 없는 문자가 있다 ( < > & " \' ` )';
   return null;
 }
 

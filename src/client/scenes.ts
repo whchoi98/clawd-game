@@ -30,7 +30,8 @@ import type {
 import { MAX_FRAME_DT, TickScheduler } from './loop.js';
 import { FxBus } from './fx.js';
 import { Camera } from './camera.js';
-import { Save, cloneBinds } from './save.js';
+import { Save } from './save.js';
+import { cloneBinds } from './input/binds.js';
 import { ApiError } from './net/api.js';
 import { Echo } from './echo/echo.js';
 
@@ -107,7 +108,13 @@ export interface Run {
   masks: MaskLog;
   daily: { date: string; seed: number } | null;
   echoes: Echo[];
-  /** Leaderboard-eligible so far (no assist / invincible / overflow, submittable mode). */
+  /**
+   * Started without a server (capture harness, or a daily begun while the
+   * server was unreachable): no leaderboard or ghost fetch, never submitted.
+   * Sticky across restart / retry of the same run.
+   */
+  offline: boolean;
+  /** Leaderboard-eligible so far (no assist / invincible / overflow, submittable mode, online). */
   eligible: boolean;
   /** The run can be kept as a self echo (no assist / invincible). */
   echoSafe: boolean;
@@ -341,11 +348,13 @@ export class Scenes {
     const echoSafe = !s.assist && !s.invincible;
     const run: Run = {
       sim, def, mode, biome, seed, masks: new MaskLog(), daily, echoes: [],
+      offline,
       eligible: echoSafe && mode !== 'endless' && !offline,
       echoSafe,
       summary: null, view: null, resultKind: null, resultTimer: -1, resultShown: false,
-      prevBestHeight: mode === 'daily' && daily ? (this.save.progress.daily[daily.date]?.height ?? 0)
-        : mode === 'endless' ? this.save.progress.endless.bestHeight : 0,
+      // Stored heights are whole tiles; floor defensively for saves written before that rule.
+      prevBestHeight: Math.floor(mode === 'daily' && daily ? (this.save.progress.daily[daily.date]?.height ?? 0)
+        : mode === 'endless' ? this.save.progress.endless.bestHeight : 0),
       hintTimer: -1, hintText: null, hintUntil: -1,
       toastTimer: -1, toastText: null,
       t: 0,
@@ -388,7 +397,7 @@ export class Scenes {
     const run = this.run;
     if (!run) return;
     if (run.mode === 'story') this.startLevel(run.def.id, { restart: true });
-    else if (run.mode === 'daily' && run.daily) this.startDaily(this.dailyFor(run), { restart: true, offline: !this.eligibleMode(run) });
+    else if (run.mode === 'daily' && run.daily) this.startDaily(this.dailyFor(run), { restart: true, offline: run.offline });
     else this.startEndless(run.seed);
   }
 
@@ -396,7 +405,7 @@ export class Scenes {
     const run = this.run;
     if (!run) return;
     if (run.mode === 'story') this.startLevel(run.def.id, { restart: true });
-    else if (run.mode === 'daily' && run.daily) this.startDaily(this.dailyFor(run), { restart: true, offline: !this.eligibleMode(run) });
+    else if (run.mode === 'daily' && run.daily) this.startDaily(this.dailyFor(run), { restart: true, offline: run.offline });
     else this.startEndless();
   }
 
@@ -413,11 +422,6 @@ export class Scenes {
     const d = this.daily;
     if (d && run.daily && d.seed === run.daily.seed && d.date === run.daily.date) return d;
     return { date: run.daily!.date, seed: run.daily!.seed, levelId: 'daily', expiresAt: new Date(this.now() + 86_400_000).toISOString() };
-  }
-
-  /** A daily started offline (capture harness) stays offline on restart. */
-  private eligibleMode(run: Run): boolean {
-    return run.mode !== 'endless' && (run.mode !== 'daily' || this.daily !== null);
   }
 
   quitToMenu(): void {
@@ -647,10 +651,13 @@ export class Scenes {
       rec.relics = Math.max(rec.relics, s.relics);
       rec.deaths += s.deaths;
     } else if (run.mode === 'daily' && run.daily) {
+      // Heights are kept as whole tiles (what the player reads); a floored
+      // height of 0 can never beat the stored 0, so a sub-tile climb is no record.
+      const h = Math.floor(s.height);
       const rec = this.save.dailyRecord(run.daily.date, run.daily.seed);
       const better = s.cleared
         ? !rec.cleared || rec.bestTicks === 0 || s.ticks < rec.bestTicks
-        : !rec.cleared && s.height > rec.height;
+        : !rec.cleared && h > Math.floor(rec.height);
       if (better) {
         pb = true;
         if (s.cleared) { rec.cleared = true; rec.bestTicks = s.ticks; }
@@ -658,11 +665,12 @@ export class Scenes {
         else { delete rec.masks; delete rec.runId; }
         rec.seed = run.daily.seed;
       }
-      rec.height = Math.max(rec.height, s.height);
+      rec.height = Math.max(Math.floor(rec.height), h);
     } else {
+      const h = Math.floor(s.height);
       const e = prog.endless;
-      pb = s.height > e.bestHeight;
-      e.bestHeight = Math.max(e.bestHeight, s.height);
+      pb = h > Math.floor(e.bestHeight);
+      e.bestHeight = Math.max(Math.floor(e.bestHeight), h);
       e.bestShards = Math.max(e.bestShards, s.shards);
     }
     prog.totals.shards += s.shards;
@@ -753,13 +761,16 @@ export class Scenes {
         } catch { /* a corrupt local replay is simply not shown */ }
       }
     }
-    if (!s.echoWorld || run.mode === 'endless' || !this.eligibleMode(run)) return;
+    if (!s.echoWorld || run.mode === 'endless' || run.offline) return;
     const mode = run.mode === 'daily' ? 'daily' : 'story';
     const board = run.mode === 'daily' ? run.daily!.date : run.def.id;
     try {
-      const lb = await this.api.leaderboard({ mode, board, limit: 1 });
+      // playerId goes with every board query so the server can flag our own row
+      // (`you`); entries never carry a raw player id, only an opaque tag.
+      const lb = await this.api.leaderboard({ mode, board, limit: 1, playerId: prog.player.id });
       const top = lb.entries[0];
-      if (!top || top.playerId === prog.player.id || this.run !== run) return;
+      // Our own best is already running as the self echo.
+      if (!top || top.you || this.run !== run) return;
       const g = await this.api.ghost(top.runId);
       if (this.run !== run || g.levelId !== run.def.id) return;
       if (run.mode === 'daily' && g.seed !== run.daily!.seed) return;

@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -233,15 +234,21 @@ describe('CloudFront', () => {
     const csp: string = sec.ContentSecurityPolicy.ContentSecurityPolicy;
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("img-src 'self' data:");
-    expect(csp).toContain("style-src 'self' 'unsafe-inline' https://fonts.googleapis.com");
+    expect(csp).toContain("style-src 'self' https://fonts.googleapis.com");
     expect(csp).toContain('font-src https://fonts.gstatic.com');
     expect(csp).toContain("script-src 'self'");
     expect(csp).toContain("connect-src 'self'");
-    expect(csp).toContain("worker-src 'self' blob:");
+    expect(csp).toContain("worker-src 'self'");
+    expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("base-uri 'none'");
     expect(csp).toContain("form-action 'none'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).not.toContain('*');
+    // The client sets styles through the CSSOM and spawns no blob: workers, so
+    // neither relaxation is needed; every directive is a single token list.
+    expect(csp).not.toContain("'unsafe-inline'");
+    expect(csp).not.toContain('blob:');
+    for (const directive of csp.split('; ')) expect(directive).toMatch(/^[a-z-]+( [^ ;]+)+$/);
     expect(sec.ContentSecurityPolicy.Override).toBe(true);
     expect(sec.StrictTransportSecurity).toEqual({ AccessControlMaxAgeSec: 31536000, IncludeSubdomains: true, Override: true });
     expect(sec.ContentTypeOptions).toEqual({ Override: true });
@@ -251,6 +258,32 @@ describe('CloudFront', () => {
     const [, dist] = only(t, 'AWS::CloudFront::Distribution');
     const cfg = dist.Properties.DistributionConfig;
     expect(references(cfg.DefaultCacheBehavior.ResponseHeadersPolicyId, policyId)).toBe(true);
+  });
+
+  it('does not cache 404/403 at the edge (a rolling deploy must not pin a missing hashed asset)', () => {
+    const [, dist] = only(t, 'AWS::CloudFront::Distribution');
+    const errors = dist.Properties.DistributionConfig.CustomErrorResponses as Array<Record<string, unknown>>;
+    expect(errors).toHaveLength(2);
+    expect(errors).toEqual(
+      expect.arrayContaining([
+        { ErrorCode: 404, ErrorCachingMinTTL: 0 },
+        { ErrorCode: 403, ErrorCachingMinTTL: 0 },
+      ]),
+    );
+    // The status must reach the client unchanged: no custom page, no rewritten code.
+    for (const e of errors) {
+      expect(e).not.toHaveProperty('ResponsePagePath');
+      expect(e).not.toHaveProperty('ResponseCode');
+    }
+  });
+
+  it('compresses static behaviours at the edge and leaves /api/* to the origin (CACHING_DISABLED cannot compress)', () => {
+    const [, dist] = only(t, 'AWS::CloudFront::Distribution');
+    const cfg = dist.Properties.DistributionConfig;
+    const byPath = Object.fromEntries(cfg.CacheBehaviors.map((b: any) => [b.PathPattern, b]));
+    expect(cfg.DefaultCacheBehavior.Compress).toBe(true);
+    expect(byPath['/assets/*'].Compress).toBe(true);
+    expect(byPath['/api/*'].Compress).not.toBe(true);
   });
 
   it('enables HTTP/2+3, IPv6 and price class 200', () => {
@@ -392,6 +425,56 @@ describe('ECS service', () => {
     expect(references(ddb.Resource, tableId)).toBe(true);
     for (const s of statements) {
       for (const r of collectStrings(s.Resource)) expect(r).not.toBe('*');
+    }
+  });
+});
+
+describe('container image build context', () => {
+  const SCRATCH = '/tmp/claude-1000/-home-ec2-user-my-project-clawd-game/f8aa643c-bc48-400a-8c09-d71da38a73d7/scratchpad';
+
+  /** Every file below `dir` as a path relative to it. */
+  function walk(dir: string, prefix = '', out: string[] = []): string[] {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      const rel = prefix ? `${prefix}/${name}` : name;
+      if (statSync(p).isDirectory()) walk(p, rel, out);
+      else out.push(rel);
+    }
+    return out;
+  }
+
+  it('stages only what `npm run build` needs, so unrelated edits do not churn APP_VERSION', () => {
+    mkdirSync(SCRATCH, { recursive: true });
+    const outdir = mkdtempSync(join(SCRATCH, 'cdk-synth-'));
+    try {
+      const app = new cdk.App({ context: FLAGS, outdir });
+      new ClawdEchoTowerStack(app, 'ClawdEchoTowerStackTest', {
+        env: ENV,
+        vpcId: VPC_ID,
+        cloudfrontPrefixListId: PREFIX_LIST,
+        desiredCount: 2,
+      });
+      const assembly = app.synth();
+      const staged = readdirSync(assembly.directory)
+        .filter((n) => n.startsWith('asset.') && statSync(join(assembly.directory, n)).isDirectory());
+      expect(staged, 'exactly one asset: the Docker build context').toHaveLength(1);
+      const context = join(assembly.directory, staged[0]);
+
+      expect(readdirSync(context).sort()).toEqual(
+        ['.dockerignore', 'Dockerfile', 'package-lock.json', 'package.json', 'public', 'src', 'tools', 'tsconfig.json'],
+      );
+      expect(readdirSync(join(context, 'tools')).sort()).toEqual(['build.mjs', 'lib.mjs']);
+      expect(readdirSync(join(context, 'src')).sort()).toEqual(
+        expect.arrayContaining(['client', 'server', 'shared', 'sim']),
+      );
+      const files = walk(context);
+      expect(files.some((f) => f.startsWith('src/sim/levels.generated.ts'))).toBe(true);
+      expect(files.filter((f) => f.endsWith('.md') || f.endsWith('.log'))).toEqual([]);
+      expect(files.filter((f) => /^(levels|test|docs|infra|cdk\.out|node_modules|dist)\//.test(f))).toEqual([]);
+      expect(files).not.toContain('cdk-outputs.json');
+      expect(files).not.toContain('LICENSE');
+    } finally {
+      rmSync(outdir, { recursive: true, force: true });
     }
   });
 });

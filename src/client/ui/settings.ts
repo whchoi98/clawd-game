@@ -4,6 +4,7 @@
  * report through `onChange` / `onRebind`; persistence belongs to the shell.
  */
 import type { BindAction, Binds, Settings, UiSound } from '../contracts.js';
+import { cloneBinds } from '../input/binds.js';
 import { el } from './screens.js';
 
 export type PortraitPainter = (ctx: CanvasRenderingContext2D, skin: string, size: number, t: number) => void;
@@ -16,19 +17,6 @@ export const BIND_ROWS: readonly (readonly [BindAction, string])[] = [
 const BIND_SLOTS = 2;
 /** Seconds a refused binding stays red before the button reads its old key again. */
 export const CLASH_MS = 1400;
-
-/** Used only when the shell does not hand us the input layer's DEFAULT_BINDS. */
-export const FALLBACK_BINDS: Binds = {
-  left: ['ArrowLeft', 'KeyA'], right: ['ArrowRight', 'KeyD'], up: ['ArrowUp', 'KeyW'], down: ['ArrowDown', 'KeyS'],
-  jump: ['Space', 'KeyZ', 'KeyJ'], dash: ['ShiftLeft', 'ShiftRight', 'KeyX', 'KeyK'],
-  pause: ['Escape', 'KeyP'], confirm: ['Enter', 'Space'], cancel: ['Escape', 'Backspace'], restart: ['KeyR'],
-};
-
-export function cloneBinds(b: Binds): Binds {
-  const out = {} as Binds;
-  for (const k of Object.keys(b) as BindAction[]) out[k] = [...(b[k] ?? [])];
-  return out;
-}
 
 /**
  * The gameplay action that already owns `code`, or null when the key is free

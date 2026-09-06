@@ -12,13 +12,15 @@ const m = room(96, 28);
 const F = 24;
 
 // --- start yard
-m.ground(0, 14, F);
+m.ground(0, 16, F);
 m.ent('P', 3, F - 1);
 m.shards([[7, F - 1], [10, F - 1]]);
 
-// --- updraft 1: a spike pit whose column lifts you ten tiles onto the cliff
-m.ground(15, 20, F + 2);
-m.spikes(15, 20, F + 1);
+// --- updraft 1: a spike pit whose column lifts you ten tiles onto the cliff.
+// The column is flush with the bank edge, so stepping off the yard drops you
+// straight into it; the spikes wait beyond it for anyone who overshoots.
+m.ground(17, 20, F + 2);
+m.spikes(18, 20, F + 1);
 m.ent('z', 17, F + 1);
 m.shards([[17, F - 4], [17, F - 7], [17, F - 10]]);
 

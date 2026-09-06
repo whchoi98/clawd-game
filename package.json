@@ -19,11 +19,13 @@
     "qa:smoke": "tsx tools/qa/smoke.ts",
     "cdk": "cdk",
     "synth": "cdk synth --quiet",
-    "deploy": "cdk deploy --require-approval never",
+    "deploy": "cdk deploy --require-approval never --outputs-file cdk-outputs.json",
     "destroy": "cdk destroy --force",
     "start": "node dist/server/index.js",
     "postdeploy:check": "node tools/postdeploy.mjs",
-    "postdeploy:smoke": "node tools/postdeploy.mjs --smoke"
+    "postdeploy:smoke": "node tools/postdeploy.mjs --smoke",
+    "icons": "node tools/icons.mjs",
+    "qa:mobile": "tsx tools/qa/mobile.ts"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.700.0",

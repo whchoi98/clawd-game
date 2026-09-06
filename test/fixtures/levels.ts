@@ -139,6 +139,20 @@ export function waterRoom(): LevelDef {
   return r.def('water');
 }
 
+/**
+ * A 1-wide updraft column (x = 9) rising from a spike bed: spikes at columns
+ * 8 and 10 on row 20, rock beneath, the 'z' marker in the middle. The column
+ * reaches up to row 8; P floats at row 4 so the player falls ~4 tiles before
+ * its centre enters the column top.
+ */
+export function updraftRoom(): LevelDef {
+  const r = new Room(20, 24);
+  r.rect(0, 20, 19, 23);
+  r.set(8, 20, '^').set(10, 20, '^').set(9, 20, 'z');
+  r.set(9, 4, 'P');
+  return r.def('updraft');
+}
+
 /** One-way ledge, a spring and a crumble bridge. */
 export function furnitureRoom(): LevelDef {
   const r = new Room(40, 14);

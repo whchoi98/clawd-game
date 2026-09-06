@@ -19,14 +19,15 @@ import type {
   UIAction, UIPort, UiSound,
 } from '../contracts.js';
 import type { LevelDef, RunSummary } from '../../sim/types.js';
-import type { DailyResponse, LeaderboardResponse } from '../../shared/protocol.js';
+import type { DailyResponse, LeaderboardResponse, RejectReason } from '../../shared/protocol.js';
 import type { Biome } from '../../shared/biomes.js';
 import { BIOMES, BIOME_ORDER } from '../../shared/biomes.js';
+import { DEFAULT_BINDS } from '../input/binds.js';
 import {
   MODAL_SCREENS, Navigator, ScreenStack, el, lockSvg, starSvg, validateName, NAME_MAX,
 } from './screens.js';
 import { Hud, fmtTicks, fmtTime } from './hud.js';
-import { FALLBACK_BINDS, SettingsPanel, type PortraitPainter } from './settings.js';
+import { SettingsPanel, type PortraitPainter } from './settings.js';
 import { TouchControls, isPortraitViewport } from './touch.js';
 import { renderLeaderboard, type LbStatus } from './leaderboard.js';
 
@@ -47,18 +48,42 @@ export interface UIOptions {
   now?: () => number;
 }
 
-/** Korean text for RunRejected.reason. */
-const REASON_KR: Readonly<Record<string, string>> = {
-  assist: '보조 모드 기록',
-  'too-long': '너무 긴 기록',
-  'not-finished': '완주하지 않은 기록',
-  'claim-mismatch': '검증 불일치',
-  'bad-level': '알 수 없는 구역',
-  'bad-seed': '시드 불일치',
-  'stale-date': '만료된 날짜',
-  'rate-limited': '요청이 너무 잦음',
-  'bad-request': '잘못된 요청',
+/**
+ * Korean text for every RunRejected.reason. Typed over the protocol enum so a
+ * reason added on the server without a translation is a compile error here.
+ */
+export const REASON_KR: Readonly<Record<RejectReason, string>> = {
+  assist: '보조 모드 기록이다',
+  'too-long': '기록이 너무 길다',
+  'not-finished': '완주하지 않은 기록이다',
+  'claim-mismatch': '서버 재생 결과와 맞지 않는다',
+  'bad-level': '알 수 없는 구역이다',
+  'bad-seed': '시드가 맞지 않는다',
+  'stale-date': '날짜가 지난 기록이다',
+  'bad-masks': '입력 기록이 손상됐다',
+  'rate-limited': '요청이 너무 잦다. 잠시 후 다시',
+  duplicate: '이미 접수된 기록이다',
 };
+/** Transport-level reasons the API client produces (ApiError.reason) when there is no server verdict. */
+const TRANSPORT_REASON_KR: Readonly<Record<string, string>> = {
+  'bad-request': '잘못된 요청이다',
+  'not-found': '서버가 기록을 찾지 못했다',
+  'server-error': '서버 오류다',
+  'bad-response': '서버 응답을 읽을 수 없다',
+  timeout: '서버가 응답하지 않는다',
+  network: '서버에 닿지 않는다',
+};
+
+/** Korean line for a rejection reason; unknown strings fall back to themselves. */
+export function reasonKr(reason: string | undefined): string {
+  if (!reason) return '알 수 없는 이유';
+  return (REASON_KR as Readonly<Record<string, string | undefined>>)[reason]
+    ?? TRANSPORT_REASON_KR[reason]
+    ?? reason;
+}
+
+/** sessionStorage key: the player chose to keep playing in portrait. */
+export const NAG_DISMISSED_KEY = 'clawd-echo.nag-dismissed';
 const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 const HOVER_SELECTOR = '.menu__item,.card,.tab,.chip,.echo,.bindbtn,.switch,.seg button,.icon-btn';
@@ -107,6 +132,7 @@ export class UI implements UIPort {
   private portrait: PortraitPainter | null = null;
   private resetArmed = false;
   private playerName = '';
+  private nagDismissed = false;
 
   constructor(opts: UIOptions = {}) {
     this.doc = opts.document ?? document;
@@ -114,8 +140,9 @@ export class UI implements UIPort {
     this.input = opts.input ?? null;
     this.audio = opts.audio ?? null;
     this.skins = opts.skins ?? {};
-    this.defaultBinds = opts.defaultBinds ?? FALLBACK_BINDS;
+    this.defaultBinds = opts.defaultBinds ?? DEFAULT_BINDS;
     this.now = opts.now ?? (() => Date.now());
+    this.nagDismissed = this.readNagDismissed();
 
     this.screens = new ScreenStack(this.doc);
     this.hudCtl = new Hud(this.doc);
@@ -324,13 +351,17 @@ export class UI implements UIPort {
 
   showOver(summary: RunSummary, bestHeight: number): void {
     const d = this.doc;
+    // Heights are whole tiles everywhere the player reads them, so compare
+    // floors: a sub-tile climb that displays as 0 is never a record, and a
+    // run that displays the same height as the best is a tie, not a record.
     const h = Math.max(0, Math.floor(summary.height));
-    const best = summary.height > 0 && summary.height >= bestHeight;
+    const prevBest = Math.max(0, Math.floor(bestHeight));
+    const best = h > 0 && h > prevBest;
     const rows = d.getElementById('over-rows');
     if (rows) {
       rows.replaceChildren(
         this.resRow(best ? '도달 높이 · 신기록!' : '도달 높이', String(h), best),
-        this.resRow('최고 높이', String(Math.max(0, Math.floor(Math.max(bestHeight, summary.height))))),
+        this.resRow('최고 높이', String(Math.max(prevBest, h))),
         this.resRow('파편', String(summary.shards)),
         this.resRow('버틴 시간', fmtTime(summary.time)),
       );
@@ -433,12 +464,20 @@ export class UI implements UIPort {
       if (!btn || (btn as HTMLButtonElement).disabled) return;
       try { this.audio?.init(); } catch { /* first-gesture unlock is best-effort */ }
       this.onAct(btn.dataset.act ?? '', btn);
+      // A pointer click leaves the button DOM-focused; drop that focus so the
+      // menu cursor stays the only thing Enter / Space can activate.
+      try { btn.blur(); } catch { /* detached or non-focusable */ }
     });
     this.doc.addEventListener('pointerenter', (e) => {
       const t = e.target as Element | null;
       const n = (t?.closest?.(HOVER_SELECTOR) ?? null) as HTMLElement | null;
       if (n) this.nav.hover(n);
     }, true);
+    // Tab users: the cursor follows DOM focus onto any navigable element.
+    this.doc.addEventListener('focusin', (e) => {
+      const t = e.target as Element | null;
+      if (t && this.nav.els.includes(t as HTMLElement)) this.nav.hover(t);
+    });
   }
 
   private onAct(act: string, btn: HTMLElement): void {
@@ -477,6 +516,7 @@ export class UI implements UIPort {
         break;
       }
       case 'resetProgress': this.resetProgress(btn); break;
+      case 'dismissNag': this.dismissNag(); break;
       default: break;
     }
   }
@@ -520,8 +560,11 @@ export class UI implements UIPort {
     this.doc.addEventListener('visibilitychange', () => { if (this.doc.hidden) this.pause(); });
     if (!win) return;
     win.addEventListener('blur', () => this.pause());
-    win.addEventListener('resize', () => this.updateNag());
-    win.addEventListener('orientationchange', () => { win.setTimeout(() => this.updateNag(), 120); });
+    // The rotate prompt is re-evaluated only when the device actually turns —
+    // a resize from the soft keyboard or the URL bar must not flash it.
+    const recheck = (): void => { win.setTimeout(() => this.updateNag(), 120); };
+    win.addEventListener('orientationchange', recheck);
+    try { win.screen?.orientation?.addEventListener?.('change', recheck); } catch { /* no Screen Orientation API */ }
   }
 
   private updateTouchVisibility(): void {
@@ -529,11 +572,25 @@ export class UI implements UIPort {
     this.doc.getElementById('ui')?.classList.toggle('is-touch', this.touchCtl.coarse);
   }
 
-  /** Ask a phone held upright to turn: the world is 16:9 and the pad would cover it. */
+  /**
+   * Ask a phone held upright to turn: the world is 16:9 and the pad would cover
+   * it. Dismissable — "그래도 계속" hides it for the rest of the session.
+   */
   private updateNag(): void {
     const nag = this.doc.getElementById('nag-rotate');
     if (!nag) return;
-    nag.hidden = !(this.touchCtl.coarse && isPortraitViewport(this.win));
+    nag.hidden = this.nagDismissed || !(this.touchCtl.coarse && isPortraitViewport(this.win));
+  }
+
+  private dismissNag(): void {
+    this.nagDismissed = true;
+    try { this.win?.sessionStorage?.setItem(NAG_DISMISSED_KEY, '1'); } catch { /* private mode / quota */ }
+    this.sound('cancel');
+    this.updateNag();
+  }
+
+  private readNagDismissed(): boolean {
+    try { return this.win?.sessionStorage?.getItem(NAG_DISMISSED_KEY) === '1'; } catch { return false; }
   }
 
   // ================================================================ title
@@ -642,7 +699,7 @@ export class UI implements UIPort {
           submit.append('세계 ', el(d, 'b', {}, `${sub.rank ?? '—'}위`), total, ' · 검증 완료');
           break;
         }
-        case 'rejected': submit.append(`거절됨: ${REASON_KR[sub.reason ?? ''] ?? sub.reason ?? '알 수 없는 이유'}`); break;
+        case 'rejected': submit.append(`거절됨: ${reasonKr(sub.reason)}`); break;
         case 'offline': submit.append('오프라인 · 기록은 이 기기에만 남는다'); break;
         default: break;
       }
@@ -653,7 +710,7 @@ export class UI implements UIPort {
       const lb = view.leaderboard ?? null;
       if (lb) {
         lbHost.hidden = false;
-        renderLeaderboard(lbHost, lb, { status: 'ok', playerId: this.progress?.player.id, limit: 3 });
+        renderLeaderboard(lbHost, lb, { status: 'ok', limit: 3 });
       } else {
         lbHost.hidden = true;
         lbHost.replaceChildren();
@@ -680,7 +737,7 @@ export class UI implements UIPort {
     this.renderDailyMine();
     this.renderDailyExpires();
     const host = d.getElementById('daily-lb');
-    if (host) renderLeaderboard(host, this.dailyLb, { status: this.dailyStatus, playerId: this.progress?.player.id });
+    if (host) renderLeaderboard(host, this.dailyLb, { status: this.dailyStatus });
     if (this.screens.top === 'daily') this.nav.refresh(this.screens.el('daily'), true);
   }
 
@@ -719,10 +776,15 @@ export class UI implements UIPort {
     const form = this.doc.getElementById('name-form');
     const count = this.doc.getElementById('name-count');
     if (!input) return;
-    // Keep gameplay keys (WASD, Space…) from being swallowed by the input layer while typing.
-    for (const type of ['keydown', 'keyup', 'keypress'] as const) {
-      input.addEventListener(type, (e) => e.stopPropagation());
-    }
+    // The input layer ignores keys typed into editable elements, so gameplay
+    // keys (WASD, Space…) are already safe here and the event may bubble.
+    // Native Enter submits the form; Escape closes the dialog.
+    input.addEventListener('keydown', (e) => {
+      if (e.code === 'Escape' || e.key === 'Escape') {
+        e.preventDefault();
+        this.goBack();
+      }
+    });
     input.addEventListener('input', () => {
       if (count) count.textContent = `${input.value.trim().length} / ${NAME_MAX}`;
       const err = this.doc.getElementById('name-err');

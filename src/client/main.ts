@@ -22,6 +22,7 @@ import { Api } from './net/api.js';
 import { Save } from './save.js';
 import { Scenes } from './scenes.js';
 import { parseShotQuery, runShot } from './shot.js';
+import { loadFonts } from './fonts.js';
 
 declare const __BUILD__: string | undefined;
 
@@ -74,6 +75,8 @@ function reducedMotion(): boolean {
 }
 
 async function start(): Promise<void> {
+  // First thing: kick off the webfont fetch without letting it block anything.
+  loadFonts(document);
   const canvas = document.getElementById('world') as HTMLCanvasElement | null;
   if (!canvas) throw new Error('canvas#world is missing');
 

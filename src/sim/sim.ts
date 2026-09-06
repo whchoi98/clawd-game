@@ -17,7 +17,7 @@ import { makeRng } from './rng.js';
 import type { Rng } from './rng.js';
 import { Player } from './player.js';
 import type { PlatformRide, SimHost } from './player.js';
-import { Entity, MovePlat, Toggle, resetActorIds, spawnEntity } from './entities.js';
+import { Entity, MovePlat, Toggle, Updraft, resetActorIds, spawnEntity } from './entities.js';
 import { Foe, Spiker, spawnFoe } from './foes.js';
 
 /** Seconds of spawn-in before input is live. */
@@ -47,6 +47,7 @@ export class Sim implements SimHost {
   private readonly ents: Entity[] = [];
   private readonly plats: MovePlat[] = [];
   private readonly toggles: Toggle[] = [];
+  private readonly drafts: Updraft[] = [];
   private readonly foeList: Foe[] = [];
   private events: SimEvent[] = [];
   private prevMask: InputMask = 0;
@@ -100,6 +101,11 @@ export class Sim implements SimHost {
   platformUnder(p: PlayerState): PlatformRide | null {
     for (const pl of this.plats) if (pl.supports(p)) return pl.ride;
     return null;
+  }
+
+  inUpdraft(x: number, y: number): boolean {
+    for (const d of this.drafts) if (d.contains(x, y)) return true;
+    return false;
   }
 
   stompShock(x: number, y: number): void {
@@ -180,6 +186,7 @@ export class Sim implements SimHost {
         this.ents.push(e);
         if (e instanceof MovePlat) this.plats.push(e);
         else if (e instanceof Toggle) this.toggles.push(e);
+        else if (e instanceof Updraft) this.drafts.push(e);
         continue;
       }
       const f = spawnFoe(sp, sp.ch === 'h' ? this.rng() : 0);
@@ -209,7 +216,13 @@ export class Sim implements SimHost {
 
     switch (st.phase) {
       case 'intro':
-        if (st.phaseT > INTRO_T) this.setPhase('play');
+        if (st.phaseT > INTRO_T) {
+          // The flip tick is already controllable (the player reads this mask),
+          // so it is a play tick for the run timer as well.
+          this.setPhase('play');
+          st.time += DT;
+          this.playTicks++;
+        }
         break;
       case 'play':
         st.time += DT;

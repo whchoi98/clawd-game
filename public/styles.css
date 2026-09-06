@@ -492,6 +492,11 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
 .nag__body{display:flex;flex-direction:column;align-items:center;gap:.6rem;color:var(--paper)}
 .nag__body small{font-size:.76rem;color:var(--muted-2);font-weight:400}
 .nag__icon{width:3.2rem;height:3.2rem;color:var(--teal);animation:tilt 2.4s var(--e-in-out) infinite}
+/* "그래도 계속": dismisses the prompt for the session. Dismissed = hidden = display:none, so it never eats taps. */
+.nag__skip{margin-top:1rem;padding:.55rem 1.3rem;border-radius:99px;font-family:var(--f-kr);font-size:.82rem;font-weight:600;
+  color:var(--teal-hi);border:1px solid rgba(127,227,214,.4);background:rgba(127,227,214,.1);text-align:center}
+.nag__skip:hover,.nag__skip:focus-visible{outline:none;background:rgba(127,227,214,.2);color:#fff}
+.nag[hidden]{pointer-events:none}
 @keyframes tilt{0%,100%{transform:rotate(0)}50%{transform:rotate(-90deg)}}
 
 /* ============================================================

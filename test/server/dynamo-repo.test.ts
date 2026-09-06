@@ -1,17 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { DynamoRepo, KEY, SCORE_DIGITS, padScore } from '../../src/server/repo/dynamo.js';
+import { DynamoRepo, KEY, SCORE_DIGITS, SHARD_DIGITS, padScore, padShards } from '../../src/server/repo/dynamo.js';
 import type { StoredRun } from '../../src/server/repo/types.js';
-
-/** Records every command and answers from a queue — nothing reaches AWS. */
-class FakeClient {
-  sent: { name: string; input: Record<string, unknown> }[] = [];
-  responses: unknown[] = [];
-  async send(cmd: { constructor: { name: string }; input: Record<string, unknown> }) {
-    this.sent.push({ name: cmd.constructor.name, input: cmd.input });
-    return this.responses.length ? this.responses.shift() : {};
-  }
-}
+import { FakeClient } from './fakeDynamo.js';
 
 function run(over: Partial<StoredRun> = {}): StoredRun {
   return {
@@ -20,6 +11,8 @@ function run(over: Partial<StoredRun> = {}): StoredRun {
     createdAt: '2026-09-06T12:00:00.000Z', ttl: 1_760_000_000, ...over,
   };
 }
+
+type TxItem = Record<string, { TableName: string; Item?: Record<string, unknown>; Key?: Record<string, unknown>; ConditionExpression?: string; ExpressionAttributeValues?: Record<string, unknown> }>;
 
 describe('key builders', () => {
   it('zero-pads scores to a fixed width so string order equals numeric order', () => {
@@ -31,21 +24,32 @@ describe('key builders', () => {
     expect(padScore(999_999) < padScore(1_000_000_000)).toBe(true);
   });
 
-  it('builds the spec §2.4 keys', () => {
+  it('encodes shards descending (99999 - shards) so more shards sort first within a score', () => {
+    expect(SHARD_DIGITS).toBe(5);
+    expect(padShards(0)).toBe('99999');
+    expect(padShards(7)).toBe('99992');
+    expect(padShards(99_999)).toBe('00000');
+    expect(padShards(1_000_000)).toBe('00000');
+    expect(KEY.lbSk(100, 5, 'a') < KEY.lbSk(100, 2, 'a')).toBe(true);
+    expect(KEY.lbSk(100, 5, 'a') < KEY.lbSk(101, 99, 'a')).toBe(true);
+  });
+
+  it('builds the spec §2.4 keys with the shard tiebreak in the LB sort key', () => {
     expect(KEY.lbPk('story', 't1')).toBe('LB#story#t1');
     expect(KEY.lbPk('daily', '2026-09-06')).toBe('LB#daily#2026-09-06');
-    expect(KEY.lbSk(45, 'abc')).toBe('000000000045#abc');
+    expect(KEY.lbSk(45, 7, 'abc')).toBe('000000000045#99992#abc');
     expect(KEY.runPk('abc')).toBe('RUN#abc');
     expect(KEY.RUN_SK).toBe('META');
     expect(KEY.playerPk('p1')).toBe('PLAYER#p1');
     expect(KEY.bestSk('daily', '2026-09-06')).toBe('BEST#daily#2026-09-06');
   });
 
-  it('rankOf boundary: sk < padScore(s) selects exactly the strictly lower scores', () => {
-    expect(KEY.lbSk(99, 'zzz') < padScore(100)).toBe(true);
-    expect(KEY.lbSk(100, 'aaa') < padScore(100)).toBe(false);
-    expect(KEY.lbSk(100, 'aaa') > padScore(100)).toBe(true);
-    expect(KEY.lbSk(101, 'aaa') < padScore(100)).toBe(false);
+  it('rankOf boundary: sk < padScore(s) selects exactly the strictly lower scores, whatever the shards', () => {
+    expect(KEY.lbSk(99, 0, 'zzz') < padScore(100)).toBe(true);
+    expect(KEY.lbSk(99, 99_999, 'zzz') < padScore(100)).toBe(true);
+    expect(KEY.lbSk(100, 99_999, 'aaa') < padScore(100)).toBe(false);
+    expect(KEY.lbSk(100, 0, 'aaa') > padScore(100)).toBe(true);
+    expect(KEY.lbSk(101, 0, 'aaa') < padScore(100)).toBe(false);
   });
 });
 
@@ -58,16 +62,36 @@ describe('DynamoRepo', () => {
     await repo.saveBest(run());
     expect(client.sent).toHaveLength(1);
     expect(client.sent[0].name).toBe(TransactWriteCommand.name);
-    const items = client.sent[0].input.TransactItems as Array<Record<string, { TableName: string; Item?: Record<string, unknown>; Key?: Record<string, unknown> }>>;
+    const items = client.sent[0].input.TransactItems as TxItem[];
     expect(items).toHaveLength(3);
     const puts = items.map((i) => i.Put!);
     expect(puts.every((p) => p.TableName === TABLE)).toBe(true);
     const [runItem, lbItem, playerItem] = puts.map((p) => p.Item!);
     expect(runItem).toMatchObject({ pk: 'RUN#run-new', sk: 'META', masks: 'QUJD', score: 4321, ttl: 1_760_000_000, playerId: 'p1' });
-    expect(lbItem).toMatchObject({ pk: 'LB#daily#2026-09-06', sk: '000000004321#run-new', runId: 'run-new', score: 4321, ttl: 1_760_000_000 });
+    expect(lbItem).toMatchObject({ pk: 'LB#daily#2026-09-06', sk: '000000004321#99992#run-new', runId: 'run-new', score: 4321, ttl: 1_760_000_000 });
     expect(lbItem).not.toHaveProperty('masks');
     expect(playerItem).toMatchObject({ pk: 'PLAYER#p1', sk: 'BEST#daily#2026-09-06', runId: 'run-new', score: 4321, ttl: 1_760_000_000 });
     expect(playerItem).not.toHaveProperty('masks');
+  });
+
+  it('saveBest without a previous best guards the PLAYER item with attribute_not_exists(runId)', async () => {
+    const { client, repo } = setup();
+    await repo.saveBest(run());
+    const items = client.sent[0].input.TransactItems as TxItem[];
+    expect(items[0].Put!.ConditionExpression).toBeUndefined();
+    expect(items[1].Put!.ConditionExpression).toBeUndefined();
+    expect(items[2].Put!.ConditionExpression).toBe('attribute_not_exists(runId)');
+    expect(items[2].Put!.ExpressionAttributeValues).toBeUndefined();
+  });
+
+  it('saveBest with a previous best requires the PLAYER item to still name it (runId = :prev)', async () => {
+    const { client, repo } = setup();
+    client.responses.push({ Item: { pk: 'RUN#run-old', sk: 'META', ...run({ runId: 'run-old', score: 5000, ticks: 5000 }) } }, {});
+    await repo.saveBest(run(), 'run-old');
+    const items = client.sent[1].input.TransactItems as TxItem[];
+    expect(items[2].Put!.Item!.pk).toBe('PLAYER#p1');
+    expect(items[2].Put!.ConditionExpression).toBe('runId = :prev');
+    expect(items[2].Put!.ExpressionAttributeValues).toEqual({ ':prev': 'run-old' });
   });
 
   it('saveBest omits ttl for story runs and never sends undefined attributes', async () => {
@@ -80,30 +104,37 @@ describe('DynamoRepo', () => {
     }
   });
 
-  it('saveBest deletes the previous board entry, looking its score up from the RUN item', async () => {
+  it('saveBest deletes the previous board entry, rebuilding its sort key (score and shards) from the RUN item', async () => {
     const { client, repo } = setup();
-    client.responses.push({ Item: { pk: 'RUN#run-old', sk: 'META', ...run({ runId: 'run-old', score: 5000, ticks: 5000 }) } }, {});
+    client.responses.push({ Item: { pk: 'RUN#run-old', sk: 'META', ...run({ runId: 'run-old', score: 5000, ticks: 5000, shards: 12 }) } }, {});
     await repo.saveBest(run(), 'run-old');
     expect(client.sent.map((s) => s.name)).toEqual([GetCommand.name, TransactWriteCommand.name]);
     expect(client.sent[0].input).toMatchObject({ TableName: TABLE, Key: { pk: 'RUN#run-old', sk: 'META' } });
-    const items = client.sent[1].input.TransactItems as Array<Record<string, { TableName: string; Key?: Record<string, unknown> }>>;
+    const items = client.sent[1].input.TransactItems as TxItem[];
     expect(items).toHaveLength(4);
-    expect(items[3].Delete).toEqual({ TableName: TABLE, Key: { pk: 'LB#daily#2026-09-06', sk: '000000005000#run-old' } });
+    expect(items[3].Delete).toEqual({ TableName: TABLE, Key: { pk: 'LB#daily#2026-09-06', sk: '000000005000#99987#run-old' } });
   });
 
-  it('saveBest skips the delete when the previous run is gone (expired)', async () => {
+  it('saveBest skips the delete when the previous run is gone (expired) but keeps the guard', async () => {
     const { client, repo } = setup();
     client.responses.push({}, {});
     await repo.saveBest(run(), 'run-old');
-    const items = client.sent[1].input.TransactItems as unknown[];
+    const items = client.sent[1].input.TransactItems as TxItem[];
     expect(items).toHaveLength(3);
+    expect(items[2].Put!.ConditionExpression).toBe('runId = :prev');
+  });
+
+  it('saveBest surfaces the store\'s refusal untouched', async () => {
+    const { client, repo } = setup();
+    client.responses.push(Object.assign(new Error('cancelled'), { name: 'TransactionCanceledException' }));
+    await expect(repo.saveBest(run())).rejects.toMatchObject({ name: 'TransactionCanceledException' });
   });
 
   it('topRuns queries the board partition ascending with the limit', async () => {
     const { client, repo } = setup();
     client.responses.push({ Items: [
-      { pk: 'LB#story#t1', sk: '000000000500#a', ...run({ runId: 'a', mode: 'story', board: 't1', score: 500, masks: undefined as never }) },
-      { pk: 'LB#story#t1', sk: '000000000600#b', ...run({ runId: 'b', mode: 'story', board: 't1', score: 600, masks: undefined as never }) },
+      { pk: 'LB#story#t1', sk: '000000000500#99992#a', ...run({ runId: 'a', mode: 'story', board: 't1', score: 500, masks: undefined as never }) },
+      { pk: 'LB#story#t1', sk: '000000000600#99992#b', ...run({ runId: 'b', mode: 'story', board: 't1', score: 600, masks: undefined as never }) },
     ] });
     const top = await repo.topRuns('story', 't1', 20);
     expect(client.sent[0].name).toBe(QueryCommand.name);
@@ -118,7 +149,7 @@ describe('DynamoRepo', () => {
     expect(top[0].masks).toBe('');
   });
 
-  it('rankOf issues two COUNT queries and sums pages', async () => {
+  it('rankOf issues two COUNT queries (strictly better, total) and sums pages', async () => {
     const { client, repo } = setup();
     client.responses.push(
       { Count: 3, LastEvaluatedKey: { pk: 'x', sk: 'y' } }, { Count: 2 },   // better, two pages

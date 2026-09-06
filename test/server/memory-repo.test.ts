@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { KEY } from '../../src/server/repo/dynamo.js';
+import { isSaveConflict } from '../../src/server/repo/errors.js';
 import { MemoryRepo } from '../../src/server/repo/memory.js';
 import type { StoredRun } from '../../src/server/repo/types.js';
 
@@ -36,15 +38,35 @@ describe('MemoryRepo', () => {
     expect(await repo.getRun('a')).not.toBeNull();
   });
 
-  it('topRuns sorts by score ascending, then more shards, then earlier createdAt; limit applies', async () => {
+  it('topRuns sorts like the DynamoDB LB key: score ascending, then more shards, then run id; limit applies', async () => {
     const repo = new MemoryRepo();
     await repo.saveBest(run({ runId: 'a', playerId: 'p1', score: 300 }));
-    await repo.saveBest(run({ runId: 'b', playerId: 'p2', score: 100, shards: 2, createdAt: '2026-09-06T00:00:02.000Z' }));
+    await repo.saveBest(run({ runId: 'd', playerId: 'p2', score: 100, shards: 2, createdAt: '2026-09-06T00:00:01.000Z' }));
     await repo.saveBest(run({ runId: 'c', playerId: 'p3', score: 100, shards: 5 }));
-    await repo.saveBest(run({ runId: 'd', playerId: 'p4', score: 100, shards: 2, createdAt: '2026-09-06T00:00:01.000Z' }));
+    await repo.saveBest(run({ runId: 'b', playerId: 'p4', score: 100, shards: 2, createdAt: '2026-09-06T00:00:02.000Z' }));
     await repo.saveBest(run({ runId: 'e', playerId: 'p5', score: 200 }));
-    expect((await repo.topRuns('story', 't1', 10)).map((r) => r.runId)).toEqual(['c', 'd', 'b', 'e', 'a']);
-    expect((await repo.topRuns('story', 't1', 2)).map((r) => r.runId)).toEqual(['c', 'd']);
+    expect((await repo.topRuns('story', 't1', 10)).map((r) => r.runId)).toEqual(['c', 'b', 'd', 'e', 'a']);
+    expect((await repo.topRuns('story', 't1', 2)).map((r) => r.runId)).toEqual(['c', 'b']);
+    // parity with the DynamoDB sort key
+    const sks = (await repo.topRuns('story', 't1', 10)).map((r) => KEY.lbSk(r.score, r.shards, r.runId));
+    expect([...sks].sort()).toEqual(sks);
+  });
+
+  it('saveBest refuses a write whose previousRunId is not the current best (mirrors the DynamoDB condition)', async () => {
+    const repo = new MemoryRepo();
+    await repo.saveBest(run({ runId: 'a', score: 100 }));
+    // no previous named, but a best exists
+    await expect(repo.saveBest(run({ runId: 'b', score: 90 }))).rejects.toSatisfy(isSaveConflict);
+    // a stale previous
+    await expect(repo.saveBest(run({ runId: 'b', score: 90 }), 'zzz')).rejects.toSatisfy(isSaveConflict);
+    // a previous named while none exists
+    await expect(repo.saveBest(run({ runId: 'x', playerId: 'p9', score: 90 }), 'a')).rejects.toSatisfy(isSaveConflict);
+    // nothing leaked from the refused writes
+    expect((await repo.topRuns('story', 't1', 10)).map((r) => r.runId)).toEqual(['a']);
+    expect(await repo.getRun('b')).toBeNull();
+    // the right previous goes through
+    await repo.saveBest(run({ runId: 'b', score: 90 }), 'a');
+    expect((await repo.topRuns('story', 't1', 10)).map((r) => r.runId)).toEqual(['b']);
   });
 
   it('rankOf counts strictly better scores and the board total', async () => {

@@ -76,26 +76,118 @@ export function encodeMasks(masks: Uint8Array): string { return toBase64(rleEnco
 export function decodeMasks(s: string, maxTicks = MAX_TICKS): Uint8Array { return rleDecode(fromBase64(s), maxTicks); }
 
 /**
+ * Default cooperative-yield: hand the event loop one turn between chunks.
+ * `setImmediate` is looked up on `globalThis` so this module keeps no Node
+ * import (type-level or otherwise); browsers fall back to a zero timeout.
+ */
+function yieldToLoop(): Promise<void> {
+  const g = globalThis as { setImmediate?: (cb: () => void) => unknown; setTimeout: (cb: () => void, ms: number) => unknown };
+  return new Promise<void>((resolve) => {
+    if (typeof g.setImmediate === 'function') g.setImmediate(resolve);
+    else g.setTimeout(resolve, 0);
+  });
+}
+
+/** Ticks stepped between yields by `verifyReplayChunked` (20 s of play). */
+export const VERIFY_CHUNK_TICKS = 2400;
+
+/**
+ * The single decision procedure behind `verifyReplay` and `verifyReplayChunked`:
+ * both drive this object, so the sync and the cooperative verifier cannot
+ * drift. Construction performs the pre-checks; `advance` steps the sim;
+ * `result` decides once `pending` is false.
+ *
+ * While stepping, the monotone counters of the running summary (play ticks,
+ * deaths) are compared with the claim every 64 ticks: once either exceeds what
+ * was claimed the final summary can no longer match, so the verifier stops
+ * early with 'claim-mismatch' instead of spending the rest of the log.
+ */
+class ReplayVerifier {
+  private readonly sim: Sim;
+  private pos = 0;
+  private early?: string;
+
+  constructor(def: LevelDef, private readonly replay: Replay, private readonly claim?: RunClaim) {
+    this.sim = new Sim(def, { seed: replay.seed, assist: replay.assist });
+    if (replay.levelId !== def.id) this.early = 'bad-level';
+    else if (replay.masks.length > MAX_TICKS) this.early = 'too-long';
+  }
+
+  /** True while there are masks left to step and no decision has been reached. */
+  get pending(): boolean {
+    return this.early === undefined && this.pos < this.replay.masks.length && !this.sim.finished;
+  }
+
+  /** Step at most `n` ticks (fewer when the log ends, the run finishes or the claim is already unreachable). */
+  advance(n: number): void {
+    const masks = this.replay.masks;
+    const end = Math.min(masks.length, this.pos + n);
+    const claim = this.claim;
+    while (this.pos < end && !this.sim.finished) {
+      this.sim.step(masks[this.pos++]);
+      if (claim && (this.pos & 63) === 0 && this.claimUnreachable(claim)) {
+        this.early = 'claim-mismatch';
+        return;
+      }
+    }
+  }
+
+  result(): VerifyResult {
+    const s = this.sim.summary();
+    if (this.early !== undefined) return { ok: false, reason: this.early, summary: s };
+    if (!this.sim.finished) return { ok: false, reason: 'not-finished', summary: s };
+    const claim = this.claim;
+    if (claim) {
+      if (claim.ticks !== s.ticks || claim.shards !== s.shards || claim.deaths !== s.deaths ||
+          claim.cleared !== s.cleared || Math.floor(claim.height) !== Math.floor(s.height)) {
+        return { ok: false, reason: 'claim-mismatch', summary: s };
+      }
+    }
+    return { ok: true, summary: s };
+  }
+
+  private claimUnreachable(claim: RunClaim): boolean {
+    const s = this.sim.summary();
+    return s.ticks > claim.ticks || s.deaths > claim.deaths;
+  }
+}
+
+/**
  * Replay a run to completion with the same simulation the client shipped and
- * compare the outcome with what the client claimed. The server calls this;
- * the client uses it to sanity-check its own recording before submitting.
+ * compare the outcome with what the client claimed. The client uses this to
+ * sanity-check its own recording before submitting; the server prefers the
+ * cooperative `verifyReplayChunked`.
  *
  * The replay must finish (goal reached or tide over) within its own masks; a
  * run that is still going when the log ends is 'not-finished'.
  */
 export function verifyReplay(def: LevelDef, replay: Replay, claim?: RunClaim): VerifyResult {
-  const sim = new Sim(def, { seed: replay.seed, assist: replay.assist });
-  const fail = (reason: string): VerifyResult => ({ ok: false, reason, summary: sim.summary() });
-  if (replay.levelId !== def.id) return fail('bad-level');
-  if (replay.masks.length > MAX_TICKS) return fail('too-long');
-  for (let i = 0; i < replay.masks.length && !sim.finished; i++) sim.step(replay.masks[i]);
-  if (!sim.finished) return fail('not-finished');
-  const s = sim.summary();
-  if (claim) {
-    if (claim.ticks !== s.ticks || claim.shards !== s.shards || claim.deaths !== s.deaths ||
-        claim.cleared !== s.cleared || Math.floor(claim.height) !== Math.floor(s.height)) {
-      return fail('claim-mismatch');
-    }
+  const v = new ReplayVerifier(def, replay, claim);
+  while (v.pending) v.advance(replay.masks.length);
+  return v.result();
+}
+
+export interface VerifyChunkedOptions {
+  /** Ticks per chunk (default VERIFY_CHUNK_TICKS). */
+  chunk?: number;
+  /** Awaited between chunks (default: one event-loop turn). */
+  yield?: () => Promise<void>;
+}
+
+/**
+ * `verifyReplay` in slices: identical decisions, but the event loop gets a turn
+ * every `chunk` ticks so a long replay cannot stall other requests on the
+ * server. Never yields for a log that ends within the first chunk.
+ */
+export async function verifyReplayChunked(
+  def: LevelDef, replay: Replay, claim?: RunClaim, opts: VerifyChunkedOptions = {},
+): Promise<VerifyResult> {
+  const chunk = Math.max(1, Math.floor(opts.chunk ?? VERIFY_CHUNK_TICKS));
+  const pause = opts.yield ?? yieldToLoop;
+  const v = new ReplayVerifier(def, replay, claim);
+  while (v.pending) {
+    v.advance(chunk);
+    if (v.pending) await pause();
   }
-  return { ok: true, summary: s };
+  return v.result();
 }

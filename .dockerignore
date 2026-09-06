@@ -1,14 +1,25 @@
+# Keep the build context to what `npm run build` needs: package.json,
+# package-lock.json, tsconfig.json, src, public, tools/build.mjs, tools/lib.mjs.
+# Anything else only churns the image hash (APP_VERSION). Mirrored in
+# infra/lib/constructs/service.ts (IMAGE_CONTEXT_EXCLUDE).
 node_modules
 dist
 cdk.out
 .git
+.gitignore
 docs
 test
-tools/qa/out
-*.md
-.env
-clawd-jump.tar.gz
+levels
+tools/dev.mjs
+tools/qa
+tools/postdeploy.*
 infra
 cdk.json
 cdk.context.json
+cdk-outputs.json
 vitest.config.ts
+clawd-jump.tar.gz
+LICENSE
+**/*.md
+*.log
+.env

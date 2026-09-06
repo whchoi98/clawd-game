@@ -7,6 +7,7 @@ import {
   Input,
   PAD_DEADZONE,
   PAD_MAP,
+  isOwnedCode,
   keyLabel,
   makeTouchState,
   type GamepadLike,
@@ -151,6 +152,22 @@ describe('Input — keyboard', () => {
     expect(down('KeyA').defaultPrevented).toBe(false);
     // Repeats of an owned key must not scroll either.
     expect(down('Space', { repeat: true }).defaultPrevented).toBe(true);
+  });
+
+  it('owns Enter so a focused button cannot be clicked by the browser on top of the cursor confirm', () => {
+    expect(isOwnedCode('Enter')).toBe(true);
+    expect(isOwnedCode('NumpadEnter')).toBe(true);
+    const e = down('Enter');
+    expect(e.defaultPrevented).toBe(true);
+    input.poll();
+    expect(input.takeMenu()).toEqual(['confirm']);
+    up('Enter');
+    // only bound codes are owned: NumpadEnter is free until someone binds it
+    expect(down('NumpadEnter').defaultPrevented).toBe(false);
+    up('NumpadEnter');
+    input.setBinds({ ...DEFAULT_BINDS, confirm: ['NumpadEnter'] });
+    expect(down('NumpadEnter').defaultPrevented).toBe(true);
+    up('NumpadEnter');
   });
 
   it('ignores keys typed into an editable element but still tracks their release', () => {

@@ -160,7 +160,7 @@ function sampleResult(def: LevelDef): ResultView {
     leaderboard: {
       mode: 'story', board: def.id, total: 340,
       entries: [1, 2, 3].map((r) => ({
-        rank: r, runId: `sample-${r}`, playerId: `sample-player-${r}`, name: ['클로드', '라이벌', '메아리'][r - 1],
+        rank: r, runId: `sample-${r}`, playerTag: String(r).padStart(12, '0'), you: r === 1, name: ['클로드', '라이벌', '메아리'][r - 1],
         score: 3000 + r * 240, ticks: 3000 + r * 240, shards: 25, deaths: 0, cleared: true, height: 0,
         createdAt: '2026-09-06T00:00:00.000Z',
       })),

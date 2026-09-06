@@ -11,8 +11,6 @@ export type LbStatus = 'loading' | 'ok' | 'error';
 
 export interface LeaderboardRenderOptions {
   status?: LbStatus;
-  /** Highlights this player's row when the response carries no `yours`. */
-  playerId?: string;
   /** Show at most this many entries (yours is appended when it falls outside). */
   limit?: number;
 }
@@ -51,7 +49,6 @@ export function renderLeaderboard(host: HTMLElement, lb: LeaderboardResponse | n
 
   const entries = opts.limit ? lb.entries.slice(0, opts.limit) : lb.entries;
   const yours = lb.yours;
-  const yoursId = yours?.playerId ?? opts.playerId;
 
   if (!entries.length && !yours) {
     host.appendChild(note(doc, '아직 기록이 없다 · 첫 메아리를 남겨 보자'));
@@ -75,11 +72,12 @@ export function renderLeaderboard(host: HTMLElement, lb: LeaderboardResponse | n
     el(doc, 'th', { scope: 'col', class: 'lb__shards' }, '파편'),
   ));
   const tbody = el(doc, 'tbody');
+  // The server marks the row of the `playerId` sent with the query; the raw id
+  // never appears in a response (entries carry only an opaque playerTag).
   let yoursShown = false;
   for (const e of entries) {
-    const you = yoursId !== undefined && e.playerId === yoursId;
-    yoursShown ||= you;
-    tbody.appendChild(entryRow(doc, e, you));
+    yoursShown ||= e.you;
+    tbody.appendChild(entryRow(doc, e, e.you));
   }
   if (yours && !yoursShown) {
     tbody.appendChild(el(doc, 'tr', { class: 'lb__gap', 'aria-hidden': 'true' }, el(doc, 'td', { colspan: 4 }, '···')));

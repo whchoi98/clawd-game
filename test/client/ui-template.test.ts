@@ -6,6 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Screen } from '../../src/client/contracts.js';
+import { FONTS_HREF } from '../../src/client/fonts.js';
 
 const html = readFileSync(new URL('../../public/index.html', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../../public/styles.css', import.meta.url), 'utf8');
@@ -38,13 +39,36 @@ describe('public/index.html', () => {
     expect(html).not.toMatch(/javascript:/i);
   });
 
-  it('loads Outfit + Noto Sans KR from Google Fonts and nothing else external', () => {
-    expect(html).toMatch(/fonts\.googleapis\.com\/css2\?[^"]*family=Outfit/);
-    expect(html).toMatch(/fonts\.googleapis\.com\/css2\?[^"]*family=Noto\+Sans\+KR/);
+  it('preconnects to Google Fonts but never render-blocks on an external stylesheet', () => {
+    expect(html).toMatch(/<link rel="preconnect" href="https:\/\/fonts\.googleapis\.com">/);
+    expect(html).toMatch(/<link rel="preconnect" href="https:\/\/fonts\.gstatic\.com" crossorigin>/);
+    // the webfont stylesheet is injected at boot (src/client/fonts.ts), not linked from the template
+    expect(html).not.toMatch(/<link[^>]*rel="stylesheet"[^>]*href="https?:/i);
+    expect(html).not.toContain('fonts.googleapis.com/css2');
+    expect(FONTS_HREF).toMatch(/^https:\/\/fonts\.googleapis\.com\/css2\?.*family=Outfit.*family=Noto\+Sans\+KR/);
     const externals = [...html.matchAll(/(?:href|src)="(https?:)?\/\/([^/"]+)/g)].map((m) => m[2]);
+    expect(externals.length).toBeGreaterThan(0);
     for (const host of externals) {
       expect(['fonts.googleapis.com', 'fonts.gstatic.com']).toContain(host);
     }
+  });
+
+  it('lets the viewport scale (no user-scalable=no) and keeps viewport-fit=cover', () => {
+    const viewport = /<meta name="viewport" content="([^"]*)">/.exec(html)?.[1] ?? '';
+    expect(viewport).toContain('viewport-fit=cover');
+    expect(viewport).not.toMatch(/user-scalable/);
+    expect(viewport).not.toMatch(/maximum-scale/);
+    // double-tap zoom in play is stopped by touch-action:none on the body / pad instead
+    expect(css).toMatch(/body\{[^}]*touch-action:none/);
+  });
+
+  it('the rotate prompt can be dismissed and every line speaks 해라체', () => {
+    const nag = html.slice(html.indexOf('id="nag-rotate"'), html.indexOf('</noscript>'));
+    expect(nag).toContain('data-act="dismissNag"');
+    expect(nag).toContain('그래도 계속');
+    expect(nag).toContain('data-nonav');
+    expect(html).not.toMatch(/(주세요|합니다|습니다|해요|어요|아요)[.!…]?</);
+    expect(html).toContain('이 게임은 JavaScript가 필요하다.');
   });
 
   it('has the world canvas, the HUD live region and touch controls', () => {
@@ -89,6 +113,7 @@ describe('public/styles.css', () => {
 
   it('styles the portrait prompt and touch controls', () => {
     expect(css).toMatch(/\.nag\b/);
+    expect(css).toMatch(/\.nag__skip\b/);
     expect(css).toMatch(/\.tpad\b/);
     expect(css).toMatch(/touch-action\s*:\s*none/);
   });

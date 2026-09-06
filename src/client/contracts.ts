@@ -205,7 +205,8 @@ export interface ResultView {
   personalBest: boolean;
   stars: number;
   /** Server round trip state for the submission. */
-  submit: { state: 'idle' | 'pending' | 'accepted' | 'rejected' | 'offline'; rank?: number; total?: number; reason?: string };
+  /** 'queued' = stored locally while offline; sent automatically when the connection returns. */
+  submit: { state: 'idle' | 'pending' | 'accepted' | 'rejected' | 'offline' | 'queued'; rank?: number; total?: number; reason?: string };
   leaderboard?: LeaderboardResponse;
   nextLevelId?: string;
 }

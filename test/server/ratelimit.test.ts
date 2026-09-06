@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { clientIp } from '../../src/server/app.js';
 import { makeApp } from './fixtures.js';
 
-vi.mock('./sim.js', () => ({ Sim: class {} }));
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
 
 describe('per-IP rate limit', () => {

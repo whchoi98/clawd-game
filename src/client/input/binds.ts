@@ -56,11 +56,17 @@ export function cloneBinds(b: Binds): Binds {
 
 /**
  * Keys whose browser default (scrolling, focus travel, history navigation,
- * quick-find) would fight the game. Only bound codes are ever owned.
+ * quick-find, activating a focused button) would fight the game. Only bound
+ * codes are ever owned. Enter is owned so a DOM-focused button never receives
+ * the browser's synthesized click on top of the menu cursor's confirm — the
+ * cursor is the single activation path. Editable targets are exempted by the
+ * input layer before this check, so typing keeps native Enter.
  */
 export function isOwnedCode(code: string): boolean {
   return code.startsWith('Arrow')
     || code === 'Space'
+    || code === 'Enter'
+    || code === 'NumpadEnter'
     || code === 'Tab'
     || code === 'Backspace'
     || code === 'Slash'

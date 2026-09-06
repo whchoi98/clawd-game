@@ -2,13 +2,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RunResponse } from '../../src/shared/protocol.js';
 import { boardScore } from '../../src/sim/config.js';
 import { dailySeed } from '../../src/server/daily.js';
-import { PlayerLimiter } from '../../src/server/runs.js';
+import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
+import { encodeMasks, verifyReplayChunked } from '../../src/sim/replay.js';
+import { MAX_TICKS } from '../../src/sim/types.js';
+import { DynamoRepo, KEY } from '../../src/server/repo/dynamo.js';
+import { RUNS_PER_IP_PER_MINUTE } from '../../src/server/routes/runs.js';
 import {
-  FIX_T1, MASKS, SECRET, TODAY, YESTERDAY, dailyBody, echoVerify, failVerify, makeApp, postRun, submitBody,
-  type VerifyCall,
+  DEATH_TICKS, INTRO_TICKS, MASK_SLACK, PlayerLimiter, asyncVerifier, maxMasksFor, submitRun, toRejectReason,
+} from '../../src/server/runs.js';
+import { FakeClient } from './fakeDynamo.js';
+import {
+  FIXED_NOW, FIX_T1, MASKS, SECRET, TODAY, YESTERDAY, dailyBody, echoVerify, failVerify, fakeResolveLevel, makeApp, postRun,
+  submitBody, type VerifyCall,
 } from './fixtures.js';
 
-vi.mock('./sim.js', () => ({ Sim: class {} }));
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
 
 describe('POST /api/runs', () => {
@@ -87,8 +94,9 @@ describe('POST /api/runs', () => {
 
   it('ranks against other players', async () => {
     const { app } = await up();
-    await postRun(app, submitBody({ player: { id: 'fast-player-1', name: '빠름' }, claim: { ticks: 500 } }));
-    await postRun(app, submitBody({ player: { id: 'fast-player-2', name: '더빠름' }, claim: { ticks: 400 } }));
+    // the fixture log is 720 masks, so claims must stay within maxMasksFor: ≥ 425 ticks
+    expect((await postRun(app, submitBody({ player: { id: 'fast-player-1', name: '빠름' }, claim: { ticks: 500 } }))).statusCode).toBe(200);
+    expect((await postRun(app, submitBody({ player: { id: 'fast-player-2', name: '더빠름' }, claim: { ticks: 450 } }))).statusCode).toBe(200);
     const body = (await postRun(app, submitBody({ claim: { ticks: 700 } }))).json();
     expect(body.rank).toBe(3);
     expect(body.total).toBe(3);
@@ -138,14 +146,32 @@ describe('POST /api/runs', () => {
     expect(res.json().reason).toBe('bad-level');
   });
 
-  it('rejects malformed masks with 422 and the decoder reason', async () => {
+  it('rejects malformed masks with 422 bad-masks (decoder reasons collapse onto the RejectReason enum)', async () => {
     const { app } = await up();
     const bad = await postRun(app, submitBody({ masks: '!!!!' }));
     expect(bad.statusCode).toBe(422);
-    expect(bad.json().reason).toBe('bad-base64');
+    expect(RunResponse.parse(bad.json())).toEqual({ accepted: false, reason: 'bad-masks' });
     const odd = await postRun(app, submitBody({ masks: 'AQ==' })); // one byte: odd RLE length
     expect(odd.statusCode).toBe(422);
-    expect(odd.json().reason).toBe('bad-rle');
+    expect(RunResponse.parse(odd.json())).toEqual({ accepted: false, reason: 'bad-masks' });
+  });
+
+  it('never leaks a reason outside RejectReason, even from a misbehaving verifier', async () => {
+    const { app } = await up({ verify: failVerify('something-internal') });
+    const res = await postRun(app, submitBody());
+    expect(res.statusCode).toBe(422);
+    const body = RunResponse.parse(res.json());
+    expect(body.accepted).toBe(false);
+    if (!body.accepted) expect(body.reason).toBe('claim-mismatch');
+  });
+
+  it('gives tied scores the same competition rank and skips the next rank', async () => {
+    const { app } = await up();
+    expect((await postRun(app, submitBody({ player: { id: 'tied-player-a', name: '가' }, claim: { ticks: 500 } }))).json().rank).toBe(1);
+    expect((await postRun(app, submitBody({ player: { id: 'tied-player-b', name: '나' }, claim: { ticks: 500 } }))).json().rank).toBe(1);
+    const third = (await postRun(app, submitBody({ claim: { ticks: 700 } }))).json();
+    expect(third.rank).toBe(3);
+    expect(third.total).toBe(3);
   });
 
   it('returns 400 { error, detail } for a body that fails the schema', async () => {
@@ -254,6 +280,16 @@ describe('POST /api/runs', () => {
       expect((await postRun(app, submitBody({ player: { id: 'someone-else', name: '다른이' } }))).statusCode).toBe(200);
     });
 
+    it('keys the player budget by ip:playerId so a stranger cannot exhaust another player from elsewhere', async () => {
+      const { app } = await up({ rateLimit: { perIp: 1000, perPlayer: 1 } });
+      const victim = { player: { id: 'victim-player-1', name: '피해자' } };
+      // an attacker who knows the id burns their own ip:player key, not the victim's
+      expect((await postRun(app, submitBody(victim), { 'x-forwarded-for': '203.0.113.66' })).statusCode).toBe(200);
+      expect((await postRun(app, submitBody(victim), { 'x-forwarded-for': '203.0.113.66' })).statusCode).toBe(429);
+      expect((await postRun(app, submitBody(victim), { 'x-forwarded-for': '198.51.100.9' })).statusCode).toBe(200);
+      expect((await postRun(app, submitBody(victim), { 'x-forwarded-for': '198.51.100.9' })).statusCode).toBe(429);
+    });
+
     it('PlayerLimiter uses a sliding window', () => {
       let t = 0;
       const lim = new PlayerLimiter(2, 60_000, () => t);
@@ -269,6 +305,167 @@ describe('POST /api/runs', () => {
       t = 60_002;
       expect(lim.hit('a').ok).toBe(false);
       expect(lim.hit('b').ok).toBe(true);
+    });
+  });
+  describe('per-IP verification budget (route-level rate limit)', () => {
+    it(`answers 429 { error: rate-limited } after ${RUNS_PER_IP_PER_MINUTE} submissions per minute from one address, independently of the global budget`, async () => {
+      const { app } = await up({ rateLimit: { perIp: 1000, perPlayer: 1000 } });
+      const ip = { 'x-forwarded-for': '203.0.113.42' };
+      for (let i = 0; i < RUNS_PER_IP_PER_MINUTE; i++) {
+        expect((await postRun(app, submitBody({ player: { id: `runner-${i}-xx`, name: '주자' } }), ip)).statusCode).toBe(200);
+      }
+      const blocked = await postRun(app, submitBody({ player: { id: 'runner-late-x', name: '늦음' } }), ip);
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.json().error).toBe('rate-limited');
+      expect(blocked.json().detail.scope).toBe('ip-runs');
+      expect(blocked.headers['retry-after']).toBeDefined();
+      // other routes from the same address keep their own (global) budget
+      expect((await app.inject({ method: 'GET', url: '/api/daily', headers: ip })).statusCode).toBe(200);
+      // another address is unaffected
+      expect((await postRun(app, submitBody(), { 'x-forwarded-for': '198.51.100.7' })).statusCode).toBe(200);
+    });
+  });
+
+  describe('mask budget (CPU amplification guard)', () => {
+    /** RLE + base64 of `n` identical masks — a few hundred bytes for ten minutes of input. */
+    const longLog = (n: number, mask = 0) => encodeMasks(new Uint8Array(n).fill(mask));
+
+    it('maxMasksFor allows one intro, a dying+intro cycle per death and slack', () => {
+      expect(INTRO_TICKS).toBe(55);
+      expect(DEATH_TICKS).toBe(127 + 55);
+      expect(maxMasksFor({ ticks: 600, shards: 0, deaths: 0, cleared: true, height: 0 })).toBe(600 + INTRO_TICKS + MASK_SLACK);
+      expect(maxMasksFor({ ticks: 600, shards: 0, deaths: 5, cleared: true, height: 0 })).toBe(600 + INTRO_TICKS + 5 * DEATH_TICKS + MASK_SLACK);
+      expect(maxMasksFor({ ticks: MAX_TICKS, shards: 0, deaths: 100_000, cleared: true, height: 0 })).toBe(MAX_TICKS);
+    });
+
+    it('a legitimate run with several deaths fits the budget (the sim really needs 182 ticks per death)', () => {
+      const deaths = 8;
+      const needed = 54 + 600 + deaths * (126 + 54); // measured intro / dying lengths
+      expect(needed).toBeLessThanOrEqual(maxMasksFor({ ticks: 600, shards: 0, deaths, cleared: true, height: 0 }));
+    });
+
+    it('rejects a 72000-tick never-finishing log for a 600-tick claim with too-long before the verifier runs (< 20 ms)', async () => {
+      const calls: VerifyCall[] = [];
+      const { app } = await up({ verify: echoVerify(calls) });
+      await app.inject({ method: 'GET', url: '/api/health' }); // warm the route table / JIT
+      const t0 = performance.now();
+      const res = await postRun(app, submitBody({ masks: longLog(MAX_TICKS), claim: { ticks: 600, deaths: 0 } }));
+      const ms = performance.now() - t0;
+      expect(res.statusCode).toBe(422);
+      expect(RunResponse.parse(res.json())).toEqual({ accepted: false, reason: 'too-long' });
+      expect(calls).toHaveLength(0);
+      expect(ms).toBeLessThan(20);
+    });
+
+    it('a log that just fits the budget reaches the verifier', async () => {
+      const calls: VerifyCall[] = [];
+      const { app } = await up({ verify: echoVerify(calls) });
+      const claim = { ticks: 600, deaths: 2 };
+      const n = maxMasksFor({ ...claim, shards: 0, cleared: true, height: 0 });
+      expect((await postRun(app, submitBody({ masks: longLog(n), claim }))).statusCode).toBe(200);
+      expect((await postRun(app, submitBody({ masks: longLog(n + 1), claim }))).json().reason).toBe('too-long');
+      expect(calls).toHaveLength(1);
+    });
+
+    it('/healthz answers in < 50 ms while a chunked 72000-tick verification is in flight', async () => {
+      let yields = 0;
+      const verify = asyncVerifier((def, replay, claim) => verifyReplayChunked(def, replay, claim, {
+        yield: () => { yields++; return new Promise<void>((r) => setImmediate(r)); },
+      }));
+      const { app } = await up({ verify });
+      await app.inject({ method: 'GET', url: '/healthz' }); // warm-up
+      // Standing still on the fixture floor never reaches the goal: the sim steps every one of the 72000 masks.
+      const body = submitBody({ masks: longLog(MAX_TICKS), claim: { ticks: MAX_TICKS, deaths: 0, shards: 0 } });
+      const started = performance.now();
+      const pending = postRun(app, body);
+      const h0 = performance.now();
+      const health = await app.inject({ method: 'GET', url: '/healthz' });
+      const healthMs = performance.now() - h0;
+      const res = await pending;
+      const totalMs = performance.now() - started;
+      expect(health.statusCode).toBe(200);
+      expect(health.body).toBe('ok');
+      expect(healthMs).toBeLessThan(50);
+      expect(res.statusCode).toBe(422);
+      expect(res.json().reason).toBe('not-finished');
+      // the verification really was in flight: it yielded many times and outlasted the health check
+      expect(yields).toBeGreaterThanOrEqual(Math.floor(MAX_TICKS / 2400) - 1);
+      expect(totalMs).toBeGreaterThan(healthMs);
+    });
+  });
+
+  describe('concurrent submissions of one player (DynamoRepo conditional write)', () => {
+    const TABLE = 'clawd-table';
+    const cancelled = () => new TransactionCanceledException({ message: 'Transaction cancelled, please refer cancellation reasons for specific reasons', $metadata: {} });
+    const deps = (client: FakeClient) => ({
+      repo: new DynamoRepo(client, TABLE), now: () => FIXED_NOW, dailySecret: SECRET, verify: echoVerify(), resolve: fakeResolveLevel,
+    });
+    const otherBest = (score: number) => ({ Item: {
+      pk: 'PLAYER#player-0001', sk: 'BEST#story#t1', runId: 'run-other', mode: 'story', board: 't1', levelId: 't1', seed: FIX_T1.seed, assist: false,
+      playerId: 'player-0001', name: '클로드', score, ticks: score, shards: 2, deaths: 0, cleared: true, height: 0, createdAt: '2026-09-06T11:59:59.000Z',
+    } });
+
+    it('answers personalBest:false with the winner when the run that landed first is at least as good', async () => {
+      const client = new FakeClient();
+      client.responses.push(
+        {},                 // getPlayerBest → none yet
+        cancelled(),        // saveBest (attribute_not_exists) → another submission won the race
+        otherBest(600),     // re-read → the other run is better than our 700
+        { Count: 0 }, { Count: 1 }, // rankOf(600)
+      );
+      const out = await submitRun(deps(client), submitBody({ claim: { ticks: 700 } }));
+      expect(out.status).toBe(200);
+      expect(out.body).toMatchObject({ accepted: true, personalBest: false, runId: 'run-other', rank: 1, total: 1, score: 700 });
+      expect(client.sent.map((c) => c.name)).toEqual(['GetCommand', 'TransactWriteCommand', 'GetCommand', 'QueryCommand', 'QueryCommand']);
+      const player = (client.sent[1].input.TransactItems as Array<{ Put?: Record<string, unknown> }>)[2].Put!;
+      expect(player.ConditionExpression).toBe('attribute_not_exists(runId)');
+    });
+
+    it('retries once against the re-read best when this run still beats it', async () => {
+      const client = new FakeClient();
+      client.responses.push(
+        {},                 // getPlayerBest → none
+        cancelled(),        // first saveBest refused
+        otherBest(900),     // re-read → the other run is slower than our 700
+        { Item: { ...otherBest(900).Item, pk: 'RUN#run-other', sk: 'META', masks: 'QUJD' } }, // saveBest reads the old RUN for its LB key
+        {},                 // second saveBest succeeds
+        { Count: 0 }, { Count: 1 },
+      );
+      const out = await submitRun(deps(client), submitBody({ claim: { ticks: 700, shards: 3 } }));
+      expect(out.status).toBe(200);
+      expect(out.body).toMatchObject({ accepted: true, personalBest: true, rank: 1, total: 1 });
+      if (out.body.accepted) expect(out.body.runId).not.toBe('run-other');
+      expect(client.sent.map((c) => c.name)).toEqual([
+        'GetCommand', 'TransactWriteCommand', 'GetCommand', 'GetCommand', 'TransactWriteCommand', 'QueryCommand', 'QueryCommand',
+      ]);
+      const items = client.sent[4].input.TransactItems as Array<Record<string, Record<string, unknown>>>;
+      expect(items).toHaveLength(4);
+      expect(items[2].Put.ConditionExpression).toBe('runId = :prev');
+      expect(items[2].Put.ExpressionAttributeValues).toEqual({ ':prev': 'run-other' });
+      expect(items[3].Delete.Key).toEqual({ pk: 'LB#story#t1', sk: KEY.lbSk(900, 2, 'run-other') });
+    });
+
+    it('gives up after the second refusal so the caller sees a 500 rather than a fabricated best', async () => {
+      const client = new FakeClient();
+      client.responses.push({}, cancelled(), otherBest(900), {}, cancelled());
+      await expect(submitRun(deps(client), submitBody({ claim: { ticks: 700 } }))).rejects.toBeInstanceOf(TransactionCanceledException);
+    });
+
+    it('rethrows unrelated store errors untouched', async () => {
+      const client = new FakeClient();
+      client.responses.push({}, new Error('ProvisionedThroughputExceededException'));
+      await expect(submitRun(deps(client), submitBody())).rejects.toThrow('ProvisionedThroughputExceededException');
+    });
+  });
+
+  describe('toRejectReason', () => {
+    it('maps decoder errors and passes enum members through', () => {
+      expect(toRejectReason('bad-base64')).toBe('bad-masks');
+      expect(toRejectReason('bad-rle')).toBe('bad-masks');
+      expect(toRejectReason('too-long')).toBe('too-long');
+      expect(toRejectReason('not-finished')).toBe('not-finished');
+      expect(toRejectReason('garbage')).toBe('claim-mismatch');
+      expect(toRejectReason(undefined, 'bad-masks')).toBe('bad-masks');
     });
   });
 });

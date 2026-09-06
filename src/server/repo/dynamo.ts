@@ -2,14 +2,23 @@
  * Single-table DynamoDB Repo (spec §2.4). Table keys: `pk` (S) / `sk` (S),
  * TTL attribute `ttl`.
  *
- *   Leaderboard entry  LB#<mode>#<board>   <score zero-padded 12>#<runId>
+ *   Leaderboard entry  LB#<mode>#<board>   <score 12 digits>#<99999-shards 5 digits>#<runId>
  *   Run / ghost        RUN#<runId>         META
  *   Player best        PLAYER#<playerId>   BEST#<mode>#<board>
+ *
+ * The LB sort key orders a board fastest first with more shards winning ties
+ * (spec §3.5); `rankOf` compares `sk < <score 12 digits>` so it counts exactly
+ * the strictly better scores, which is what competition ranking needs.
  *
  * The replay (`masks`) is stored on the RUN item only; LB and PLAYER items are
  * index-like projections without it (a leaderboard page must not read 20
  * replays), so `topRuns` / `getPlayerBest` return runs with `masks: ''`.
  * `getRun` is the only way to read a replay, which is all the ghost route needs.
+ *
+ * `saveBest` is one transaction guarded on the PLAYER item: the caller names
+ * the best it saw (`previousRunId`), and the write is refused with
+ * `TransactionCanceledException` when another submission landed in between,
+ * so two concurrent runs of one player can never leave two LB rows.
  *
  * The client is injected so tests can pass a recorder; only the `send` method
  * of DynamoDBDocumentClient is used.
@@ -19,15 +28,23 @@ import type { Mode } from '../../shared/protocol.js';
 import type { Repo, StoredRun } from './types.js';
 
 export const SCORE_DIGITS = 12;
+export const SHARD_DIGITS = 5;
+const SHARD_CEIL = 99_999;
 
 export function padScore(score: number): string {
   const n = Math.max(0, Math.floor(score));
   return String(n).padStart(SCORE_DIGITS, '0');
 }
 
+/** `99999 - shards`, zero-padded: more shards sort first within a score. */
+export function padShards(shards: number): string {
+  const n = Math.min(SHARD_CEIL, Math.max(0, Math.floor(shards)));
+  return String(SHARD_CEIL - n).padStart(SHARD_DIGITS, '0');
+}
+
 export const KEY = {
   lbPk: (mode: Mode, board: string) => `LB#${mode}#${board}`,
-  lbSk: (score: number, runId: string) => `${padScore(score)}#${runId}`,
+  lbSk: (score: number, shards: number, runId: string) => `${padScore(score)}#${padShards(shards)}#${runId}`,
   runPk: (runId: string) => `RUN#${runId}`,
   RUN_SK: 'META',
   playerPk: (playerId: string) => `PLAYER#${playerId}`,
@@ -77,16 +94,19 @@ export class DynamoRepo implements Repo {
   }
 
   async saveBest(run: StoredRun, previousRunId?: string): Promise<void> {
+    const guard: Item = previousRunId
+      ? { ConditionExpression: 'runId = :prev', ExpressionAttributeValues: { ':prev': previousRunId } }
+      : { ConditionExpression: 'attribute_not_exists(runId)' };
     const items: Item[] = [
       { Put: { TableName: this.table, Item: { pk: KEY.runPk(run.runId), sk: KEY.RUN_SK, ...projectRun(run, true) } } },
-      { Put: { TableName: this.table, Item: { pk: KEY.lbPk(run.mode, run.board), sk: KEY.lbSk(run.score, run.runId), ...projectRun(run, false) } } },
-      { Put: { TableName: this.table, Item: { pk: KEY.playerPk(run.playerId), sk: KEY.bestSk(run.mode, run.board), ...projectRun(run, false) } } },
+      { Put: { TableName: this.table, Item: { pk: KEY.lbPk(run.mode, run.board), sk: KEY.lbSk(run.score, run.shards, run.runId), ...projectRun(run, false) } } },
+      { Put: { TableName: this.table, Item: { pk: KEY.playerPk(run.playerId), sk: KEY.bestSk(run.mode, run.board), ...projectRun(run, false) }, ...guard } },
     ];
     if (previousRunId && previousRunId !== run.runId) {
-      // The LB sort key embeds the old score, which the caller does not pass; read it from the RUN item.
+      // The LB sort key embeds the old score and shards, which the caller does not pass; read them from the RUN item.
       const prev = await this.getRun(previousRunId);
       if (prev) {
-        items.push({ Delete: { TableName: this.table, Key: { pk: KEY.lbPk(run.mode, run.board), sk: KEY.lbSk(prev.score, prev.runId) } } });
+        items.push({ Delete: { TableName: this.table, Key: { pk: KEY.lbPk(run.mode, run.board), sk: KEY.lbSk(prev.score, prev.shards, prev.runId) } } });
       }
     }
     await this.client.send(new TransactWriteCommand({ TransactItems: items }));
@@ -105,6 +125,7 @@ export class DynamoRepo implements Repo {
 
   async rankOf(mode: Mode, board: string, score: number): Promise<{ better: number; total: number }> {
     const pk = KEY.lbPk(mode, board);
+    // Every sk of a strictly lower score is < padScore(score); equal scores start with padScore(score) + '#', which is greater.
     const better = await this.count('pk = :pk AND sk < :sk', { ':pk': pk, ':sk': padScore(score) });
     const total = await this.count('pk = :pk', { ':pk': pk });
     return { better, total };

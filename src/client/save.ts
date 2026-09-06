@@ -7,7 +7,8 @@
  * Everything environment-specific (storage, timers, the reduced-motion media
  * query, the id generator) is injectable so the layer runs in Node.
  */
-import type { BindAction, Binds, LevelRecord, Progress, Settings } from './contracts.js';
+import type { Binds, LevelRecord, Progress, Settings } from './contracts.js';
+import { BIND_ACTIONS, DEFAULT_BINDS, cloneBinds } from './input/binds.js';
 
 export const SETTINGS_KEY = 'clawd-echo.settings.v1';
 export const PROGRESS_KEY = 'clawd-echo.progress.v1';
@@ -24,7 +25,7 @@ export interface StorageLike {
 export interface SaveOptions {
   /** Defaults to `localStorage` when it exists; `null` keeps everything in memory. */
   storage?: StorageLike | null;
-  /** The input layer's DEFAULT_BINDS; the fallback below mirrors them. */
+  /** Defaults to the input layer's DEFAULT_BINDS (the single source of truth). */
   defaultBinds?: Binds;
   /** `prefers-reduced-motion: reduce` — seeds shake/flashes/grain off on a FIRST run only. */
   reducedMotion?: boolean;
@@ -35,35 +36,11 @@ export interface SaveOptions {
   newId?: () => string;
 }
 
-const BIND_ACTIONS: readonly BindAction[] = [
-  'left', 'right', 'up', 'down', 'jump', 'dash', 'pause', 'confirm', 'cancel', 'restart',
-];
-
-/** Mirrors input/binds.ts DEFAULT_BINDS; the real table is injected by main.ts. */
-const FALLBACK_BINDS: Binds = {
-  left: ['ArrowLeft', 'KeyA'],
-  right: ['ArrowRight', 'KeyD'],
-  up: ['ArrowUp', 'KeyW'],
-  down: ['ArrowDown', 'KeyS'],
-  jump: ['Space', 'KeyZ', 'KeyJ'],
-  dash: ['ShiftLeft', 'ShiftRight', 'KeyX', 'KeyK'],
-  pause: ['Escape', 'KeyP'],
-  confirm: ['Enter', 'Space'],
-  cancel: ['Escape', 'Backspace'],
-  restart: ['KeyR'],
-};
-
 const QUALITIES = new Set(['auto', 'high', 'balanced', 'low']);
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const NAME_RE = /^[^\p{C}<>&"'`]+$/u;
 
-export function cloneBinds(b: Binds): Binds {
-  const out = {} as Binds;
-  for (const a of BIND_ACTIONS) out[a] = [...(b[a] ?? [])];
-  return out;
-}
-
-export function defaultSettings(binds: Binds = FALLBACK_BINDS): Settings {
+export function defaultSettings(binds: Binds = DEFAULT_BINDS): Settings {
   return {
     v: 1,
     master: 0.8, music: 0.55, sfx: 0.85,
@@ -257,7 +234,7 @@ export class Save {
     this.storage = opts.storage === undefined ? defaultStorage() : opts.storage;
     this.schedule = opts.schedule ?? ((fn, ms) => setTimeout(fn, ms));
     this.cancel = opts.cancel ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
-    this.defaultBinds = opts.defaultBinds ?? FALLBACK_BINDS;
+    this.defaultBinds = opts.defaultBinds ?? DEFAULT_BINDS;
     this.newId = opts.newId ?? newPlayerId;
 
     const rawSettings = this.read(SETTINGS_KEY);

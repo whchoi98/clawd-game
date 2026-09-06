@@ -23,6 +23,35 @@ describe('phase machine', () => {
     expect(sim.summary().ticks).toBeLessThan(sim.state.tick);
   });
 
+  it('counts the intro→play transition tick: a JUMP pressed on it either acts and is counted, or does not act', () => {
+    const sim = new Sim(openRoom());
+    // step until the tick that flips the phase
+    let n = 0;
+    while (sim.state.phase === 'intro') {
+      sim.step(0);
+      n++;
+      if (sim.state.phase !== 'intro') break;
+    }
+    // rebuild and stop one tick short, so the next step is the transition tick
+    const t = new Sim(openRoom());
+    run(t, n - 1);
+    expect(t.state.phase).toBe('intro');
+    t.drainEvents();
+    t.step(J);
+    expect(t.state.phase).toBe('play');
+    const jumped = t.drainEvents().some((e) => e.type === 'jump');
+    if (jumped) {
+      expect(t.summary().ticks).toBe(1);
+      expect(t.state.time).toBeCloseTo(DT, 9);
+    } else {
+      expect(t.state.stats.jumps).toBe(0);
+    }
+    // from here on every tick is a play tick: ticks and time move together
+    run(t, 120);
+    expect(t.summary().ticks).toBe(1 + 120);
+    expect(t.state.time).toBeCloseTo(121 * DT, 9);
+  });
+
   it('derives press edges from the previous mask: a held JUMP through the intro does not jump', () => {
     const sim = new Sim(openRoom());
     run(sim, 200, J);

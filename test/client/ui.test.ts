@@ -1,22 +1,27 @@
 // @vitest-environment happy-dom
 /**
  * Behavioural tests for the DOM UI against the real template, driven by a fake
- * InputPort. Nothing here touches the Sim, the renderer or the network.
+ * InputPort. Nothing here touches the Sim, the renderer or the network (the
+ * webfont link the loader appends is never fetched: CSS file loading is turned
+ * off in that suite).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   Binds, HudState, InputPort, MenuAction, Progress, ResultView, Settings, TouchState, UIAction,
 } from '../../src/client/contracts.js';
 import type { LevelDef, RunSummary } from '../../src/sim/types.js';
+import { RejectReason } from '../../src/shared/protocol.js';
 import type { LeaderboardResponse } from '../../src/shared/protocol.js';
-import { UI } from '../../src/client/ui/ui.js';
+import { NAG_DISMISSED_KEY, REASON_KR, UI, reasonKr } from '../../src/client/ui/ui.js';
 import { renderLeaderboard } from '../../src/client/ui/leaderboard.js';
 import { findBindConflict } from '../../src/client/ui/settings.js';
 import { LIVE_INTERVAL, fmtTime } from '../../src/client/ui/hud.js';
 import { validateName } from '../../src/client/ui/screens.js';
+import { Input } from '../../src/client/input/index.js';
+import { FONTS_HREF, loadFonts } from '../../src/client/fonts.js';
 
 // ------------------------------------------------------------------ fixtures
 // happy-dom replaces the global URL, so resolve the template path with node:url/path.
@@ -97,15 +102,16 @@ function makeSummary(over: Partial<RunSummary> = {}): RunSummary {
   };
 }
 
+/** Entries carry an opaque playerTag and a server-set `you` flag — never a raw player id. */
 function makeLb(): LeaderboardResponse {
-  const mk = (rank: number, name: string, playerId: string, ticks: number): LeaderboardResponse['entries'][number] => ({
-    rank, runId: `run-${rank}`, playerId, name, score: ticks, ticks, shards: 20, deaths: 0, cleared: true, height: 0,
-    createdAt: '2026-09-06T00:00:00.000Z',
+  const mk = (rank: number, name: string, you: boolean, ticks: number): LeaderboardResponse['entries'][number] => ({
+    rank, runId: `run-${rank}`, playerTag: String(rank).padStart(12, '0'), you, name, score: ticks, ticks, shards: 20,
+    deaths: 0, cleared: true, height: 0, createdAt: '2026-09-06T00:00:00.000Z',
   });
   return {
     mode: 'daily', board: '2026-09-06', total: 41,
-    entries: [mk(1, '바다', 'p-1', 3900), mk(2, '클로드', 'abcdefgh-1234', 4100), mk(3, 'Kim', 'p-3', 4300)],
-    yours: mk(2, '클로드', 'abcdefgh-1234', 4100),
+    entries: [mk(1, '바다', false, 3900), mk(2, '클로드', true, 4100), mk(3, 'Kim', false, 4300)],
+    yours: mk(2, '클로드', true, 4100),
   };
 }
 
@@ -442,11 +448,22 @@ describe('leaderboard renderer', () => {
 
   it('appends your row after a gap when you are outside the top', () => {
     const lb = makeLb();
-    lb.yours = { ...lb.entries[0], rank: 27, playerId: 'me-9', name: '나', runId: 'run-me' };
-    renderLeaderboard($('#host'), lb, { status: 'ok', playerId: 'me-9' });
+    for (const e of lb.entries) e.you = false;
+    lb.yours = { ...lb.entries[0], rank: 27, playerTag: 'abcdefabcdef', you: true, name: '나', runId: 'run-me' };
+    renderLeaderboard($('#host'), lb, { status: 'ok' });
     const you = $('#host tr.is-you');
     expect(you.querySelector('.lb__rank')!.textContent).toBe('27');
+    expect($('#host').querySelectorAll('tr.is-you')).toHaveLength(1);
     expect($('#host').querySelector('tr.lb__gap')).not.toBeNull();
+  });
+
+  it('highlights only the row the server flagged as you (no player id in the response)', () => {
+    const lb = makeLb();
+    delete lb.yours;
+    renderLeaderboard($('#host'), lb, { status: 'ok' });
+    const rows = [...$('#host').querySelectorAll('tbody tr.lb__row')];
+    expect(rows.map((r) => r.classList.contains('is-you'))).toEqual([false, true, false]);
+    expect($('#host').innerHTML).not.toContain('abcdefgh-1234');
   });
 
   it('escapes names as text and shows tide heights for unfinished runs', () => {
@@ -502,7 +519,9 @@ describe('UI result and over screens', () => {
     expect(document.querySelectorAll('#res-lb tbody tr.lb__row')).toHaveLength(3);
     ui.updateResult(view({ submit: { state: 'rejected', reason: 'claim-mismatch' } }));
     expect($('#res-submit').textContent).toContain('거절됨');
-    expect($('#res-submit').textContent).toContain('검증 불일치');
+    expect($('#res-submit').textContent).toContain(REASON_KR['claim-mismatch']);
+    ui.updateResult(view({ submit: { state: 'rejected', reason: 'rate-limited' } }));
+    expect($('#res-submit').textContent).toContain('요청이 너무 잦다');
     ui.updateResult(view({ submit: { state: 'offline' } }));
     expect($('#res-submit').textContent).toContain('오프라인');
     ui.updateResult(view({ submit: { state: 'idle' } }));
@@ -519,12 +538,48 @@ describe('UI result and over screens', () => {
   it('showOver reports the height and best height', () => {
     const { ui, actions } = setup();
     ui.show('play');
-    ui.showOver(makeSummary({ cleared: false, height: 63.4, levelId: 'endless' }), 63.4);
+    ui.showOver(makeSummary({ cleared: false, height: 63.4, levelId: 'endless' }), 50);
     expect(ui.screen).toBe('over');
     expect($('#over-rows').textContent).toContain('63');
     expect($('#over-rows').textContent).toContain('신기록');
     $('#scr-over [data-act="retry"]').click();
     expect(actions.at(-1)).toEqual({ type: 'retry' });
+  });
+
+  it('compares tide heights as whole tiles: a sub-tile climb or a tie is never a record', () => {
+    const { ui } = setup();
+    ui.show('play');
+    // 0.7 tiles displays as 0 — it must not read 신기록 against a best of 0
+    ui.showOver(makeSummary({ cleared: false, height: 0.7, levelId: 'endless' }), 0);
+    expect($('#over-rows').textContent).not.toContain('신기록');
+    expect($('#over-rows .res__row b').textContent).toBe('0');
+    // 63.9 floors to 63: the same displayed height as the stored best is a tie
+    ui.showOver(makeSummary({ cleared: false, height: 63.9, levelId: 'endless' }), 63);
+    expect($('#over-rows').textContent).not.toContain('신기록');
+    expect($('#over-rows').textContent).toContain('63');
+    // 64.1 floors to 64 > 63: a record, and the best row shows the new floor
+    ui.showOver(makeSummary({ cleared: false, height: 64.1, levelId: 'endless' }), 63.8);
+    expect($('#over-rows').textContent).toContain('신기록');
+    const values = [...document.querySelectorAll('#over-rows .res__row b')].map((b) => b.textContent);
+    expect(values[0]).toBe('64');
+    expect(values[1]).toBe('64');
+  });
+});
+
+describe('rejection reasons', () => {
+  it('translates every RejectReason in the protocol enum, in 해라체', () => {
+    for (const reason of RejectReason.options) {
+      const text = REASON_KR[reason];
+      expect(text, reason).toBeTruthy();
+      expect(reasonKr(reason)).toBe(text);
+      expect(text).not.toMatch(/(요|니다|세요)$/);
+    }
+    expect(reasonKr('bad-masks')).toBe('입력 기록이 손상됐다');
+    expect(reasonKr('duplicate')).toBe('이미 접수된 기록이다');
+    // transport-level reasons from ApiError still read as Korean; unknown strings pass through
+    expect(reasonKr('timeout')).not.toBe('timeout');
+    expect(reasonKr('what-is-this')).toBe('what-is-this');
+    expect(reasonKr(undefined)).toBe('알 수 없는 이유');
   });
 });
 
@@ -616,6 +671,36 @@ describe('UI name entry', () => {
     expect(validateName('가나다라마바사아자차카타파')).not.toBeNull();
     expect(validateName('a<b')).not.toBeNull();
     expect(validateName('  ')).not.toBeNull();
+    // the game speaks 해라체, not 해요체 / 합쇼체
+    for (const bad of ['', '가나다라마바사아자차카타파', 'a<b']) {
+      expect(validateName(bad)).not.toMatch(/(요|니다|세요)/);
+      expect(validateName(bad)).toMatch(/다( \(.*\))?$/);
+    }
+  });
+
+  it('Escape inside the text field closes the dialog without a second cancel', () => {
+    const { ui, actions } = setup();
+    ui.refreshSelect(makeProgress(), LEVELS);
+    ui.show('title');
+    ui.show('name');
+    const inp = $<HTMLInputElement>('#name-input');
+    inp.focus();
+    expect(document.activeElement).toBe(inp);
+    const before = actions.length;
+    const e = new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true, cancelable: true });
+    inp.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(true);
+    expect(ui.screen).toBe('title');
+    expect(actions.slice(before)).toEqual([{ type: 'back' }]);
+    expect(document.activeElement).not.toBe(inp);
+    // gameplay keys typed into the field still bubble (the input layer ignores editable targets itself)
+    ui.show('name');
+    const seen: string[] = [];
+    const spy = (ev: Event) => seen.push((ev as KeyboardEvent).code);
+    window.addEventListener('keydown', spy);
+    $<HTMLInputElement>('#name-input').dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', bubbles: true }));
+    window.removeEventListener('keydown', spy);
+    expect(seen).toEqual(['KeyW']);
   });
 
   it('confirms a valid name, refuses an invalid one', () => {
@@ -666,5 +751,148 @@ describe('UI touch controls', () => {
     ui.show('play');
     expect($('#hud-touch').hidden).toBe(true);
     expect($('#nag-rotate').hidden).toBe(true);
+  });
+});
+
+describe('UI rotate prompt', () => {
+  const size = { w: window.innerWidth, h: window.innerHeight };
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    try { sessionStorage.clear(); } catch { /* no storage */ }
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    (window as unknown as { innerWidth: number }).innerWidth = size.w;
+    (window as unknown as { innerHeight: number }).innerHeight = size.h;
+  });
+
+  function portraitPhone(): void {
+    (window as unknown as { innerWidth: number }).innerWidth = 400;
+    (window as unknown as { innerHeight: number }).innerHeight = 860;
+  }
+
+  it('shows on a portrait touch device and "그래도 계속" dismisses it for the session', () => {
+    portraitPhone();
+    const { ui } = setup();
+    // a real finger makes the device coarse
+    document.dispatchEvent(new Event('touchstart'));
+    const nag = $('#nag-rotate');
+    expect(nag.hidden).toBe(false);
+    // the prompt's button is not part of the menu cursor
+    ui.show('title');
+    expect(document.querySelector('.nag__skip.is-cursor')).toBeNull();
+    $('#nag-rotate [data-act="dismissNag"]').click();
+    expect(nag.hidden).toBe(true);
+    expect(sessionStorage.getItem(NAG_DISMISSED_KEY)).toBe('1');
+    // a rotation re-check keeps it hidden
+    window.dispatchEvent(new Event('orientationchange'));
+    vi.advanceTimersByTime(200);
+    expect(nag.hidden).toBe(true);
+    // and the next UI in the same session never shows it
+    const again = new UI({ document, input: makeInput(), defaultBinds: BINDS });
+    document.dispatchEvent(new Event('touchstart'));
+    expect($('#nag-rotate').hidden).toBe(true);
+    void again;
+  });
+
+  it('is re-checked on orientationchange, not on plain resize', () => {
+    portraitPhone();
+    setup();
+    document.dispatchEvent(new Event('touchstart'));
+    const nag = $('#nag-rotate');
+    expect(nag.hidden).toBe(false);
+    // landscape now: a bare resize (soft keyboard, URL bar) does not touch the prompt…
+    (window as unknown as { innerWidth: number }).innerWidth = 860;
+    (window as unknown as { innerHeight: number }).innerHeight = 400;
+    window.dispatchEvent(new Event('resize'));
+    vi.advanceTimersByTime(200);
+    expect(nag.hidden).toBe(false);
+    // …the orientation change does
+    window.dispatchEvent(new Event('orientationchange'));
+    vi.advanceTimersByTime(200);
+    expect(nag.hidden).toBe(true);
+  });
+});
+
+describe('UI with the real input layer', () => {
+  let input: Input;
+  beforeEach(() => { document.body.innerHTML = ''; });
+  afterEach(() => { input?.dispose(); });
+
+  function realSetup(): { ui: UI; actions: UIAction[] } {
+    mountTemplate();
+    input = new Input({ binds: BINDS });
+    const actions: UIAction[] = [];
+    const ui = new UI({ document, input, defaultBinds: BINDS });
+    ui.on((a) => actions.push(a));
+    ui.applySettings(makeSettings());
+    ui.refreshSelect(makeProgress(), LEVELS);
+    return { ui, actions };
+  }
+
+  it('Enter on a DOM-focused button fires exactly one action, through the cursor', () => {
+    const { ui, actions } = realSetup();
+    ui.show('title');
+    const items = [...document.querySelectorAll<HTMLElement>('#title-menu .menu__item')].filter((b) => !b.hidden);
+    // Tab users: focus moves the cursor
+    items[2].focus();
+    expect(items[2].classList.contains('is-cursor')).toBe(true);
+    expect(items[0].classList.contains('is-cursor')).toBe(false);
+    const e = new KeyboardEvent('keydown', { code: 'Enter', key: 'Enter', bubbles: true, cancelable: true });
+    items[2].dispatchEvent(e);
+    // the browser's default (a synthesized click on the focused button) is suppressed…
+    expect(e.defaultPrevented).toBe(true);
+    // …so the frame's confirm edge is the one and only activation
+    input.poll();
+    ui.frame(1 / 60, input);
+    expect(actions).toEqual([{ type: 'endless' }]);
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Enter', bubbles: true }));
+  });
+
+  it('a pointer click does not leave the button focused', () => {
+    const { ui, actions } = realSetup();
+    ui.show('title');
+    const btn = $<HTMLButtonElement>('#title-menu [data-act="openSettings"]');
+    btn.focus();
+    btn.click();
+    expect(actions.at(-1)).toEqual({ type: 'openSettings' });
+    expect(document.activeElement).not.toBe(btn);
+  });
+
+  it('keeps native Enter for the name field', () => {
+    const { ui } = realSetup();
+    ui.show('title');
+    ui.show('name');
+    const inp = $<HTMLInputElement>('#name-input');
+    inp.focus();
+    const e = new KeyboardEvent('keydown', { code: 'Enter', key: 'Enter', bubbles: true, cancelable: true });
+    inp.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(false);
+    input.poll();
+    expect(input.takeMenu()).toEqual([]);
+  });
+});
+
+describe('webfont loader', () => {
+  beforeEach(() => {
+    document.head.innerHTML = '';
+    // happy-dom would otherwise fetch the appended stylesheet for real
+    try {
+      (window as unknown as { happyDOM?: { settings?: { disableCSSFileLoading?: boolean } } }).happyDOM!.settings!.disableCSSFileLoading = true;
+    } catch { /* not happy-dom */ }
+  });
+
+  it('injects the Google Fonts stylesheet once and only from fonts.googleapis.com', () => {
+    expect(FONTS_HREF.startsWith('https://fonts.googleapis.com/css2?')).toBe(true);
+    expect(FONTS_HREF).toContain('family=Outfit');
+    expect(FONTS_HREF).toContain('family=Noto+Sans+KR');
+    expect(FONTS_HREF).toContain('display=swap');
+    const link = loadFonts(document);
+    expect(link).not.toBeNull();
+    expect(link!.rel).toBe('stylesheet');
+    expect(link!.href).toBe(FONTS_HREF);
+    expect(loadFonts(document)).toBe(link);
+    expect(document.head.querySelectorAll('link[rel="stylesheet"]')).toHaveLength(1);
   });
 });

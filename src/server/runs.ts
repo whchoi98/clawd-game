@@ -4,17 +4,21 @@
  * injected verifier and the score is recomputed from the verified summary.
  *
  * Order of checks (cheapest first): assist → mode eligibility (level, date,
- * seed) → mask decoding → replay verification → story must be cleared →
- * personal-best bookkeeping.
+ * seed) → mask decoding → mask budget for the claim → replay verification →
+ * story must be cleared → personal-best bookkeeping.
  */
 import { randomUUID } from 'node:crypto';
 import type { LevelDef, Replay, RunClaim, RunSummary, VerifyResult } from '../sim/types.js';
+import { MAX_TICKS, TICK_HZ } from '../sim/types.js';
+import { DYING_T, INTRO_T } from '../sim/sim.js';
 import { decodeMasks } from '../sim/replay.js';
 import { boardScore } from '../sim/config.js';
-import type { Mode, RunResponse, RunSubmit } from '../shared/protocol.js';
+import { RejectReason, type Mode, type RunResponse, type RunSubmit } from '../shared/protocol.js';
+import { isSaveConflict } from './repo/errors.js';
 import type { Repo, StoredRun } from './repo/types.js';
 import { dailySeed, isFreshDate } from './daily.js';
 import { resolveLevel } from './levels.js';
+import type { AppDeps } from './types.js';
 
 /** Daily runs (and their board entries) expire after 30 days. */
 export const DAILY_TTL_SECONDS = 30 * 86_400;
@@ -23,7 +27,8 @@ export interface SubmitDeps {
   repo: Repo;
   now: () => Date;
   dailySecret: string;
-  verify: (def: LevelDef, replay: Replay, claim?: RunClaim) => VerifyResult;
+  /** Sync or cooperative verifier; the service awaits whichever it gets. */
+  verify: (def: LevelDef, replay: Replay, claim?: RunClaim) => VerifyResult | Promise<VerifyResult>;
   /** Level resolution; defaults to the real table + generator. Injectable for tests. */
   resolve?: (mode: Mode, levelId: string, seed: number) => LevelDef | null;
 }
@@ -33,7 +38,49 @@ export interface SubmitOutcome {
   body: RunResponse;
 }
 
-const reject = (reason: string, summary?: RunSummary): SubmitOutcome => ({
+/**
+ * `AppDeps.verify` is typed synchronous; `submitRun` awaits `Promise.resolve()`
+ * of whatever it returns, so an async verifier fits through this adapter.
+ */
+export function asyncVerifier(
+  fn: (def: LevelDef, replay: Replay, claim?: RunClaim) => Promise<VerifyResult>,
+): AppDeps['verify'] {
+  return fn as unknown as AppDeps['verify'];
+}
+
+// ---------------------------------------------------------------- mask budget
+/** A phase ends on the first tick whose accumulated time exceeds its threshold. */
+const phaseTicks = (seconds: number): number => Math.ceil(seconds * TICK_HZ) + 1;
+/** Ticks of 'intro' before play starts (and again after each respawn). */
+export const INTRO_TICKS = phaseTicks(INTRO_T);
+/** Ticks one death costs: the dying animation plus the respawn intro. */
+export const DEATH_TICKS = phaseTicks(DYING_T) + INTRO_TICKS;
+/** Headroom for float drift in the phase timers and a client that stops recording a beat late. */
+export const MASK_SLACK = 240;
+
+/**
+ * The most masks a replay reproducing `claim` can need: the claimed play ticks,
+ * one intro, a dying + intro cycle per claimed death, and slack. Verification
+ * stops at 'finished', so anything beyond this is padding whose only effect is
+ * server CPU — it is refused before the sim is even constructed.
+ */
+export function maxMasksFor(claim: RunClaim): number {
+  return Math.min(MAX_TICKS, claim.ticks + INTRO_TICKS + claim.deaths * DEATH_TICKS + MASK_SLACK);
+}
+
+// ---------------------------------------------------------------- reasons
+/**
+ * Every reason the server emits is a RejectReason. The decoder's
+ * 'bad-base64' | 'bad-rle' collapse to 'bad-masks'; anything unexpected is
+ * reported as `fallback` rather than leaking a raw string.
+ */
+export function toRejectReason(raw: string | undefined, fallback: RejectReason = 'claim-mismatch'): RejectReason {
+  if (raw === 'bad-base64' || raw === 'bad-rle') return 'bad-masks';
+  const parsed = RejectReason.safeParse(raw);
+  return parsed.success ? parsed.data : fallback;
+}
+
+const reject = (reason: RejectReason, summary?: RunSummary): SubmitOutcome => ({
   status: 422,
   body: summary ? { accepted: false, reason, summary } : { accepted: false, reason },
 });
@@ -43,7 +90,7 @@ const reject = (reason: string, summary?: RunSummary): SubmitOutcome => ({
  * story → board = levelId, seed = the level's own seed.
  * daily → board = date (today or yesterday UTC), seed must match the issued one.
  */
-function eligibility(deps: SubmitDeps, body: RunSubmit): { board: string; seed: number } | { reason: string } {
+function eligibility(deps: SubmitDeps, body: RunSubmit): { board: string; seed: number } | { reason: RejectReason } {
   if (body.mode === 'daily') {
     if (body.levelId !== 'daily') return { reason: 'bad-level' };
     if (!body.date || !isFreshDate(body.date, deps.now())) return { reason: 'stale-date' };
@@ -52,6 +99,53 @@ function eligibility(deps: SubmitDeps, body: RunSubmit): { board: string; seed: 
     return { board: body.date, seed: issued };
   }
   return { board: body.levelId, seed: 0 };
+}
+
+interface BestOutcome {
+  runId: string;
+  bestScore: number;
+  personalBest: boolean;
+}
+
+/**
+ * Personal-best bookkeeping. `saveBest` is conditional on the best we read; when
+ * a concurrent submission of the same player wins the race the store refuses
+ * the write, so we re-read and decide again — answering personalBest:false when
+ * the other run was at least as good, retrying once when this run still beats it.
+ */
+async function persistBest(deps: SubmitDeps, body: RunSubmit, board: string, seed: number, summary: RunSummary, score: number): Promise<BestOutcome> {
+  const { repo } = deps;
+  let prev = await repo.getPlayerBest(body.player.id, body.mode, board);
+  for (let attempt = 0; ; attempt++) {
+    if (prev && score >= prev.score) return { runId: prev.runId, bestScore: prev.score, personalBest: false };
+    const now = deps.now();
+    const run: StoredRun = {
+      runId: randomUUID(),
+      mode: body.mode,
+      board,
+      levelId: body.levelId,
+      seed,
+      assist: false,
+      masks: body.masks,
+      playerId: body.player.id,
+      name: body.player.name,
+      score,
+      ticks: summary.ticks,
+      shards: summary.shards,
+      deaths: summary.deaths,
+      cleared: summary.cleared,
+      height: summary.height,
+      createdAt: now.toISOString(),
+    };
+    if (body.mode === 'daily') run.ttl = Math.floor(now.getTime() / 1000) + DAILY_TTL_SECONDS;
+    try {
+      await repo.saveBest(run, prev?.runId);
+      return { runId: run.runId, bestScore: score, personalBest: true };
+    } catch (err) {
+      if (!isSaveConflict(err) || attempt >= 1) throw err;
+      prev = await repo.getPlayerBest(body.player.id, body.mode, board);
+    }
+  }
 }
 
 export async function submitRun(deps: SubmitDeps, body: RunSubmit): Promise<SubmitOutcome> {
@@ -69,69 +163,39 @@ export async function submitRun(deps: SubmitDeps, body: RunSubmit): Promise<Subm
   try {
     masks = decodeMasks(body.masks);
   } catch (e) {
-    return reject(e instanceof Error && e.message ? e.message : 'bad-masks');
+    return reject(toRejectReason(e instanceof Error ? e.message : undefined, 'bad-masks'));
   }
+  if (masks.length > maxMasksFor(body.claim)) return reject('too-long');
 
   const replay: Replay = { v: 1, levelId: body.levelId, seed, assist: false, masks };
-  const result = deps.verify(def, replay, body.claim);
-  if (!result.ok) return reject(result.reason ?? 'claim-mismatch', result.summary);
+  const result = await Promise.resolve(deps.verify(def, replay, body.claim));
+  if (!result.ok) return reject(toRejectReason(result.reason), result.summary);
   const summary = result.summary;
   if (body.mode === 'story' && !summary.cleared) return reject('not-finished', summary);
 
-  const now = deps.now();
   const score = boardScore(summary);
-  const prev = await deps.repo.getPlayerBest(body.player.id, body.mode, elig.board);
-  const personalBest = !prev || score < prev.score;
-
-  let runId: string;
-  let bestScore: number;
-  if (personalBest) {
-    const run: StoredRun = {
-      runId: randomUUID(),
-      mode: body.mode,
-      board: elig.board,
-      levelId: body.levelId,
-      seed,
-      assist: false,
-      masks: body.masks,
-      playerId: body.player.id,
-      name: body.player.name,
-      score,
-      ticks: summary.ticks,
-      shards: summary.shards,
-      deaths: summary.deaths,
-      cleared: summary.cleared,
-      height: summary.height,
-      createdAt: now.toISOString(),
-    };
-    if (body.mode === 'daily') run.ttl = Math.floor(now.getTime() / 1000) + DAILY_TTL_SECONDS;
-    await deps.repo.saveBest(run, prev?.runId);
-    runId = run.runId;
-    bestScore = score;
-  } else {
-    runId = prev.runId;
-    bestScore = prev.score;
-  }
-
-  const { better, total } = await deps.repo.rankOf(body.mode, elig.board, bestScore);
+  const best = await persistBest(deps, body, elig.board, seed, summary, score);
+  const { better, total } = await deps.repo.rankOf(body.mode, elig.board, best.bestScore);
   return {
     status: 200,
     body: {
       accepted: true,
-      runId,
+      runId: best.runId,
       rank: better + 1,
       total: Math.max(1, total),
       score,
-      personalBest,
+      personalBest: best.personalBest,
       summary,
     },
   };
 }
 
 /**
- * Sliding-window limiter keyed by player id (the per-IP limit lives in
- * @fastify/rate-limit). In-process by design: with several Fargate tasks the
- * effective budget is `max × tasks`, which is fine for an abuse brake.
+ * Sliding-window limiter keyed by `ip:playerId` (the per-IP limits live in
+ * @fastify/rate-limit). Keying on the pair means a third party who knows a
+ * player's id cannot burn that player's budget from elsewhere. In-process by
+ * design: with several Fargate tasks the effective budget is `max × tasks`,
+ * which is fine for an abuse brake.
  */
 export class PlayerLimiter {
   private readonly hits = new Map<string, number[]>();

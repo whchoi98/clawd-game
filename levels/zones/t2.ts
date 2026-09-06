@@ -7,9 +7,15 @@
  */
 import { room } from '../dsl.js';
 
-const m = room(110, 22);
+const m = room(110, 24);
 const F = 18;                 // floor top row
 const WS = F + 1, WB = 21;    // water surface / bottom rows
+
+/** A pool with a rock bed: the map bottom is never open under water. */
+function pool(x0: number, x1: number): void {
+  m.water(x0, x1, WS, WB);
+  m.ground(x0, x1, WB + 1);
+}
 
 // --- start yard
 m.ground(0, 12, F);
@@ -17,7 +23,7 @@ m.ent('P', 3, F - 1);
 m.shards([[7, F - 1], [10, F - 1]]);
 
 // --- pool 1 (9 wide): a straight shard line two tiles up reads "dash"
-m.water(13, 21, WS, WB);
+pool(13, 21);
 m.shards([[14, F - 2], [16, F - 2], [18, F - 2], [20, F - 2]]);
 
 // --- bank with the first spring: shards climb the launch column to a side ledge
@@ -29,7 +35,7 @@ m.plat(31, 34, F - 6);
 m.shards([[32, F - 7], [33, F - 7]]);
 
 // --- pool 2 (11 wide) with a one-way rest ledge; leap from the side ledge and glide
-m.water(35, 45, WS, WB);
+pool(35, 45);
 m.owp(39, 41, F - 3);
 m.shards([[37, F - 4], [39, F - 5], [41, F - 5], [43, F - 4]]);
 
@@ -41,7 +47,7 @@ m.ent('S', 57, F - 1);
 m.shards([[57, F - 3], [57, F - 5]]);
 
 // --- aerial line over the long pool: ledge → dash gap (5) → ledge → drop to the bank
-m.water(59, 76, WS, WB);
+pool(59, 76);
 m.plat(60, 64, F - 6);
 m.shards([[61, F - 7], [63, F - 7]]);
 m.shards([[66, F - 7], [68, F - 7]]);

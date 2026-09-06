@@ -36,6 +36,8 @@ export interface SimHost {
   emit(ev: SimEvent): void;
   /** Moving platform supporting `p` (snaps the feet onto it), or null. */
   platformUnder(p: PlayerState): PlatformRide | null;
+  /** True when the world point (x, y) lies inside an updraft column. */
+  inUpdraft(x: number, y: number): boolean;
   /** Stomp landing shockwave at the feet. */
   stompShock(x: number, y: number): void;
   onDeath(cause: string): void;
@@ -71,6 +73,15 @@ const PHYS_ASSIST: PhysTable = {
 
 /** Spawn-in window during which the pose reads 'spawn'. */
 const SPAWN_POSE_T = 0.42;
+/**
+ * Updraft columns are authoritative: the moment the player's centre is inside
+ * one, any fall is cut to UPDRAFT_ENTRY_VY and the column accelerates the
+ * player upward at UPDRAFT_ACCEL toward UPDRAFT_CAP, replacing gravity for
+ * that tick — so a column over spikes always catches what drops into it.
+ */
+const UPDRAFT_ENTRY_VY = 40;
+const UPDRAFT_ACCEL = 1600;
+const UPDRAFT_CAP = -260;
 /** Edge sample inset — avoids catching on tile seams. */
 const EDGE_INSET = 1.2;
 const FOOT_INSET = 1.5;
@@ -96,7 +107,6 @@ export class Player {
   private dashBuf = -1;
   private wallStickT = 0;
   private wallLock = 0;
-  private wasGrounded = false;
   private wasWater = false;
   private wasSliding = false;
   private spawnT = 0;
@@ -129,7 +139,6 @@ export class Player {
     this.wasWater = this.host.level.waterPx(x, y - s.h * 0.6);
     s.inWater = this.wasWater;
     s.grounded = this.checkGround();
-    this.wasGrounded = s.grounded;
     s.pose = 'spawn';
   }
 
@@ -207,6 +216,12 @@ export class Player {
     const ay = axisY;
 
     s.inWater = this.host.level.waterPx(this.cx, s.y + s.h * 0.4);
+    // Water is the safety net: it restores the air jump and the dash, so
+    // climbing out of a pool never depends on what was spent falling in.
+    if (s.inWater) {
+      s.jumps = 0;
+      if (s.dashT <= 0) s.dashReady = true;
+    }
 
     // ---- dash ----
     if (s.dashT > 0) {
@@ -264,20 +279,28 @@ export class Player {
     if (sliding && !this.wasSliding) this.host.emit({ type: 'wallSlide', x: this.cx, y: this.cy, dir: s.onWall as -1 | 1 });
     this.wasSliding = sliding;
 
-    // ---------- gravity ----------
-    let g: number;
-    if (s.inWater) g = P.waterGrav;
-    else if (s.vy < 0) g = this.jumpHeld ? P.gravity : (P.gravity / P.jumpCut) * 0.55;
-    else g = P.gravityFall;
-    if (Math.abs(s.vy) < P.apexWindow && !s.inWater) g = P.gravityApex;
-    if (s.stomping) g = P.gravityFall * 2.2;
-    s.vy += g * dt;
+    // ---------- gravity / updraft ----------
+    const lifted = !s.inWater && this.host.inUpdraft(this.cx, this.cy);
+    if (lifted) {
+      // the column owns the vertical axis: kill the fall, then push up to the cap
+      if (s.vy > UPDRAFT_ENTRY_VY) s.vy = UPDRAFT_ENTRY_VY;
+      s.vy = Math.max(UPDRAFT_CAP, s.vy - UPDRAFT_ACCEL * dt);
+      s.stomping = false;
+    } else {
+      let g: number;
+      if (s.inWater) g = P.waterGrav;
+      else if (s.vy < 0) g = this.jumpHeld ? P.gravity : (P.gravity / P.jumpCut) * 0.55;
+      else g = P.gravityFall;
+      if (Math.abs(s.vy) < P.apexWindow && !s.inWater) g = P.gravityApex;
+      if (s.stomping) g = P.gravityFall * 2.2;
+      s.vy += g * dt;
 
-    const maxFall = s.inWater ? PHYS.terminalWater : sliding ? PHYS.wallSlide : s.stomping ? PHYS.stompVel : PHYS.maxFall;
-    if (s.vy > maxFall) s.vy = approach(s.vy, maxFall, 2600 * dt);
+      const maxFall = s.inWater ? PHYS.terminalWater : sliding ? PHYS.wallSlide : s.stomping ? PHYS.stompVel : PHYS.maxFall;
+      if (s.vy > maxFall) s.vy = approach(s.vy, maxFall, 2600 * dt);
+    }
 
     // ---------- variable jump cut ----------
-    if (jumpReleased && s.vy < 0 && !s.inWater) s.vy *= PHYS.jumpCut;
+    if (jumpReleased && s.vy < 0 && !s.inWater && !lifted) s.vy *= PHYS.jumpCut;
 
     // ---------- coyote ----------
     if (s.grounded) this.coyote = PHYS.coyote;
@@ -291,8 +314,8 @@ export class Player {
       else if (s.jumps < P.maxJumps) this.jump(2);
     }
 
-    // ---------- stomp ----------
-    if (!s.grounded && !s.inWater && ay > 0.6 && s.vy > -30 && !s.stomping) {
+    // ---------- stomp ---------- (never into an updraft: the column cancels it)
+    if (!s.grounded && !s.inWater && !lifted && ay > 0.6 && s.vy > -30 && !s.stomping) {
       s.stomping = true;
       s.vy = Math.max(s.vy, 120);
       this.host.emit({ type: 'stomp', x: this.cx, y: this.feet });
@@ -457,7 +480,6 @@ export class Player {
 
   private postMove(): void {
     const s = this.s;
-    this.wasGrounded = s.grounded;
     const probe = s.dashT > 0 && s.dashDirY < 0 ? false : this.checkGround();
     // Touched down without a collision hit (platform deck, one-way lip, or the
     // probe reading the floor a hair early): land() runs while still airborne so

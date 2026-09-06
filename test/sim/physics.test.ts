@@ -161,6 +161,33 @@ describe('player physics', () => {
     expect(sim.level.isBroken(21, 12) || sim.level.isBroken(22, 12)).toBe(true);
   });
 
+  it('water restores the air jump and the dash: a swim jump out of the pool is followed by an air jump', () => {
+    const sim = playing(waterRoom());
+    const p = sim.state.player;
+    // drop into the pool centre with everything spent
+    p.x = 15 * TILE + TILE / 2 - p.w / 2;
+    p.y = 8 * TILE - p.h;
+    p.vx = 0; p.vy = 0; p.grounded = false;
+    p.jumps = 2; p.dashReady = false;
+    const n = stepUntil(sim, (s) => s.state.player.inWater, 120, 0);
+    expect(n).toBeGreaterThan(0);
+    expect(p.grounded).toBe(false);
+    expect(p.jumps).toBe(0);
+    expect(p.dashReady).toBe(true);
+    sim.drainEvents();
+    // swim jump straight out (never touching the bed), then an air jump once clear of the water
+    const swim = collect(sim, 1, J);
+    expect(swim.some((e) => e.type === 'jump')).toBe(true);
+    expect(p.vy).toBeCloseTo(PHYS.waterJump, 5);
+    const out = stepUntil(sim, (s) => !s.state.player.inWater, 120, J);
+    expect(out).toBeGreaterThan(0);
+    expect(p.grounded).toBe(false);
+    sim.step(0);
+    const air = collect(sim, 1, J);
+    expect(air.some((e) => e.type === 'jump' && e.air)).toBe(true);
+    expect(p.vy).toBeCloseTo(PHYS.jumpVel2, 5);
+  });
+
   it('water: splash on entry, slow fall, and jumping out is possible', () => {
     const sim = playing(waterRoom());
     const ev = collect(sim, 240, R);

@@ -13,8 +13,11 @@ export interface AppDeps {
   now: () => Date;
   /** HMAC key for daily seeds. */
   dailySecret: string;
-  /** Replay verifier — the real one from src/sim in production. */
-  verify: (def: LevelDef, replay: Replay, claim?: RunClaim) => VerifyResult;
+  /**
+   * Replay verifier — verifyReplayChunked from src/sim in production (yields to
+   * the event loop every few thousand ticks); tests may inject a sync stub.
+   */
+  verify: (def: LevelDef, replay: Replay, claim?: RunClaim) => VerifyResult | Promise<VerifyResult>;
   /** Absolute path of the built client (dist/public). Omit to skip static serving (tests). */
   staticDir?: string;
   version: string;

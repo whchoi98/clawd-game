@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { GhostResponse } from '../../src/shared/protocol.js';
 import { FIX_T1, MASKS_B64, makeApp, postRun, submitBody } from './fixtures.js';
 
-vi.mock('./sim.js', () => ({ Sim: class {} }));
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
 
 describe('GET /api/ghost/:runId', () => {

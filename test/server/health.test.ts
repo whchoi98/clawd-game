@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { HealthResponse } from '../../src/shared/protocol.js';
 import { makeApp } from './fixtures.js';
 
-vi.mock('./sim.js', () => ({ Sim: class {} }));
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
 
 describe('health routes', () => {

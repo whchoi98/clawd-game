@@ -15,15 +15,18 @@ export interface EdgeProps {
 /**
  * Content-Security-Policy served at the edge. Only Google Fonts is allowed
  * off-origin (the UI webfont is the single external fetch); no wildcards.
+ * The client writes styles through the CSSOM (not blocked by CSP) and spawns
+ * no blob: workers, so neither 'unsafe-inline' nor blob: is granted.
  */
 export const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "img-src 'self' data:",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "style-src 'self' https://fonts.googleapis.com",
   'font-src https://fonts.gstatic.com',
   "script-src 'self'",
   "connect-src 'self'",
-  "worker-src 'self' blob:",
+  "worker-src 'self'",
+  "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
   "frame-ancestors 'none'",
@@ -115,9 +118,21 @@ export class Edge extends Construct {
           // viewer IP instead of a client-spoofable X-Forwarded-For hop.
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_AND_CLOUDFRONT_2022,
           responseHeadersPolicy: this.responseHeadersPolicy,
-          compress: true,
+          // CloudFront only compresses when the cache policy enables gzip/brotli
+          // in the cache key, which CACHING_DISABLED does not, so `compress`
+          // would be a no-op here (CDK defaults it to true). API responses are
+          // compressed at the origin instead (@fastify/compress).
+          compress: false,
         },
       },
+      // Error caching TTL 0 for 404/403 and no custom page: during a rolling
+      // deploy a hashed asset requested from a task still on the old image
+      // 404s, and CloudFront must not pin that answer for its default 10 s.
+      // The status reaches the client unchanged.
+      errorResponses: [
+        { httpStatus: 404, ttl: cdk.Duration.seconds(0) },
+        { httpStatus: 403, ttl: cdk.Duration.seconds(0) },
+      ],
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       enableIpv6: true,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_200,

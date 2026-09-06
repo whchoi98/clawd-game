@@ -272,19 +272,23 @@ export class Saw extends Entity {
 }
 
 // ============================================================ UPDRAFT
+/**
+ * A column of rising air from the marker tile up to the first rock above (at
+ * most twelve tiles). The column is pure geometry here: the player controller
+ * asks `SimHost.inUpdraft` before applying gravity and lets the column own the
+ * vertical axis while its centre is inside (see player.ts).
+ */
 export class Updraft extends Entity {
   constructor(sp: Spawn, level: Level) {
     const h = Math.max(TILE * 3, level.patrolSpan(sp.tx, sp.ty, 0, -1, 12) + TILE);
     const top = sp.ty * TILE + TILE - h;
     super('updraft', sp.tx * TILE + TILE / 2, top + h / 2, TILE, h);
   }
-  protected override interact(dt: number, _host: SimHost, player: Player): void {
-    const s = this.s, p = player.s;
+  /** True when the world point lies inside the column. */
+  contains(x: number, y: number): boolean {
+    const s = this.s;
     const x0 = s.x - s.w / 2, y0 = s.y - s.h / 2;
-    if (p.x + p.w > x0 && p.x < x0 + s.w && p.y + p.h > y0 && p.y < y0 + s.h) {
-      p.vy = Math.max(-260, p.vy - 900 * dt);
-      p.stomping = false;
-    }
+    return x >= x0 && x < x0 + s.w && y >= y0 && y < y0 + s.h;
   }
 }
 

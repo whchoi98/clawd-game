@@ -1,19 +1,21 @@
 /**
  * In-process Repo for tests and local development (no AWS credentials).
  * Mirrors the DynamoRepo semantics: one board entry per player, replaced by
- * `saveBest`; runs stay readable by id even after they leave the board.
+ * `saveBest`, which is refused with the same conflict error when the caller's
+ * `previousRunId` is not the current best; runs stay readable by id even after
+ * they leave the board.
  */
 import type { Mode } from '../../shared/protocol.js';
+import { SaveConflictError } from './errors.js';
 import type { Repo, StoredRun } from './types.js';
 
 const boardKey = (mode: Mode, board: string) => `${mode}#${board}`;
 const bestKey = (playerId: string, mode: Mode, board: string) => `${playerId}#${mode}#${board}`;
 
-/** Ascending score; ties broken by more shards, then the earlier submission, then id. */
+/** The LB sort-key order of DynamoRepo: score ascending, then more shards, then run id. */
 export function compareRuns(a: StoredRun, b: StoredRun): number {
   if (a.score !== b.score) return a.score - b.score;
   if (a.shards !== b.shards) return b.shards - a.shards;
-  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
   return a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0;
 }
 
@@ -27,6 +29,11 @@ export class MemoryRepo implements Repo {
   }
 
   async saveBest(run: StoredRun, previousRunId?: string): Promise<void> {
+    const bKey = bestKey(run.playerId, run.mode, run.board);
+    const current = this.bests.get(bKey);
+    const expected = previousRunId ? current?.runId === previousRunId : current === undefined;
+    if (!expected) throw new SaveConflictError();
+
     this.runs.set(run.runId, run);
     const key = boardKey(run.mode, run.board);
     const entries = (this.boards.get(key) ?? []).filter(
@@ -35,7 +42,7 @@ export class MemoryRepo implements Repo {
     entries.push(run);
     entries.sort(compareRuns);
     this.boards.set(key, entries);
-    this.bests.set(bestKey(run.playerId, run.mode, run.board), run);
+    this.bests.set(bKey, run);
   }
 
   async topRuns(mode: Mode, board: string, limit: number): Promise<StoredRun[]> {

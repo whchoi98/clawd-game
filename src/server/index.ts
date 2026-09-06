@@ -11,8 +11,9 @@
 import { randomBytes } from 'node:crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { verifyReplay } from '../sim/replay.js';
+import { verifyReplayChunked } from '../sim/replay.js';
 import { buildApp } from './app.js';
+import { asyncVerifier } from './runs.js';
 import { MemoryRepo } from './repo/memory.js';
 import { DynamoRepo } from './repo/dynamo.js';
 import type { Repo } from './repo/types.js';
@@ -43,7 +44,8 @@ async function main(): Promise<void> {
     repo,
     now: () => new Date(),
     dailySecret,
-    verify: verifyReplay,
+    // Cooperative verifier: yields to the event loop every 2400 ticks so a long replay cannot stall /healthz.
+    verify: asyncVerifier(verifyReplayChunked),
     staticDir: process.env.STATIC_DIR || undefined,
     version: process.env.APP_VERSION ?? 'dev',
     logger: true,

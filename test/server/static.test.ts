@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { cacheControlFor, IMMUTABLE, NO_CACHE } from '../../src/server/static.js';
 import { makeApp } from './fixtures.js';
 
-vi.mock('./sim.js', () => ({ Sim: class {} }));
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
 
 const SCRATCH = '/tmp/claude-1000/-home-ec2-user-my-project-clawd-game/f8aa643c-bc48-400a-8c09-d71da38a73d7/scratchpad';

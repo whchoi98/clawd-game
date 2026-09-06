@@ -14,6 +14,17 @@ export const ORIGIN_VERIFY_HEADER = 'X-Origin-Verify';
 /** Container port the Fastify server listens on. */
 export const APP_PORT = 8080;
 
+/**
+ * Paths kept out of the Docker build context (dockerignore syntax). `npm run
+ * build` compiles src/ (including the generated src/sim/levels.generated.ts)
+ * and public/ with tools/build.mjs + tools/lib.mjs; nothing else is needed.
+ */
+export const IMAGE_CONTEXT_EXCLUDE: readonly string[] = [
+  'node_modules', 'dist', 'cdk.out', '.git', '.gitignore', 'docs', 'test', 'levels',
+  'tools/dev.mjs', 'tools/qa', 'tools/postdeploy.*', 'infra', 'cdk.json', 'cdk.context.json',
+  'cdk-outputs.json', 'vitest.config.ts', 'clawd-jump.tar.gz', 'LICENSE', '**/*.md', '*.log', '.env',
+];
+
 export interface ServiceProps {
   readonly vpc: ec2.IVpc;
   readonly albSubnets: ec2.SubnetSelection;
@@ -139,11 +150,11 @@ export class Service extends Construct {
       file: 'Dockerfile',
       platform: ecr_assets.Platform.LINUX_ARM64,
       // Only what `npm run build` needs goes into the build context; everything
-      // else would just churn the asset hash (and APP_VERSION) without changing the image.
-      exclude: [
-        'node_modules', 'dist', 'cdk.out', '.git', '.gitignore', 'docs', 'test', 'tools/qa/out',
-        'infra', 'cdk.json', 'cdk.context.json', 'vitest.config.ts', 'clawd-jump.tar.gz', '*.md', '*.log', '.env',
-      ],
+      // else would just churn the asset hash (and APP_VERSION) without changing
+      // the image. Mirror of .dockerignore (CDK merges both). What remains:
+      // package.json, package-lock.json, tsconfig.json, Dockerfile, src, public,
+      // tools/build.mjs, tools/lib.mjs.
+      exclude: [...IMAGE_CONTEXT_EXCLUDE],
     });
     this.imageHash = image.assetHash;
 
