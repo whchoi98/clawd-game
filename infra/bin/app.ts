@@ -25,4 +25,7 @@ new ClawdEchoTowerStack(app, 'ClawdEchoTowerStack', {
   desiredCount: contextNumber('desiredCount', 2),
   domainName: contextString('domainName'),
   certificateArn: contextString('certificateArn'),
+  // Deliberately absent from cdk.json: pass `-c alarmEmail=ops@example.com` (or
+  // leave unset and subscribe to the AlarmTopicArn output by hand).
+  alarmEmail: contextString('alarmEmail'),
 });

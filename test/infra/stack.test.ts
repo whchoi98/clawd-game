@@ -3,6 +3,10 @@ import { join } from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { BACKUP_RETENTION_DAYS } from '../../infra/lib/constructs/data.js';
+import {
+  ACCESS_LOG_RETENTION_DAYS, ALARM_THRESHOLDS, METRIC_NAMESPACE, ROLLUP_METRICS,
+} from '../../infra/lib/constructs/observability.js';
 import { ClawdEchoTowerStack, type ClawdEchoTowerStackProps } from '../../infra/lib/stack.js';
 
 // Feature flags from the real cdk.json so tests synthesize what `cdk synth` does.
@@ -152,8 +156,8 @@ describe('ALB listener', () => {
 });
 
 describe('secrets', () => {
-  it('generates the origin token (40 chars, no punctuation) and a daily seed secret', () => {
-    t.resourceCountIs('AWS::SecretsManager::Secret', 2);
+  it('generates the origin token (40 chars, no punctuation), a daily seed secret and a player tag secret', () => {
+    t.resourceCountIs('AWS::SecretsManager::Secret', 3);
     t.hasResourceProperties('AWS::SecretsManager::Secret', {
       GenerateSecretString: { ExcludePunctuation: true, PasswordLength: 40 },
     });
@@ -180,8 +184,10 @@ describe('secrets', () => {
     expect(references(header.HeaderValue, tokenId!)).toBe(true);
     expect(collectStrings(header.HeaderValue).join('')).toContain('{{resolve:secretsmanager:');
 
-    // No 40-char token-looking literal anywhere in the template.
-    const literals = collectStrings(json).filter((s) => /^[A-Za-z0-9]{40}$/.test(s));
+    // No 40-char token-looking literal anywhere in the template (logical ids
+    // such as `ObservabilityAlbAccessLogsPolicyCC4310BE` in DependsOn are not tokens).
+    const logicalIds = new Set(Object.keys(json.Resources as Record<string, unknown>));
+    const literals = collectStrings(json).filter((s) => /^[A-Za-z0-9]{40}$/.test(s) && !logicalIds.has(s));
     expect(literals).toHaveLength(0);
   });
 });
@@ -309,7 +315,7 @@ describe('ECS service', () => {
     });
   });
 
-  it('configures the container: port 8080, env, DAILY_SECRET from Secrets Manager, awslogs', () => {
+  it('configures the container: port 8080, env, DAILY_SECRET and TAG_SECRET from Secrets Manager, awslogs', () => {
     const [, td] = only(t, 'AWS::ECS::TaskDefinition');
     const c = td.Properties.ContainerDefinitions[0];
     expect(c.PortMappings).toEqual([expect.objectContaining({ ContainerPort: 8080, Protocol: 'tcp' })]);
@@ -323,10 +329,15 @@ describe('ECS service', () => {
     const [tableId] = only(t, 'AWS::DynamoDB::GlobalTable');
     expect(references(env.TABLE_NAME, tableId)).toBe(true);
 
-    expect(c.Secrets).toHaveLength(1);
-    expect(c.Secrets[0].Name).toBe('DAILY_SECRET');
+    expect(c.Secrets).toHaveLength(2);
+    expect(c.Secrets.map((s: any) => s.Name).sort()).toEqual(['DAILY_SECRET', 'TAG_SECRET']);
     const secrets = t.findResources('AWS::SecretsManager::Secret') as Record<string, Resource>;
-    expect(Object.keys(secrets).some((id) => references(c.Secrets[0].ValueFrom, id))).toBe(true);
+    const backing = c.Secrets.map((s: any) => Object.keys(secrets).find((id) => references(s.ValueFrom, id)));
+    expect(backing.every((id: string | undefined) => id !== undefined)).toBe(true);
+    // Two different secrets: rotating the tag key must not touch the daily seeds.
+    expect(new Set(backing).size).toBe(2);
+    // Neither is the origin token (the 40-char one).
+    for (const id of backing) expect(secrets[id!].Properties.GenerateSecretString.PasswordLength).not.toBe(40);
 
     expect(c.LogConfiguration.LogDriver).toBe('awslogs');
     const [logId] = only(t, 'AWS::Logs::LogGroup');
@@ -518,7 +529,7 @@ describe('custom domain', () => {
 });
 
 describe('data', () => {
-  it('is a single on-demand pk/sk table with PITR, TTL on `ttl`, destroyed with the stack', () => {
+  it('is a single on-demand pk/sk table with PITR, TTL on `ttl`, retained and deletion-protected', () => {
     const [, table] = only(t, 'AWS::DynamoDB::GlobalTable');
     expect(table.Properties.BillingMode).toBe('PAY_PER_REQUEST');
     expect(table.Properties.KeySchema).toEqual([
@@ -534,14 +545,230 @@ describe('data', () => {
     expect(table.Properties.TimeToLiveSpecification).toEqual({ AttributeName: 'ttl', Enabled: true });
     expect(table.Properties.Replicas).toHaveLength(1);
     expect(table.Properties.Replicas[0].PointInTimeRecoverySpecification).toEqual({ PointInTimeRecoveryEnabled: true });
-    expect(table.DeletionPolicy).toBe('Delete');
+    expect(table.Properties.Replicas[0].DeletionProtectionEnabled).toBe(true);
+    expect(table.DeletionPolicy).toBe('Retain');
+    expect((table as any).UpdateReplacePolicy).toBe('Retain');
     t.resourceCountIs('AWS::DynamoDB::Table', 0);
+  });
+
+  it('backs the table up daily with AWS Backup, keeping recovery points 35 days', () => {
+    expect(BACKUP_RETENTION_DAYS).toBe(35);
+    t.resourceCountIs('AWS::Backup::BackupPlan', 1);
+    t.resourceCountIs('AWS::Backup::BackupVault', 1);
+    const [, plan] = only(t, 'AWS::Backup::BackupPlan');
+    const rules = plan.Properties.BackupPlan.BackupPlanRule as Array<Record<string, any>>;
+    expect(rules).toHaveLength(1);
+    expect(rules[0].Lifecycle).toEqual({ DeleteAfterDays: BACKUP_RETENTION_DAYS });
+    expect(rules[0].ScheduleExpression).toMatch(/^cron\(\d+ \d+ \* \* \? \*\)$/); // once a day
+    const [planId] = only(t, 'AWS::Backup::BackupPlan');
+    const [tableId] = only(t, 'AWS::DynamoDB::GlobalTable');
+    const [, selection] = only(t, 'AWS::Backup::BackupSelection');
+    expect(references(selection.Properties.BackupPlanId, planId)).toBe(true);
+    expect(references(selection.Properties.BackupSelection.Resources, tableId)).toBe(true);
+    // The vault (and its recovery points) survives a stack delete.
+    const [, vault] = only(t, 'AWS::Backup::BackupVault');
+    expect(vault.DeletionPolicy).toBe('Retain');
+  });
+});
+
+describe('observability', () => {
+  type Alarm = Resource & { Properties: Record<string, any> };
+  const alarms = (): Alarm[] => Object.values(t.findResources('AWS::CloudWatch::Alarm') as Record<string, Alarm>);
+  const alarmNamed = (slug: string): Alarm => {
+    const found = alarms().filter((a) => String(a.Properties.AlarmName).endsWith(`-${slug}`));
+    expect(found, `alarm ${slug}`).toHaveLength(1);
+    return found[0];
+  };
+  /** The metric stats an alarm evaluates (single-metric or math form), flattened. */
+  const statsOf = (a: Alarm): Array<Record<string, any>> => {
+    if (a.Properties.MetricName) {
+      return [{ MetricName: a.Properties.MetricName, Namespace: a.Properties.Namespace, Dimensions: a.Properties.Dimensions, Stat: a.Properties.Statistic ?? a.Properties.ExtendedStatistic }];
+    }
+    return (a.Properties.Metrics as any[]).filter((m) => m.MetricStat).map((m) => ({
+      MetricName: m.MetricStat.Metric.MetricName, Namespace: m.MetricStat.Metric.Namespace, Dimensions: m.MetricStat.Metric.Dimensions, Stat: m.MetricStat.Stat,
+    }));
+  };
+  const expressionOf = (a: Alarm): string => (a.Properties.Metrics as any[]).find((m) => m.Expression)?.Expression ?? '';
+
+  it('has one SNS topic and at least ten alarms that all notify it on ALARM and OK', () => {
+    const [topicId] = only(t, 'AWS::SNS::Topic');
+    const all = alarms();
+    expect(all.length).toBeGreaterThanOrEqual(10);
+    for (const a of all) {
+      expect(a.Properties.AlarmActions, a.Properties.AlarmName).toHaveLength(1);
+      expect(references(a.Properties.AlarmActions, topicId)).toBe(true);
+      expect(references(a.Properties.OKActions, topicId)).toBe(true);
+      // Idle metrics (no traffic, no throttles, no submits) never page.
+      expect(a.Properties.TreatMissingData, a.Properties.AlarmName).toBe('notBreaching');
+    }
+  });
+
+  it('subscribes the alarmEmail context to the topic only when given', () => {
+    t.resourceCountIs('AWS::SNS::Subscription', 0);
+    const withMail = synth({ alarmEmail: 'ops@example.com' });
+    withMail.resourceCountIs('AWS::SNS::Subscription', 1);
+    withMail.hasResourceProperties('AWS::SNS::Subscription', { Protocol: 'email', Endpoint: 'ops@example.com' });
+  });
+
+  it('alarms on ALB 5xx rate > 1% (ELB + target 5xx over requests) and target p95 latency > 1 s', () => {
+    const rate = alarmNamed('alb-5xx-rate');
+    expect(rate.Properties.Threshold).toBe(ALARM_THRESHOLDS.alb5xxRatePercent);
+    expect(rate.Properties.ComparisonOperator).toBe('GreaterThanThreshold');
+    expect(statsOf(rate).map((s) => s.MetricName).sort()).toEqual(['HTTPCode_ELB_5XX_Count', 'HTTPCode_Target_5XX_Count', 'RequestCount']);
+    for (const s of statsOf(rate)) expect(s.Stat).toBe('Sum');
+    expect(expressionOf(rate)).toMatch(/FILL\(req, 0\) > 0/);
+    for (const m of rate.Properties.Metrics as any[]) if (m.MetricStat) expect(m.MetricStat.Period).toBe(300);
+
+    const p95 = alarmNamed('alb-latency-p95');
+    expect(p95.Properties.Threshold).toBe(ALARM_THRESHOLDS.albP95LatencySeconds);
+    expect(statsOf(p95)).toEqual([expect.objectContaining({ MetricName: 'TargetResponseTime', Stat: 'p95' })]);
+    expect(p95.Properties.Period).toBe(300);
+  });
+
+  it('alarms on unhealthy targets and on fewer healthy targets than the service minimum', () => {
+    const unhealthy = alarmNamed('alb-unhealthy-hosts');
+    expect(statsOf(unhealthy)).toEqual([expect.objectContaining({ MetricName: 'UnHealthyHostCount', Stat: 'Maximum' })]);
+    expect(unhealthy.Properties.Threshold).toBe(ALARM_THRESHOLDS.unhealthyHosts);
+    expect(unhealthy.Properties.ComparisonOperator).toBe('GreaterThanOrEqualToThreshold');
+
+    const healthy = alarmNamed('alb-healthy-hosts');
+    expect(statsOf(healthy)).toEqual([expect.objectContaining({ MetricName: 'HealthyHostCount', Stat: 'Average' })]);
+    expect(healthy.Properties.Threshold).toBe(ALARM_THRESHOLDS.healthyHostsMin);
+    expect(healthy.Properties.ComparisonOperator).toBe('LessThanThreshold');
+    expect(healthy.Properties.Period).toBe(60);
+    expect(healthy.Properties.EvaluationPeriods).toBeLessThanOrEqual(3); // pages within a few minutes of a lost task
+  });
+
+  it('alarms on ECS CPU > 80% and memory > 85% over 5 minutes, scoped to the service', () => {
+    const [clusterId] = only(t, 'AWS::ECS::Cluster');
+    const [serviceId] = only(t, 'AWS::ECS::Service');
+    for (const [slug, metric, threshold] of [
+      ['ecs-cpu', 'CPUUtilization', ALARM_THRESHOLDS.ecsCpuPercent],
+      ['ecs-memory', 'MemoryUtilization', ALARM_THRESHOLDS.ecsMemoryPercent],
+    ] as const) {
+      const a = alarmNamed(slug);
+      expect(a.Properties.Namespace).toBe('AWS/ECS');
+      expect(a.Properties.MetricName).toBe(metric);
+      expect(a.Properties.Statistic).toBe('Average');
+      expect(a.Properties.Period).toBe(300);
+      expect(a.Properties.Threshold).toBe(threshold);
+      expect(a.Properties.ComparisonOperator).toBe('GreaterThanThreshold');
+      const dims = Object.fromEntries((a.Properties.Dimensions as any[]).map((d) => [d.Name, d.Value]));
+      expect(Object.keys(dims).sort()).toEqual(['ClusterName', 'ServiceName']);
+      expect(references(dims.ClusterName, clusterId)).toBe(true);
+      expect(references(dims.ServiceName, serviceId)).toBe(true);
+    }
+  });
+
+  it('alarms on any DynamoDB read or write throttle event on the table', () => {
+    const [tableId] = only(t, 'AWS::DynamoDB::GlobalTable');
+    for (const [slug, metric] of [['ddb-read-throttles', 'ReadThrottleEvents'], ['ddb-write-throttles', 'WriteThrottleEvents']] as const) {
+      const a = alarmNamed(slug);
+      expect(a.Properties.Namespace).toBe('AWS/DynamoDB');
+      expect(a.Properties.MetricName).toBe(metric);
+      expect(a.Properties.Statistic).toBe('Sum');
+      expect(a.Properties.Threshold).toBe(ALARM_THRESHOLDS.ddbThrottles);
+      expect(a.Properties.ComparisonOperator).toBe('GreaterThanThreshold');
+      expect(references(a.Properties.Dimensions, tableId)).toBe(true);
+    }
+  });
+
+  it('rolls the EMF app metrics up with metric filters on the app log group (no dimensions, same namespace and names)', () => {
+    expect(METRIC_NAMESPACE).toBe('ClawdEchoTower');
+    const [logId] = only(t, 'AWS::Logs::LogGroup');
+    const filters = Object.values(t.findResources('AWS::Logs::MetricFilter') as Record<string, Resource>);
+    expect(filters).toHaveLength(3);
+    const names = filters.map((f) => f.Properties.MetricTransformations[0].MetricName).sort();
+    expect(names).toEqual([ROLLUP_METRICS.submitAccepted.name, ROLLUP_METRICS.submitRejected.name, ROLLUP_METRICS.verifyMs.name].sort());
+    for (const f of filters) {
+      expect(references(f.Properties.LogGroupName, logId)).toBe(true);
+      const [tr] = f.Properties.MetricTransformations;
+      expect(tr.MetricNamespace).toBe(METRIC_NAMESPACE);
+      expect(tr.MetricValue).toBe(`$.${tr.MetricName}`);
+      expect(tr.Dimensions).toBeUndefined();
+      expect(f.Properties.FilterPattern).toContain(`Namespace = "${METRIC_NAMESPACE}"`);
+      expect(f.Properties.FilterPattern).toContain(`$.${tr.MetricName} >= 0`);
+    }
+    const verify = filters.find((f) => f.Properties.MetricTransformations[0].MetricName === 'VerifyMs')!;
+    expect(verify.Properties.MetricTransformations[0].Unit).toBe('Milliseconds');
+  });
+
+  it('alarms on VerifyMs p95 > 2000 ms and on a submit reject ratio > 30% (with a minimum sample gate)', () => {
+    const verify = alarmNamed('verify-ms-p95');
+    expect(verify.Properties.Namespace).toBe(METRIC_NAMESPACE);
+    expect(verify.Properties.MetricName).toBe('VerifyMs');
+    expect(verify.Properties.ExtendedStatistic).toBe('p95');
+    expect(verify.Properties.Dimensions ?? []).toEqual([]);
+    expect(verify.Properties.Period).toBe(300);
+    expect(verify.Properties.Threshold).toBe(ALARM_THRESHOLDS.verifyMsP95);
+
+    const ratio = alarmNamed('submit-reject-ratio');
+    expect(ratio.Properties.Threshold).toBe(ALARM_THRESHOLDS.submitRejectPercent);
+    expect(ratio.Properties.ComparisonOperator).toBe('GreaterThanThreshold');
+    const stats = statsOf(ratio);
+    expect(stats.map((s) => s.MetricName).sort()).toEqual(['SubmitAccepted', 'SubmitRejected']);
+    for (const s of stats) {
+      expect(s.Namespace).toBe(METRIC_NAMESPACE);
+      expect(s.Dimensions ?? []).toEqual([]);
+      expect(s.Stat).toBe('Sum');
+    }
+    const expr = expressionOf(ratio);
+    expect(expr).toContain(`>= ${ALARM_THRESHOLDS.submitRatioMinSamples}`);
+    expect(expr).toMatch(/100 \* FILL\(r, 0\) \/ \(FILL\(a, 0\) \+ FILL\(r, 0\)\)/);
+  });
+
+  it('publishes one dashboard covering ALB, CloudFront (cross-region), ECS, DynamoDB and the app metrics', () => {
+    const [, dash] = only(t, 'AWS::CloudWatch::Dashboard');
+    const body = JSON.stringify(dash.Properties.DashboardBody);
+    for (const needle of [
+      'AWS/ApplicationELB', 'RequestCount', 'HTTPCode_ELB_5XX_Count', 'HTTPCode_Target_5XX_Count', 'TargetResponseTime',
+      'HealthyHostCount', 'AWS/ECS', 'CPUUtilization', 'MemoryUtilization',
+      'AWS/DynamoDB', 'ConsumedReadCapacityUnits', 'ConsumedWriteCapacityUnits', 'ReadThrottleEvents', 'WriteThrottleEvents',
+      'AWS/CloudFront', '5xxErrorRate', 'us-east-1',
+      METRIC_NAMESPACE, 'VerifyMs', 'SubmitAccepted', 'SubmitRejected', 'JsErrorCount',
+      '\\"type\\":\\"alarm\\"',
+    ]) expect(body, needle).toContain(needle);
+    // Every alarm is on the status widget.
+    for (const id of Object.keys(t.findResources('AWS::CloudWatch::Alarm'))) expect(body).toContain(`"${id}"`);
+  });
+
+  it('ships ALB access logs to a private, SSL-only bucket with a 30-day lifecycle that is deleted with the stack', () => {
+    expect(ACCESS_LOG_RETENTION_DAYS).toBe(30);
+    const [bucketId, bucket] = only(t, 'AWS::S3::Bucket');
+    const [, alb] = only(t, 'AWS::ElasticLoadBalancingV2::LoadBalancer');
+    const attrs = Object.fromEntries((alb.Properties.LoadBalancerAttributes as any[]).map((a) => [a.Key, a.Value]));
+    expect(attrs['access_logs.s3.enabled']).toBe('true');
+    expect(references(attrs['access_logs.s3.bucket'], bucketId)).toBe(true);
+
+    expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+      BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true,
+    });
+    expect(bucket.Properties.BucketEncryption.ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault.SSEAlgorithm).toBe('AES256');
+    expect(bucket.Properties.LifecycleConfiguration.Rules).toEqual([
+      expect.objectContaining({ Status: 'Enabled', ExpirationInDays: ACCESS_LOG_RETENTION_DAYS }),
+    ]);
+    expect(bucket.DeletionPolicy).toBe('Delete');
+    expect(bucket.Properties.BucketName).toBeUndefined(); // generated, globally unique
+
+    const [, policy] = only(t, 'AWS::S3::BucketPolicy');
+    expect(references(policy.Properties.Bucket, bucketId)).toBe(true);
+    const statements = policy.Properties.PolicyDocument.Statement as any[];
+    expect(statements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ Effect: 'Deny', Action: 's3:*', Condition: { Bool: { 'aws:SecureTransport': 'false' } } }),
+    ]));
+    // The ELB log-delivery principal may write, nobody else is granted anything.
+    const allows = statements.filter((s) => s.Effect === 'Allow');
+    expect(allows.length).toBeGreaterThan(0);
+    for (const s of allows) expect(collectStrings(s.Action).every((a) => a === 's3:PutObject' || a === 's3:GetBucketAcl')).toBe(true);
   });
 });
 
 describe('stack', () => {
   it('exposes the documented outputs', () => {
-    for (const name of ['SiteUrl', 'DistributionId', 'AlbDnsName', 'TableName', 'ClusterName', 'ServiceName']) {
+    for (const name of [
+      'SiteUrl', 'DistributionId', 'AlbDnsName', 'TableName', 'ClusterName', 'ServiceName',
+      'AlarmTopicArn', 'DashboardName', 'AccessLogBucketName',
+    ]) {
       expect(Object.keys(t.findOutputs(name)), name).toHaveLength(1);
     }
     const site = Object.values(t.findOutputs('SiteUrl'))[0] as any;
