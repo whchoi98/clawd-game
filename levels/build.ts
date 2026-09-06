@@ -4,15 +4,29 @@
  * client and the server all import. Output is a pure function of the zone
  * sources, so rebuilding without changes yields a byte-identical file.
  *
+ * It also turns the golden replay corpora into src/sim/echoes.generated.ts:
+ * GOAL_ECHOES, one verified developer clear per zone, shown as the '목표' echo
+ * on an empty board and used to seed boards on the server. The PACED corpus
+ * (levels/solutions/par/*.json — a human-looking clear at 0.95–1.10 × par) is
+ * the source; a zone without a usable paced solution falls back to the FAST
+ * corpus (levels/solutions/*.json) with a printed warning, because a 7-second
+ * ghost on a 45-second zone is not a goal anyone can follow. A solution
+ * recorded on another SIM_VERSION, geometry revision or seed — or one that no
+ * longer replays to a death-free clear — is never emitted.
+ *
  *   npx tsx levels/build.ts        (npm run levels)
- *   npx tsx levels/build.ts --check   exit 1 if the file on disk is stale
+ *   npx tsx levels/build.ts --check   exit 1 if either file on disk is stale
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { SIM_VERSION } from '../src/sim/types.js';
 import type { LevelDef } from '../src/sim/types.js';
+import { decodeMasks, verifyReplay } from '../src/sim/replay.js';
 import { BIOMES, BIOME_ORDER } from '../src/shared/biomes.js';
 import { census, validate } from './dsl.js';
+import { readSolutions, staleReason } from './solutions.js';
+import type { Solution } from './solutions.js';
 import { t1 } from './zones/t1.js';
 import { t2 } from './zones/t2.js';
 import { t3 } from './zones/t3.js';
@@ -27,6 +41,7 @@ import { v3 } from './zones/v3.js';
 export const ZONES: LevelDef[] = [t1, t2, t3, s1, s2, s3, v1, v2, v3];
 
 export const GENERATED_PATH = fileURLToPath(new URL('../src/sim/levels.generated.ts', import.meta.url));
+export const ECHOES_PATH = fileURLToPath(new URL('../src/sim/echoes.generated.ts', import.meta.url));
 
 /** Single-quoted TS string literal. */
 const q = (s: string) => `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
@@ -99,6 +114,92 @@ export function render(zones: readonly LevelDef[]): string {
   return out.join('\n');
 }
 
+/** Why a solution is not emitted as a goal echo, or null when it is current and replays to a death-free clear. */
+export function solutionProblem(def: LevelDef, sol: Solution): string | null {
+  const stale = staleReason(def, sol);
+  if (stale) return stale;
+  let masks: Uint8Array;
+  try {
+    masks = decodeMasks(sol.masks);
+  } catch (e) {
+    return `masks do not decode (${e instanceof Error ? e.message : String(e)})`;
+  }
+  const v = verifyReplay(def, { v: SIM_VERSION, levelId: def.id, seed: def.seed, assist: false, masks });
+  if (!v.ok) return `replay does not verify (${v.reason})`;
+  if (!v.summary.cleared) return 'replay does not clear the zone';
+  if (v.summary.deaths !== 0) return `replay dies ${v.summary.deaths} time(s)`;
+  if (v.summary.ticks !== sol.ticks) return `replay takes ${v.summary.ticks} ticks, the file says ${sol.ticks}`;
+  return null;
+}
+
+/** Which corpus a goal echo came from. */
+export type EchoSource = 'paced' | 'fast';
+
+/**
+ * Render src/sim/echoes.generated.ts. `paced` is the source corpus; a zone whose
+ * paced solution is missing or no longer verifies takes its `fallback` (fast)
+ * solution instead, with a warning. Zones with neither current solution are left
+ * out and reported in `warnings` as well. `sources` says where each entry came from.
+ */
+export function renderEchoes(
+  zones: readonly LevelDef[], paced: Readonly<Record<string, Solution>>, fallback: Readonly<Record<string, Solution>> = {},
+): { src: string; warnings: string[]; sources: Record<string, EchoSource> } {
+  const warnings: string[] = [];
+  const entries: string[] = [];
+  const sources: Record<string, EchoSource> = {};
+  for (const z of zones) {
+    let sol: Solution | undefined = paced[z.id];
+    let source: EchoSource = 'paced';
+    let problem = sol ? solutionProblem(z, sol) : 'no paced solution';
+    if (problem) {
+      const fast = fallback[z.id];
+      const fastProblem = fast ? solutionProblem(z, fast) : 'no fast solution either';
+      if (fast && !fastProblem) {
+        warnings.push(`${z.id}: ${problem} — goal echo falls back to the fast corpus (${fast.time.toFixed(2)}s, ${((fast.time / z.par) * 100).toFixed(0)}% of par)`);
+        sol = fast;
+        source = 'fast';
+        problem = null;
+      } else {
+        warnings.push(`${z.id}: solution skipped — ${problem}; ${fastProblem}`);
+        continue;
+      }
+    }
+    sources[z.id] = source;
+    entries.push(`  ${z.id}: { sim: ${sol!.sim}, rev: ${sol!.rev}, seed: ${sol!.seed}, masks: ${q(sol!.masks)}, ticks: ${sol!.ticks} },`);
+  }
+  const src = [
+    '/**',
+    ' * GENERATED — do not edit. Source: levels/solutions/par/*.json (the paced corpus),',
+    ' * built by levels/build.ts (`npm run levels`). One verified developer clear per',
+    ' * story zone — deaths 0, human-paced at 0.95–1.10 × par (a zone without a paced',
+    ' * solution falls back to levels/solutions/<id>.json, the fast corpus, with a build',
+    ` * warning) — recorded against SIM_VERSION ${SIM_VERSION} at the zone's geometry revision.`,
+    " * The client runs it as the '목표' echo when a board is empty or unreachable; the",
+    ' * server seeds empty story boards with it. A zone without a current solution has',
+    ' * no entry (see levels/solutions/par/PENDING.json and levels/solutions/PENDING.json).',
+    ' */',
+    '',
+    'export interface GoalEcho {',
+    '  /** SIM_VERSION the masks were recorded against. */',
+    '  sim: number;',
+    '  /** LevelDef.rev at recording time (missing rev = 0). */',
+    '  rev: number;',
+    '  seed: number;',
+    '  /** RLE base64 masks (src/sim/replay.ts encodeMasks). */',
+    '  masks: string;',
+    '  /** Play ticks of the verified run. */',
+    '  ticks: number;',
+    '}',
+    '',
+    '/** Zone id → the developer clear that stands in for an empty leaderboard. */',
+    'export const GOAL_ECHOES: Readonly<Record<string, GoalEcho>> = {',
+    ...entries,
+    '};',
+    '',
+  ].join('\n');
+  return { src, warnings, sources };
+}
+
 /** One line per zone for the console. */
 export function summary(zones: readonly LevelDef[]): string {
   return zones.map((z) => {
@@ -109,18 +210,28 @@ export function summary(zones: readonly LevelDef[]): string {
 
 function main(argv: string[]): number {
   const src = render(ZONES);
+  const ids = ZONES.map((z) => z.id);
+  const echoes = renderEchoes(ZONES, readSolutions(ids, 'par'), readSolutions(ids, 'fast'));
+  for (const w of echoes.warnings) process.stderr.write(`warning: ${w}\n`);
   if (argv.includes('--check')) {
-    let cur = '';
-    try { cur = readFileSync(GENERATED_PATH, 'utf8'); } catch { /* missing */ }
-    if (cur !== src) {
-      process.stderr.write(`${GENERATED_PATH} is stale — run \`npm run levels\`\n`);
-      return 1;
+    let stale = 0;
+    for (const [path, want] of [[GENERATED_PATH, src], [ECHOES_PATH, echoes.src]] as const) {
+      let cur = '';
+      try { cur = readFileSync(path, 'utf8'); } catch { /* missing */ }
+      if (cur !== want) {
+        process.stderr.write(`${path} is stale — run \`npm run levels\`\n`);
+        stale++;
+      }
     }
-    process.stdout.write('levels.generated.ts is up to date\n');
+    if (stale) return 1;
+    process.stdout.write('levels.generated.ts and echoes.generated.ts are up to date\n');
     return 0;
   }
   writeFileSync(GENERATED_PATH, src);
-  process.stdout.write(`${summary(ZONES)}\nwrote ${GENERATED_PATH} (${src.length} bytes)\n`);
+  writeFileSync(ECHOES_PATH, echoes.src);
+  const solved = Object.keys(echoes.sources).length;
+  const fast = Object.values(echoes.sources).filter((s) => s === 'fast').length;
+  process.stdout.write(`${summary(ZONES)}\nwrote ${GENERATED_PATH} (${src.length} bytes)\nwrote ${ECHOES_PATH} (${solved}/${ZONES.length} goal echoes${fast ? `, ${fast} from the fast corpus` : ', all human-paced'})\n`);
   return 0;
 }
 

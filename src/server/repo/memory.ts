@@ -62,6 +62,13 @@ export class MemoryRepo implements Repo {
     return this.runs.get(runId) ?? null;
   }
 
+  /** Seed a board that has no entries yet; false (and nothing written) when it already has any. */
+  async putIfBoardEmpty(run: StoredRun): Promise<boolean> {
+    if ((this.boards.get(boardKey(run.mode, run.board)) ?? []).length > 0) return false;
+    await this.saveBest(run);
+    return true;
+  }
+
   /** Test helper. */
   clear(): void {
     this.runs.clear();

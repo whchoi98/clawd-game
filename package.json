@@ -29,7 +29,10 @@
     "stats": "node tools/stats.mjs",
     "icons": "node tools/icons.mjs",
     "qa:mobile": "tsx tools/qa/mobile.ts",
-    "qa:readability": "tsx tools/qa/readability.ts"
+    "qa:readability": "tsx tools/qa/readability.ts",
+    "qa:grid": "tsx tools/qa/grid.ts",
+    "solve": "tsx tools/solve.ts",
+    "solve:par": "tsx tools/solve.ts --pace=1.025 --pace-tolerance=0.075 --no-dash-chain --out=levels/solutions/par"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.700.0",

@@ -39,6 +39,7 @@ import type { FlushEvent, FlushResult, QueuedRun, SubmitQueue } from './net/queu
 import type { TelemetryData, TelemetryPort } from './net/telemetry.js';
 import { Echo } from './echo/echo.js';
 import { GUIDE_COLOR, GUIDE_DELAY, GUIDE_LABEL, guideFor } from './echo/guide.js';
+import { GOAL_LABEL, goalEchoFor } from './echo/goal.js';
 import { REHINT_HAZARD, REHINT_PIT } from './ui/hints.js';
 
 export type RunMode = 'story' | 'daily' | 'endless';
@@ -1319,7 +1320,16 @@ export class Scenes {
         } catch { /* a corrupt local replay is simply not shown */ }
       }
     }
-    if (!s.echoWorld || run.mode === 'endless' || run.offline) return;
+    if (!s.echoWorld || run.mode === 'endless') return;
+    // No world echo to show (empty board, offline, API error): the bundled goal run stands in as '목표'.
+    const goal = (): void => {
+      if (this.run !== run || run.echoes.some((e) => e.label === GOAL_LABEL)) return;
+      const echo = goalEchoFor(run.def);
+      if (!echo) return;
+      echo.syncTo(run.sim.state.tick);
+      run.echoes.push(echo);
+    };
+    if (run.offline) { goal(); return; }
     const mode = run.mode === 'daily' ? 'daily' : 'story';
     const board = run.mode === 'daily' ? run.daily!.date : run.def.id;
     try {
@@ -1327,15 +1337,17 @@ export class Scenes {
       // (`you`); entries never carry a raw player id, only an opaque tag.
       const lb = await this.api.leaderboard({ mode, board, limit: 1, playerId: prog.player.id });
       const top = lb.entries[0];
+      if (this.run !== run) return;
+      if (!top) { goal(); return; }
       // Our own best is already running as the self echo.
-      if (!top || top.you || this.run !== run) return;
+      if (top.you) return;
       const g = await this.api.ghost(top.runId);
-      if (this.run !== run || g.levelId !== run.def.id) return;
-      if (run.mode === 'daily' && g.seed !== run.daily!.seed) return;
+      if (this.run !== run) return;
+      if (g.levelId !== run.def.id || (run.mode === 'daily' && g.seed !== run.daily!.seed)) { goal(); return; }
       const echo = new Echo(run.def, decodeMasks(g.masks), g.seed, g.assist, C.echoWorld, g.name || top.name);
       echo.syncTo(run.sim.state.tick);
       run.echoes.push(echo);
-    } catch { /* offline: no world echo */ }
+    } catch { goal(); }
   }
 
   // ================================================================ daily screen

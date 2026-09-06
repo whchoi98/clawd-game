@@ -79,6 +79,25 @@ describe('MemoryRepo', () => {
     expect(await repo.rankOf('story', 't1', 999)).toEqual({ better: 3, total: 3 });
   });
 
+  it('putIfBoardEmpty seeds only an empty board and reports whether it wrote', async () => {
+    const repo = new MemoryRepo();
+    const seed = run({ runId: 'goal-t1', playerId: 'developer-goal-echo-0001', name: '개발자', score: 857 });
+    expect(await repo.putIfBoardEmpty(seed)).toBe(true);
+    expect((await repo.topRuns('story', 't1', 10)).map((r) => r.name)).toEqual(['개발자']);
+    expect((await repo.getRun('goal-t1'))?.masks).toBe('AAA=');
+    // a second seed of the same board (another task booting) writes nothing
+    expect(await repo.putIfBoardEmpty(run({ runId: 'goal-t1-b', playerId: 'developer-goal-echo-0001', score: 800 }))).toBe(false);
+    expect(await repo.getRun('goal-t1-b')).toBeNull();
+    // a board with a real entry is never seeded
+    await repo.saveBest(run({ runId: 'p', board: 't2', levelId: 't2', playerId: 'p7', score: 900 }));
+    expect(await repo.putIfBoardEmpty(run({ runId: 'goal-t2', board: 't2', levelId: 't2', playerId: 'developer-goal-echo-0001', score: 500 }))).toBe(false);
+    expect((await repo.topRuns('story', 't2', 10)).map((r) => r.runId)).toEqual(['p']);
+    // the seed is an ordinary entry afterwards: a faster player ranks above it and can be replaced normally
+    await repo.saveBest(run({ runId: 'fast', playerId: 'p1', score: 600 }));
+    expect((await repo.topRuns('story', 't1', 10)).map((r) => r.runId)).toEqual(['fast', 'goal-t1']);
+    expect(await repo.rankOf('story', 't1', 857)).toEqual({ better: 1, total: 2 });
+  });
+
   it('keeps boards and modes apart', async () => {
     const repo = new MemoryRepo();
     await repo.saveBest(run({ runId: 'a', board: 't1' }));

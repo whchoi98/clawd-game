@@ -23,13 +23,24 @@
  * `TransactionCanceledException` when another submission landed in between,
  * so two concurrent runs of one player can never leave two LB rows.
  *
+ * `putIfBoardEmpty` seeds a board with the developer's goal run: it queries
+ * the LB partition for any entry, then writes a sentinel `<board pk> / SEED`
+ * guarded by `attribute_not_exists(pk)` in the same transaction as the run
+ * items, so two tasks booting at once seed a board exactly once. Every LB
+ * sort key starts with a digit and `SEED` sorts after them all, so board
+ * queries bound `sk < 'SEED'` and the sentinel is never read as an entry.
+ *
  * The client is injected so tests can pass a recorder; only the `send` method
  * of DynamoDBDocumentClient is used.
  */
 import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import type { Mode } from '../../shared/protocol.js';
 import { boardKey } from '../boards.js';
+import { isSaveConflict } from './errors.js';
 import type { Repo, StoredRun } from './types.js';
+
+/** Sort key of the seeding sentinel; the upper bound of every LB entry query. */
+export const SEED_SK = 'SEED';
 
 export const SCORE_DIGITS = 12;
 export const SHARD_DIGITS = 5;
@@ -125,8 +136,9 @@ export class DynamoRepo implements Repo {
   async topRuns(mode: Mode, board: string, limit: number): Promise<StoredRun[]> {
     const res = await this.client.send(new QueryCommand({
       TableName: this.table,
-      KeyConditionExpression: 'pk = :pk',
-      ExpressionAttributeValues: { ':pk': KEY.lbPk(mode, board) },
+      // sk < 'SEED' keeps the seeding sentinel out of the page: entry keys start with a digit
+      KeyConditionExpression: 'pk = :pk AND sk < :end',
+      ExpressionAttributeValues: { ':pk': KEY.lbPk(mode, board), ':end': SEED_SK },
       ScanIndexForward: true,
       Limit: Math.max(1, limit),
     }));
@@ -137,7 +149,7 @@ export class DynamoRepo implements Repo {
     const pk = KEY.lbPk(mode, board);
     // Every sk of a strictly lower score is < padScore(score); equal scores start with padScore(score) + '#', which is greater.
     const better = await this.count('pk = :pk AND sk < :sk', { ':pk': pk, ':sk': padScore(score) });
-    const total = await this.count('pk = :pk', { ':pk': pk });
+    const total = await this.count('pk = :pk AND sk < :end', { ':pk': pk, ':end': SEED_SK });
     return { better, total };
   }
 
@@ -147,6 +159,43 @@ export class DynamoRepo implements Repo {
       Key: { pk: KEY.runPk(runId), sk: KEY.RUN_SK },
     }));
     return res?.Item ? fromItem(res.Item as Item) : null;
+  }
+
+  /**
+   * Seed an empty board (see the module note). One COUNT query decides
+   * emptiness; the transaction's sentinel condition decides the race. Returns
+   * false — writing nothing — when the board has entries or another task
+   * seeded it first.
+   */
+  async putIfBoardEmpty(run: StoredRun): Promise<boolean> {
+    const pk = KEY.lbPk(run.mode, run.board);
+    const entries = await this.count('pk = :pk AND sk < :end', { ':pk': pk, ':end': SEED_SK });
+    if (entries > 0) return false;
+    const items: Item[] = [
+      {
+        Put: {
+          TableName: this.table,
+          Item: { pk, sk: SEED_SK, runId: run.runId, playerId: run.playerId, createdAt: run.createdAt },
+          ConditionExpression: 'attribute_not_exists(pk)',
+        },
+      },
+      { Put: { TableName: this.table, Item: { pk: KEY.runPk(run.runId), sk: KEY.RUN_SK, ...projectRun(run, true) } } },
+      { Put: { TableName: this.table, Item: { pk, sk: KEY.lbSk(run.score, run.shards, run.runId), ...projectRun(run, false) } } },
+      {
+        Put: {
+          TableName: this.table,
+          Item: { pk: KEY.playerPk(run.playerId), sk: KEY.bestSk(run.mode, run.board), ...projectRun(run, false) },
+          ConditionExpression: 'attribute_not_exists(runId)',
+        },
+      },
+    ];
+    try {
+      await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+      return true;
+    } catch (err) {
+      if (isSaveConflict(err)) return false;
+      throw err;
+    }
   }
 
   /** Select COUNT query, following pagination (COUNT pages are bounded by scanned size, not item count). */

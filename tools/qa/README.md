@@ -127,6 +127,16 @@ highlight exists.
 
 `npm run qa:readability` (`BASE_URL` env) loads `?shot=` scenes and asserts pixel-level readability: the updraft column centre is at least 25/255 brighter than its background, spike tips keep a >= 3:1 contrast against the crust, and an off-screen goal produces a beacon pixel in the biome accent near the screen edge.
 
+## Grid overlay QA
+
+`npm run qa:grid` (`BASE_URL` env, default `http://127.0.0.1:8099`; `ZONE=t2` for
+another zone) opens `?shot=<zone>&grid=1&frames=60`, asserts that the harness
+stamped `grid: true` with `gridStats` (lines, labels, spawns, checkpoint
+segments) and no error, then reads the canvas back: columns and rows dominated
+by the overlay's yellow (`#FFE600`) must repeat at one tile's spacing, at least
+six of each. Screenshot: `tools/qa/out/grid-<zone>.png`. The overlay is drawn by
+`src/client/render/debug.ts` only when the flag is present.
+
 ## Telemetry step
 
 The smoke starts t1, quits, and asserts that a `POST /api/events` batch carried `zone_start` and `quit` (and a forced `js_error`), with no player id, name or IP in any batch.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_PIT_TILES, SHAFT_WIDTH_TILES } from '../../src/sim/legend.js';
-import { assertValid, census, room, validate, type ZoneMeta } from '../../levels/dsl.js';
+import { assertValid, census, dumpAt, room, validate, type ZoneMeta } from '../../levels/dsl.js';
 import type { LevelDef } from '../../src/sim/types.js';
 
 const META: ZoneMeta = { id: 'test', name: '테스트', en: 'TEST', biome: 'tidepool', par: 10, seed: 1, hint: '힌트' };
@@ -240,5 +240,88 @@ describe('validate', () => {
     const noG = room(40, 14).ground(0, 39, 10).ent('P', 2, 9).def({ ...META, hint: 'Space 점프' });
     expect(validate(noG).join('\n')).toMatch(/exactly one G[\s\S]*hint names a raw key|hint names a raw key[\s\S]*exactly one G/);
     expect(() => assertValid(flatRoom().def({ ...META, hint: '← →' }))).toThrow(/hint names a raw key/);
+  });
+});
+
+describe('validate error dumps (P2-7)', () => {
+  it('an unknown character error carries an ASCII excerpt of the rows around the cell, a column ruler and the (x, y) coordinate', () => {
+    const d = flatRoom().def(META);
+    d.rows[6] = d.rows[6].slice(0, 23) + 'Q' + d.rows[6].slice(24);
+    const errs = validate(d);
+    expect(errs).toHaveLength(1);
+    const msg = errs[0];
+    expect(msg).toMatch(/unknown char 'Q' at \(23,6\)/);
+    expect(msg).toContain('(23, 6)');
+    // rows y-3..y+3 are listed with their index, and the offending row is among them
+    for (let y = 3; y <= 9; y++) expect(msg).toContain(`y=${y} `);
+    expect(msg).not.toContain('y=2 ');
+    expect(msg).not.toContain('y=10 ');
+    expect(msg).toContain(d.rows[6].slice(11, 36));      // ±12 columns around x=23
+    // a caret marks the cell under its row, and the ruler shows the tens / units digits of the columns
+    const lines = msg.split('\n');
+    const rowLine = lines.findIndex((l) => l.startsWith('y=6 '));
+    expect(rowLine).toBeGreaterThan(0);
+    expect(lines[rowLine + 1]).toMatch(/^\s+\^ \(23, 6\)$/);
+    expect(lines[rowLine + 1].indexOf('^')).toBe(lines[rowLine].indexOf('Q'));
+    // line 0 is the error, line 1 the excerpt header, then the tens / units ruler rows
+    expect(lines[1]).toMatch(/^cell \(23, 6\) — rows 3\.\.9, columns 11\.\.35:$/);
+    expect(lines[2]).toMatch(/2 {9}3/);                   // tens row: 2 at column 20, 3 at 30
+    expect(lines[3]).toContain('1234567890123456789012345');
+  });
+
+  it('every located error (floating spawn, sealed shard, wide pit, narrow shaft, ragged row) ends with a cell dump', () => {
+    const floating = room(40, 14).ground(0, 39, 10).ent('P', 2, 7).ent('G', 36, 9).def(META);
+    expect(validate(floating)[0]).toMatch(/not standing on rock\ncell \(2, 7\)/);
+    const sealed = hollowBox(flatRoom()).set(23, 6, 'o').def(META);
+    expect(validate(sealed)[0]).toMatch(/not reachable from P\ncell \(23, 6\)/);
+    const pit = room(60, 14).ground(0, 19, 10).ground(21 + MAX_PIT_TILES, 59, 10).ent('P', 2, 9).ent('G', 56, 9).def(META);
+    expect(validate(pit)[0]).toMatch(/bottomless pit 8 wide at x=20..27 \(max 7\)\ncell \(20, 13\)/);
+    const narrow = room(40, 16).ground(0, 39, 14).wall(10, 4, 11, 2).wall(14, 4, 11, 2).ent('P', 2, 13).ent('G', 36, 13).def(META);
+    expect(validate(narrow)[0]).toMatch(/shaft 2 wide between x=11 and x=14[^\n]*\ncell \(12, 4\)/);
+    const ragged = flatRoom().def(META);
+    ragged.rows[3] = ragged.rows[3] + '.';
+    expect(validate(ragged)[0]).toMatch(/row 3 has width 41, expected 40\ncell \(39, 3\)/);
+    // the count errors have no cell, so they carry no dump; a duplicate is located at the extra spawn
+    const noG = room(40, 14).ground(0, 39, 10).ent('P', 2, 9).def(META);
+    expect(validate(noG)[0]).toBe('test: expected exactly one G, found 0');
+    expect(validate(flatRoom().ent('G', 30, 9).def(META))[0]).toMatch(/found 2\ncell \(36, 9\)/);   // the second G in scan order
+  });
+
+  it('dumpAt clips at the map edges and keeps the caret under the cell', () => {
+    const rows = ['abcdef', 'ghijkl', 'mnopqr'];
+    const d = dumpAt(rows, 0, 0);
+    expect(d).toContain('cell (0, 0) — rows 0..2, columns 0..5:');
+    const lines = d.split('\n');
+    expect(lines[3]).toMatch(/^y=0 abcdef$/);
+    expect(lines[4].indexOf('^')).toBe(lines[3].indexOf('a'));
+    expect(lines).toHaveLength(7);   // header, 2 ruler rows, 3 rows, 1 caret
+  });
+});
+
+describe('Room marks (P2-7)', () => {
+  it('mark / at round-trip and return a copy the caller may mutate', () => {
+    const m = room(30, 12).mark('ledge', 12, 5).mark('door', 20, 9);
+    expect(m.at('ledge')).toEqual({ x: 12, y: 5 });
+    const a = m.at('door');
+    a.x += 100;
+    expect(m.at('door')).toEqual({ x: 20, y: 9 });
+    expect(m.marks()).toEqual({ ledge: { x: 12, y: 5 }, door: { x: 20, y: 9 } });
+    // a mark can anchor primitives; re-marking moves it
+    const { x, y } = m.at('ledge');
+    m.plat(x, x + 3, y).ent('o', x + 1, y - 1).mark('ledge', 13, 5);
+    expect(m.rows()[5].slice(12, 16)).toBe('####');
+    expect(m.rows()[4][13]).toBe('o');
+    expect(m.at('ledge')).toEqual({ x: 13, y: 5 });
+  });
+
+  it('refuses unknown names and positions outside the room; marks never reach the LevelDef', () => {
+    const m = room(30, 12).mark('a', 1, 1);
+    expect(() => m.at('b')).toThrow(/no such mark \(known: a\)/);
+    expect(() => m.mark('x', 30, 0)).toThrow(/outside the 30x12 room/);
+    expect(() => m.mark('x', 1.5, 0)).toThrow(/non-integer/);
+    expect(() => m.mark('', 0, 0)).toThrow(/empty name/);
+    const d = m.ground(0, 29, 10).ent('P', 2, 9).ent('G', 27, 9).def(META);
+    expect(Object.keys(d)).not.toContain('marks');
+    expect(validate(d)).toEqual([]);
   });
 });
