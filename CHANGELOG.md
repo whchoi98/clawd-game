@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-06
+
+배포: https://clawd-game.whchoi.net/ (CloudFront E38DW91AO2DWTB, ECS 롤아웃 완료, 라이브 QA 통과 — 배포 점검 13/13, 스모크 15/15, 모바일 40/40, 기록 제출 E2E).
+
 ### Added (Phase 3 C)
 - P3-4 절차적 결과 공유 카드(1200×630 캔버스 · Web Share 파일/링크 · 클립보드 폴백, `src/client/share/card.ts`), `og:`/`twitter:` 메타와 `public/og/og.png`, 매니페스트 `id`/`description`/`categories`/`shortcuts`(`?go=daily|endless`)/`screenshots`, 스토리 클리어 결과 화면의 설치 카드(3회 거절 시 숨김, `Progress.installCardDismissed`), `tools/icons.mjs --social`.
 
