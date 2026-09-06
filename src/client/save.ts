@@ -105,6 +105,56 @@ export function echoMasks(rec: EchoRecord | undefined): string | undefined {
   return rec.sim === SIM_VERSION ? rec.masks : undefined;
 }
 
+// ---------------------------------------------------------------- world echo mode (P2-4)
+/**
+ * Which board entry runs as the 세계 메아리: the leader ('top') or the entry
+ * ranked just above the player's own ('rival', the default). The Settings
+ * contract does not name the field yet, so it lives on the object as an extra
+ * property and is read and written through these helpers only.
+ */
+export type EchoWorldMode = 'top' | 'rival';
+export const ECHO_WORLD_MODES: readonly EchoWorldMode[] = ['top', 'rival'];
+export const DEFAULT_ECHO_WORLD_MODE: EchoWorldMode = 'rival';
+export interface SettingsExtra { echoWorldMode?: EchoWorldMode }
+
+/** The settings' world echo mode, defaulting to 'rival' for a save that predates the field. */
+export function echoWorldMode(s: Settings): EchoWorldMode {
+  const v = (s as Settings & SettingsExtra).echoWorldMode;
+  return v === 'top' || v === 'rival' ? v : DEFAULT_ECHO_WORLD_MODE;
+}
+
+export function setEchoWorldMode(s: Settings, mode: EchoWorldMode): void {
+  (s as Settings & SettingsExtra).echoWorldMode = mode;
+}
+
+// ---------------------------------------------------------------- segment bests (P2-4)
+/**
+ * Best time (ticks) per checkpoint segment of a story zone on this install:
+ * index 0 = start → first checkpoint, the last index = last checkpoint → goal.
+ * 0 = no record yet. The LevelRecord contract does not name the field, so it
+ * is an extra property handled through these helpers and `repairLevelRecord`.
+ */
+export interface LevelRecordExtra { segBest?: number[] }
+
+export function segmentBests(rec: LevelRecord): readonly number[] {
+  const v = (rec as LevelRecord & LevelRecordExtra).segBest;
+  return Array.isArray(v) ? v : [];
+}
+
+/** Record `ticks` for segment `idx` when it beats the stored best; returns true when it did. */
+export function recordSegmentBest(rec: LevelRecord, idx: number, ticks: number): boolean {
+  if (!Number.isInteger(idx) || idx < 0 || idx > 64 || !Number.isFinite(ticks) || ticks <= 0) return false;
+  const r = rec as LevelRecord & LevelRecordExtra;
+  const arr = Array.isArray(r.segBest) ? r.segBest : [];
+  const t = Math.floor(ticks);
+  const prev = arr[idx] ?? 0;
+  if (prev > 0 && prev <= t) return false;
+  while (arr.length <= idx) arr.push(0);
+  arr[idx] = t;
+  r.segBest = arr;
+  return true;
+}
+
 // ---------------------------------------------------------------- retention (anonymous)
 export type DaysBucket = '0' | '1' | '2-6' | '7+';
 
@@ -165,7 +215,7 @@ const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const NAME_RE = /^[^\p{C}<>&"'`]+$/u;
 
 export function defaultSettings(binds: Binds = DEFAULT_BINDS): Settings {
-  return {
+  const s: Settings & SettingsExtra = {
     v: 1,
     master: 0.8, music: 0.55, sfx: 0.85,
     shake: 1,
@@ -177,8 +227,10 @@ export function defaultSettings(binds: Binds = DEFAULT_BINDS): Settings {
     assist: false,
     invincible: false,
     echoSelf: true, echoWorld: true,
+    echoWorldMode: DEFAULT_ECHO_WORLD_MODE,
     binds: cloneBinds(binds),
   };
+  return s;
 }
 
 export function defaultProgress(playerId: string, name = DEFAULT_NAME): Progress {
@@ -278,6 +330,8 @@ export function repairSettings(raw: unknown, defaults: Settings): Settings {
   s.invincible = bool(s.invincible, false);
   s.echoSelf = bool(s.echoSelf, defaults.echoSelf);
   s.echoWorld = bool(s.echoWorld, defaults.echoWorld);
+  // 세계 메아리 = 1위 / 라이벌: anything but the two known modes reads as the default.
+  setEchoWorldMode(s, echoWorldMode(s));
   if (!QUALITIES.has(s.quality as string)) s.quality = 'auto';
   if (typeof s.skin !== 'string' || !s.skin) s.skin = defaults.skin;
   s.binds = repairBinds(isObj(raw) ? raw.binds : undefined, defaults.binds);
@@ -299,6 +353,11 @@ function repairLevelRecord(raw: unknown): LevelRecord {
   // Stuck-detector input: deaths in this zone on this install (absent until the first one).
   const sd = int(r.sessionDeaths);
   if (sd > 0) r.sessionDeaths = sd; else delete r.sessionDeaths;
+  // Segment bests (P2-4): whole ticks per checkpoint segment, 0 = none; anything else is dropped.
+  const seg = (r as LevelRecord & LevelRecordExtra).segBest as unknown;
+  if (Array.isArray(seg) && seg.length > 0 && seg.length <= 65 && seg.some((v) => int(v) > 0)) {
+    (r as LevelRecord & LevelRecordExtra).segBest = seg.map((v) => int(v));
+  } else delete (r as LevelRecord & LevelRecordExtra).segBest;
   return r;
 }
 

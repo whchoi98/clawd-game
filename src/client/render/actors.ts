@@ -1105,3 +1105,41 @@ export function drawGhost(stage: Stage, ghost: GhostView, vis: PlayerVisual): vo
   }
   ctx.restore();
 }
+
+// ============================================================ death marks (P2-4)
+/** A death position in world units (the shell keeps the list; see Scenes.markDeath). */
+export interface DeathMarkView { x: number; y: number }
+/** Soft danger pink, used by nothing else in a frame so a test can count the marks by stroke colour. */
+export const DEATH_MARK_COLOR = '#FFA3B1';
+/** Half-size of the X in world units. */
+export const DEATH_MARK_R = 4.5;
+
+/**
+ * Small X marks where the player died earlier in this zone session, oldest
+ * first and dimmest, the newest breathing a little. Drawn in world space
+ * behind the echoes and the player, culled off screen, never glowing.
+ */
+export function drawDeathMarks(stage: Stage, marks: readonly DeathMarkView[], t: number): void {
+  if (marks.length === 0) return;
+  const ctx = stage.ctx;
+  const r = DEATH_MARK_R;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < marks.length; i++) {
+    const m = marks[i];
+    if (!stage.visible(m.x - r - 2, m.y - r - 2, r * 2 + 4, r * 2 + 4, 8)) continue;
+    const newest = i === marks.length - 1;
+    const fade = 0.32 + 0.4 * ((i + 1) / marks.length);
+    ctx.globalAlpha = clamp(fade + (newest ? 0.12 * (0.5 + 0.5 * Math.sin(t * 3.2)) : 0), 0, 1);
+    // dark backing disc so the mark reads over bright terrain
+    ctx.fillStyle = alpha('#07060B', 0.55);
+    ctx.beginPath(); ctx.arc(m.x, m.y, r + 2.2, 0, TAU); ctx.fill();
+    ctx.strokeStyle = DEATH_MARK_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(m.x - r, m.y - r); ctx.lineTo(m.x + r, m.y + r);
+    ctx.moveTo(m.x + r, m.y - r); ctx.lineTo(m.x - r, m.y + r);
+    ctx.stroke();
+  }
+  ctx.restore();
+}

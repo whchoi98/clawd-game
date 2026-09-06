@@ -24,7 +24,7 @@ import { Sky } from './sky.js';
 import { Terrain } from './tiles.js';
 import { Particles } from './particles.js';
 import { SKINS, drawClawd, drawClawdPortrait, skinById, type Skin } from './clawd.js';
-import { Actors, PlayerVisual, drawGhost } from './actors.js';
+import { Actors, PlayerVisual, drawDeathMarks, drawGhost, type DeathMarkView } from './actors.js';
 
 /**
  * The slice of `Sim` the renderer reads. Structural, so tests can drive the
@@ -64,6 +64,8 @@ export class Renderer implements RendererPort {
   private skinId = 'clawd';
   private readonly playerVis = new PlayerVisual();
   private readonly ghostVis: PlayerVisual[] = [];
+  /** Death X marks of the current zone session, as the shell last set them (render only). */
+  private deathMarks: readonly DeathMarkView[] = [];
 
   // title vista
   private titleBiome: BiomeId | null = null;
@@ -116,6 +118,13 @@ export class Renderer implements RendererPort {
 
   clearParticles(): void { this.particles.clear(); }
 
+  /**
+   * Where the player died earlier in this zone session (world units), drawn as
+   * small X marks under the echoes. The shell owns the list and passes it on
+   * every change; a respawn or a restart never clears it here.
+   */
+  setDeathMarks(marks: readonly DeathMarkView[]): void { this.deathMarks = marks; }
+
   private skin(): Skin { return skinById(this.skinId); }
 
   // ------------------------------------------------------------ port: draw
@@ -148,6 +157,7 @@ export class Renderer implements RendererPort {
     this.actors.drawEntities(state);
     this.actors.drawFoes(state, this.t);
     this.actors.drawBolts(state);
+    drawDeathMarks(st, this.deathMarks, this.t);
 
     for (let i = 0; i < ghosts.length; i++) drawGhost(st, ghosts[i], this.ghostVis[i]);
 

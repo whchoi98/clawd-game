@@ -161,6 +161,8 @@
       </div>
       <div class="hud__right">
         <div class="hud__timer" id="hud-timer">0:00.00</div>
+        <!-- Checkpoint split against the echo: +0.84s (behind) / −1.20s (ahead) / — (the echo is not there yet); 1.5 s. -->
+        <div class="hud__split" id="hud-split" role="status" hidden></div>
         <div class="hud__level" id="hud-level">—</div>
         <div class="hud__height" id="hud-height" hidden><span id="hud-height-n">0</span><em>높이</em></div>
       </div>
@@ -187,6 +189,8 @@
       <div class="modal__kicker">PAUSED</div>
       <h2>일시정지</h2>
       <div class="modal__stats" id="pause-stats"></div>
+      <!-- Per-checkpoint-segment rows: deaths this session and the install's best segment time (src/client/ui/ui.ts fillPause). -->
+      <div class="modal__segs" id="pause-segs" role="list" aria-label="구간 기록"></div>
       <nav class="menu menu--compact">
         <button class="menu__item" data-act="resume">계속하기</button>
         <button class="menu__item" data-act="restart">구역 재시작</button>
@@ -204,6 +208,8 @@
       <h2 id="res-title">구역 돌파</h2>
       <div class="res__rows" id="res-rows"></div>
       <div class="res__stars" id="res-stars" role="img" aria-label="별점"></div>
+      <!-- "라이벌보다 0.62s 빠름 / 느림" — only when a world echo (라이벌 / 1위) was raced (ShellUI.setVersus). -->
+      <div class="res__vs" id="res-vs-world" role="status" hidden></div>
       <!-- "다음 구역 해금: <이름>" — only when this clear opened a new zone (ResultView.unlocked). -->
       <div class="res__unlock" id="res-unlock" role="status" hidden></div>
       <div class="submit" id="res-submit" role="status" hidden></div>

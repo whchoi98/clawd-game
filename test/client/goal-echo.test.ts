@@ -189,7 +189,8 @@ describe('Scenes.loadEchoes with the goal echo', () => {
     ui.emit({ type: 'start', levelId: T1.id });
     await scenes.settle();
     expect(calls.ghost).toBe(1);
-    expect(scenes.run!.echoes.map((e) => e.label)).toEqual(['라이벌']);
+    // the only entry is the median → it runs as the 라이벌 (P2-4 label: kind · name)
+    expect(scenes.run!.echoes.map((e) => e.label)).toEqual(['라이벌 · 라이벌']);
   });
 
   it('offline (API error) → the goal echo stands in; with 세계 메아리 off nothing is added', async () => {

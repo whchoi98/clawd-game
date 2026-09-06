@@ -25,7 +25,8 @@ import { LEVELS as REAL_LEVELS } from '../../src/sim/levels.generated.js';
 import { PHONE_MAX_SHORT_SIDE, isPhoneViewport, wantsRotatePrompt } from '../../src/client/ui/touch.js';
 import { renderLeaderboard } from '../../src/client/ui/leaderboard.js';
 import { findBindConflict } from '../../src/client/ui/settings.js';
-import { LIVE_INTERVAL, fmtTime } from '../../src/client/ui/hud.js';
+import { LIVE_INTERVAL, fmtTicks, fmtTime } from '../../src/client/ui/hud.js';
+import { echoWorldMode, setEchoWorldMode } from '../../src/client/save.js';
 import { validateName } from '../../src/client/ui/screens.js';
 import { Input } from '../../src/client/input/index.js';
 import { FONTS_HREF, loadFonts } from '../../src/client/fonts.js';
@@ -1565,5 +1566,121 @@ describe('UI assist offer (P2-6)', () => {
     ui.show('play');
     expect(ui.screen).toBe('play');
     expect(active('assist')).toBe(false);
+  });
+});
+
+describe('UI rival echo surfaces (P2-4)', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  const plainView = (): ResultView => ({ summary: makeSummary(), levelName: '첫 물결', personalBest: false, stars: 1, submit: { state: 'idle' } });
+
+  it('#res-vs-world reads 라이벌보다 0.62s 빠름 / 1위보다 1.20s 느림 — two decimals, a sign class — and hides without a rival', () => {
+    const { ui } = setup();
+    ui.show('play');
+    ui.setVersus({ label: '라이벌', deltaTicks: -74 });
+    ui.showResult(plainView());
+    const row = $('#res-vs-world');
+    expect(row.hidden).toBe(false);
+    expect(row.textContent).toBe('라이벌보다 0.62s 빠름');
+    expect(row.querySelector('b')!.textContent).toBe('0.62s');
+    expect(row.dataset.sign).toBe('-1');
+    expect(row.classList.contains('is-ahead')).toBe(true);
+    ui.setVersus({ label: '1위', deltaTicks: 144 });
+    expect(row.textContent).toBe('1위보다 1.20s 느림');
+    expect(row.dataset.sign).toBe('1');
+    expect(row.classList.contains('is-behind')).toBe(true);
+    expect(row.classList.contains('is-ahead')).toBe(false);
+    // 1 tick rounds to 0.01 s, still two decimals
+    ui.setVersus({ label: '라이벌', deltaTicks: 1 });
+    expect(row.textContent).toBe('라이벌보다 0.01s 느림');
+    ui.setVersus({ label: '라이벌', deltaTicks: 0 });
+    expect(row.textContent).toBe('라이벌과 같은 기록');
+    expect(row.dataset.sign).toBe('0');
+    ui.setVersus(null);
+    expect(row.hidden).toBe(true);
+    expect(row.textContent).toBe('');
+    // a later showResult without a versus keeps it hidden; updateResult leaves it alone
+    ui.showResult(plainView());
+    expect(row.hidden).toBe(true);
+    ui.setVersus({ label: '라이벌', deltaTicks: -74 });
+    ui.updateResult({ ...plainView(), submit: { state: 'accepted', rank: 3, total: 41 } });
+    expect(row.hidden).toBe(false);
+  });
+
+  it('split() shows the HUD chip with a sign class, hides it on null, and a fresh play screen resets it', () => {
+    const { ui } = setup();
+    ui.show('play');
+    const chip = $('#hud-split');
+    expect(chip.hidden).toBe(true);
+    ui.split('+0.84s', 1);
+    expect(chip.hidden).toBe(false);
+    expect(chip.textContent).toBe('+0.84s');
+    expect(chip.classList.contains('is-behind')).toBe(true);
+    expect(chip.dataset.sign).toBe('1');
+    ui.split('−1.20s', -1);
+    expect(chip.classList.contains('is-ahead')).toBe(true);
+    expect(chip.classList.contains('is-behind')).toBe(false);
+    ui.split('—', 0);
+    expect(chip.classList.contains('is-even')).toBe(true);
+    expect(chip.textContent).toBe('—');
+    ui.split(null);
+    expect(chip.hidden).toBe(true);
+    expect(chip.textContent).toBe('');
+    ui.split('+0.10s', 1);
+    ui.show('title');
+    ui.show('play');
+    expect(chip.hidden).toBe(true);
+  });
+
+  it('segments() fills the pause screen with 구간 rows — deaths, the best time or —, the current one marked — and repaints while paused', () => {
+    const { ui } = setup();
+    ui.show('play');
+    ui.segments([
+      { idx: 0, deaths: 3, best: 1500, current: false },
+      { idx: 1, deaths: 0, best: null, current: true },
+    ]);
+    ui.show('pause');
+    const rows = [...document.querySelectorAll<HTMLElement>('#pause-segs .segrow')];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain('구간 1');
+    expect(rows[0].textContent).toContain('쓰러짐 3');
+    expect(rows[0].textContent).toContain(fmtTicks(1500));
+    expect(rows[0].classList.contains('is-current')).toBe(false);
+    expect(rows[0].querySelector('em')!.classList.contains('is-hot')).toBe(true);
+    expect(rows[1].textContent).toContain('구간 2');
+    expect(rows[1].textContent).toContain('—');
+    expect(rows[1].classList.contains('is-current')).toBe(true);
+    expect(rows[1].querySelector('em')!.classList.contains('is-hot')).toBe(false);
+    // rows pushed while the pause is up repaint it
+    ui.segments([{ idx: 0, deaths: 4, best: 1500, current: true }]);
+    expect(document.querySelectorAll('#pause-segs .segrow')).toHaveLength(1);
+    expect($('#pause-segs').textContent).toContain('쓰러짐 4');
+    ui.segments(null);
+    ui.show('play');
+    ui.show('pause');
+    expect(document.querySelectorAll('#pause-segs .segrow')).toHaveLength(0);
+    // the classic stats are still there
+    expect($('#pause-stats').textContent).toContain('경과');
+  });
+
+  it('settings offer 세계 메아리 = 라이벌 / 1위 (default 라이벌); a click writes echoWorldMode and emits settingsChanged; sync reads it back', () => {
+    const { ui, settings, actions } = setup();
+    const seg = document.querySelector<HTMLElement>('#pane-av .seg[aria-label="세계 메아리"]');
+    expect(seg).not.toBeNull();
+    const rival = seg!.querySelector<HTMLButtonElement>('button[data-value="rival"]')!;
+    const top = seg!.querySelector<HTMLButtonElement>('button[data-value="top"]')!;
+    expect(rival.textContent).toBe('라이벌');
+    expect(top.textContent).toBe('1위');
+    expect(rival.getAttribute('aria-checked')).toBe('true');
+    expect(top.getAttribute('aria-checked')).toBe('false');
+    top.click();
+    expect(echoWorldMode(settings)).toBe('top');
+    expect(top.getAttribute('aria-checked')).toBe('true');
+    expect(rival.getAttribute('aria-checked')).toBe('false');
+    expect(actions.at(-1)).toEqual({ type: 'settingsChanged' });
+    setEchoWorldMode(settings, 'rival');
+    ui.applySettings(settings);
+    expect(rival.getAttribute('aria-checked')).toBe('true');
+    expect(top.getAttribute('aria-checked')).toBe('false');
   });
 });

@@ -66,6 +66,7 @@ export class Hud {
   private readonly height: HTMLElement | null;
   private readonly heightN: HTMLElement | null;
   private readonly dash: HTMLElement | null;
+  private readonly splitEl: HTMLElement | null;
   private readonly hintEl: HTMLElement | null;
   private readonly toastEl: HTMLElement | null;
   private readonly bannerEl: HTMLElement | null;
@@ -90,6 +91,7 @@ export class Hud {
     this.height = q('hud-height');
     this.heightN = q('hud-height-n');
     this.dash = q('hud-dash');
+    this.splitEl = q('hud-split');
     this.hintEl = q('hud-hint');
     this.toastEl = q('hud-toast');
     this.bannerEl = q('hud-banner');
@@ -101,8 +103,34 @@ export class Hud {
     this.last = {};
     this.livePending = null;
     this.hint(null);
+    this.split(null);
     this.setLevelHidden(false);
     if (this.dash) this.dash.classList.remove('show');
+  }
+
+  /**
+   * Checkpoint split chip under the timer: '+0.84s' (behind, red), '−1.20s'
+   * (ahead, teal), '±0.00s' / '—' (even / the echo is not there yet, muted).
+   * The shell owns its lifetime and hides it with null.
+   */
+  split(text: string | null, sign: -1 | 0 | 1 = 0): void {
+    const el = this.splitEl;
+    if (!el) return;
+    if (text === null || text === '') {
+      el.hidden = true;
+      el.textContent = '';
+      el.classList.remove('is-ahead', 'is-behind', 'is-even', 'bump');
+      delete el.dataset.sign;
+      return;
+    }
+    el.textContent = text;
+    el.classList.toggle('is-ahead', sign < 0);
+    el.classList.toggle('is-behind', sign > 0);
+    el.classList.toggle('is-even', sign === 0);
+    el.dataset.sign = String(sign);
+    el.hidden = false;
+    replay(el, 'bump');
+    this.announce(`구간 ${text}`);
   }
 
   /** Hide the zone name chip while the goal is drawn under it (the renderer reports goalScreen). */
