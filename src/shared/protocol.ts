@@ -65,10 +65,21 @@ export const RunAccepted = z.object({
   personalBest: z.boolean(),
   summary: RunSummaryWire,
 });
+/**
+ * The complete set of reasons a run can be refused. The sim's VerifyResult.reason
+ * is a plain string (the sim cannot depend on zod); the server maps it onto this
+ * enum ('bad-base64' | 'bad-rle' → 'bad-masks'), and the UI translates every
+ * member. Adding a reason here without a translation fails the UI tests.
+ */
+export const RejectReason = z.enum([
+  'assist', 'too-long', 'not-finished', 'claim-mismatch', 'bad-level', 'bad-seed', 'stale-date',
+  'bad-masks', 'rate-limited', 'duplicate',
+]);
+export type RejectReason = z.infer<typeof RejectReason>;
+
 export const RunRejected = z.object({
   accepted: z.literal(false),
-  /** 'assist' | 'too-long' | 'not-finished' | 'claim-mismatch' | 'bad-level' | 'bad-seed' | 'stale-date' */
-  reason: z.string(),
+  reason: RejectReason,
   summary: RunSummaryWire.optional(),
 });
 export const RunResponse = z.discriminatedUnion('accepted', [RunAccepted, RunRejected]);
@@ -84,9 +95,16 @@ export const LeaderboardQuery = z.object({
 export type LeaderboardQuery = z.infer<typeof LeaderboardQuery>;
 
 export const LeaderboardEntry = z.object({
+  /** Competition rank: 1 + the number of strictly better scores (ties share a rank). */
   rank: z.number().int(),
   runId: z.string(),
-  playerId: z.string(),
+  /**
+   * Opaque, stable per player (HMAC of the player id, 12 hex chars). The raw player
+   * id is the player's only credential and is never published.
+   */
+  playerTag: z.string().regex(/^[a-f0-9]{12}$/),
+  /** True when the entry belongs to the `playerId` passed in the query. */
+  you: z.boolean(),
   name: z.string(),
   score: z.number(),
   ticks: z.number().int(),
