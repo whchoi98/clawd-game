@@ -7,9 +7,25 @@
 <meta name="color-scheme" content="dark">
 <title>CLAWD JUMP: ECHO TOWER — 메아리의 탑</title>
 <meta name="description" content="절차적으로 그려지는 정밀 플랫포머. 대시·월점프·스톰프로 메아리의 탑을 오르고, 검증된 리플레이로 세계와 기록을 겨룬다.">
+<!-- Social metadata (P3-4). Crawlers (KakaoTalk, X, Discord, Slack …) read these static tags only — never the
+     app — so every link, race links (?race=) included, previews with the same picture; per-race og images are a
+     later item. og.png is rendered by `node tools/icons.mjs --social` from the ?shot=t1 harness and committed. -->
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="CLAWD JUMP: ECHO TOWER">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:url" content="https://clawd-game.whchoi.net/">
 <meta property="og:title" content="CLAWD JUMP: ECHO TOWER — 메아리의 탑">
-<meta property="og:description" content="검증된 리플레이, 메아리 고스트, 매일 바뀌는 탑.">
+<meta property="og:description" content="절차적으로 그려지는 정밀 플랫포머. 검증된 리플레이로 세계와 기록을 겨루고, 친구의 메아리와 경주한다.">
+<meta property="og:image" content="https://clawd-game.whchoi.net/og/og.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="새벽 물가 구역을 오르는 클로드 — CLAWD JUMP: ECHO TOWER">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="CLAWD JUMP: ECHO TOWER — 메아리의 탑">
+<meta name="twitter:description" content="절차적으로 그려지는 정밀 플랫포머. 검증된 리플레이로 세계와 기록을 겨루고, 친구의 메아리와 경주한다.">
+<meta name="twitter:image" content="https://clawd-game.whchoi.net/og/og.png">
+<meta name="twitter:image:alt" content="새벽 물가 구역을 오르는 클로드 — CLAWD JUMP: ECHO TOWER">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
@@ -227,11 +243,25 @@
       <div class="res__unlock" id="res-unlock" role="status" hidden></div>
       <div class="submit" id="res-submit" role="status" hidden></div>
       <div class="lb lb--compact" id="res-lb" hidden></div>
+      <!-- Install card (P3-4): on a story clear when the browser can install — the captured prompt (설치) or iOS Safari's
+           share sheet (hint only). 나중에 counts in Progress.installCardDismissed; hidden for good after 3, or once installed. -->
+      <div class="install" id="res-install" role="group" aria-label="홈 화면에 추가" data-variant="prompt" hidden>
+        <div class="install__body">
+          <b>홈 화면에 추가</b>
+          <span id="res-install-text">홈 화면에 추가하면 오프라인에서도 바로 이어진다</span>
+        </div>
+        <div class="install__acts">
+          <button class="install__btn install__btn--ok" type="button" data-act="installCardOk">설치</button>
+          <button class="install__btn" type="button" data-act="installCardLater">나중에</button>
+        </div>
+      </div>
       <nav class="menu menu--compact">
         <button class="menu__item menu__item--primary" data-act="next">다음 구역</button>
         <button class="menu__item" data-act="retry">다시 도전</button>
         <!-- Shown once the submission is accepted (P3-3): a ?race=<runId> link to this echo. -->
         <button class="menu__item menu__item--share" data-act="shareEcho" hidden>메아리 링크 공유<small>친구가 내 메아리와 경주한다</small></button>
+        <!-- Always available (P3-4): the drawn result card as a PNG (or the link when the platform takes no files). -->
+        <button class="menu__item menu__item--share" data-act="shareCard">공유<small>결과 카드 이미지 · 링크</small></button>
         <button class="menu__item" data-act="quit">나가기</button>
       </nav>
     </div>
@@ -254,6 +284,7 @@
         <button class="menu__item menu__item--primary" data-act="retry">다시 도전</button>
         <!-- A daily climb the server accepted can be raced too (P3-3). -->
         <button class="menu__item menu__item--share" data-act="shareEcho" hidden>메아리 링크 공유<small>친구가 내 메아리와 경주한다</small></button>
+        <button class="menu__item menu__item--share" data-act="shareCard">공유<small>결과 카드 이미지 · 링크</small></button>
         <button class="menu__item" data-act="quit">나가기</button>
       </nav>
     </div>

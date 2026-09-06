@@ -18,6 +18,7 @@ import type { LeaderboardResponse } from '../../src/shared/protocol.js';
 import {
   GAMEPAD_HIDE_S, HUD_TOPRIGHT_H, HUD_TOPRIGHT_W, IOS_HINT_DISMISSED_KEY, MUTE_KR, NAG_DISMISSED_KEY, REASON_KR, RESTART_HOLD_S, UI, reasonKr,
 } from '../../src/client/ui/ui.js';
+import { INSTALL_CARD_KR } from '../../src/client/ui/ui.js';
 import { LAYOUT_VARS, MIN_HIT_PX, MIN_LABEL_PX, touchHitPx, type TouchElementKind } from '../../src/client/ui/touch.js';
 import { TOUCH_KR, TOUCH_SLIDERS } from '../../src/client/ui/settings.js';
 import { DEFAULT_TOUCH } from '../../src/client/save.js';
@@ -2064,5 +2065,105 @@ describe('UI settings · 진동 (P3-8) and 다른 기기로 옮기기 (P3-5)', (
     // happy-dom has no 2D context: the painter reports it and does not throw
     const cv = document.createElement('canvas');
     expect(drawCodeCanvas(cv, 'ABCDEFGH')).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------------ P3-4 share card button · install card
+describe('UI result screen · 공유 card button and the install card (P3-4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    try { localStorage.clear(); } catch { /* no storage */ }
+  });
+
+  function view(): ResultView {
+    return { summary: makeSummary(), levelName: '첫 물결', personalBest: true, stars: 2, submit: { state: 'idle' }, nextLevelId: 't2' };
+  }
+
+  it('공유 sits on both modals whatever the submission state and emits shareCard', () => {
+    const { ui, actions, input } = setup();
+    ui.showResult(view());
+    const btn = $('#scr-result [data-act="shareCard"]');
+    expect(btn.hidden).toBe(false);
+    expect(btn.textContent).toContain('공유');
+    btn.click();
+    expect(actions.at(-1)).toEqual({ type: 'shareCard' });
+    // reachable with the menu cursor
+    let landed = false;
+    for (let i = 0; i < 6 && !landed; i++) {
+      input.queue.push('down');
+      ui.frame(1 / 60, input);
+      landed = btn.classList.contains('is-cursor');
+    }
+    expect(landed).toBe(true);
+    ui.updateResult({ ...view(), submit: { state: 'rejected', reason: 'assist' } });
+    expect(btn.hidden).toBe(false);
+    ui.showOver(makeSummary({ cleared: false, height: 40 }), 10);
+    const over = $('#scr-over [data-act="shareCard"]');
+    expect(over.hidden).toBe(false);
+    over.click();
+    expect(actions.at(-1)).toEqual({ type: 'shareCard' });
+  });
+
+  it('the install card shows only when the shell allows it AND the browser can install; 설치 reuses the prompt, 나중에 emits installCardDismiss', () => {
+    mountTemplate();
+    let prompts = 0;
+    const input = makeInput();
+    const actions: UIAction[] = [];
+    const ui = new UI({ document, input, defaultBinds: BINDS, onInstall: () => { prompts++; } });
+    ui.on((a) => actions.push(a));
+    ui.applySettings(makeSettings());
+    const card = $('#res-install');
+    // allowed, but nothing to install with: hidden
+    ui.installCard(true);
+    ui.showResult(view());
+    expect(card.hidden).toBe(true);
+    // the prompt arrives: the card appears with 설치 / 나중에 and joins the cursor path
+    ui.setInstallable(true);
+    expect(card.hidden).toBe(false);
+    expect(card.dataset.variant).toBe('prompt');
+    expect($('#res-install-text').textContent).toBe(INSTALL_CARD_KR.prompt);
+    expect($('#res-install-text').textContent).toMatch(/다$/);
+    const ok = $('#res-install [data-act="installCardOk"]');
+    expect(ok.hidden).toBe(false);
+    expect(ok.textContent).toBe('설치');
+    let landed = false;
+    for (let i = 0; i < 4 && !landed; i++) {
+      input.queue.push('up');
+      ui.frame(1 / 60, input);
+      landed = ok.classList.contains('is-cursor');
+    }
+    expect(landed).toBe(true);
+    ok.click();
+    expect(prompts).toBe(1);
+    expect(card.hidden).toBe(true);
+    expect(actions.some((a) => a.type === 'installCardDismiss')).toBe(false);
+    // the next result: 나중에
+    ui.installCard(true);
+    ui.showResult(view());
+    expect(card.hidden).toBe(false);
+    $('#res-install [data-act="installCardLater"]').click();
+    expect(actions.at(-1)).toEqual({ type: 'installCardDismiss' });
+    expect(card.hidden).toBe(true);
+    // the shell withdrew it (three 나중에): hidden even with a prompt at hand
+    ui.installCard(false);
+    ui.showResult(view());
+    expect(card.hidden).toBe(true);
+    // the prompt was consumed (installed): no card without a way to install
+    ui.installCard(true);
+    ui.setInstallable(false);
+    expect(card.hidden).toBe(true);
+    // iOS Safari: the share-sheet hint variant, no 설치 button
+    ui.setIosHint(true);
+    expect(card.hidden).toBe(false);
+    expect(card.dataset.variant).toBe('ios');
+    expect($('#res-install-text').textContent).toBe(INSTALL_CARD_KR.ios);
+    expect($('#res-install [data-act="installCardOk"]').hidden).toBe(true);
+    $('#res-install [data-act="installCardLater"]').click();
+    expect(actions.at(-1)).toEqual({ type: 'installCardDismiss' });
+    expect(card.hidden).toBe(true);
+    // the game-over modal never carries it
+    ui.installCard(true);
+    ui.showOver(makeSummary({ cleared: false, height: 40 }), 10);
+    expect(document.querySelector('#scr-over .install')).toBeNull();
   });
 });
