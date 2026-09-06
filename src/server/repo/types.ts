@@ -45,4 +45,10 @@ export interface Repo {
   /** Number of leaderboard items on the board with score strictly lower than `score`, and the board total. */
   rankOf(mode: Mode, board: string, score: number): Promise<{ better: number; total: number }>;
   getRun(runId: string): Promise<StoredRun | null>;
+  /**
+   * Seed a board that has no leaderboard items yet (developer par runs so a
+   * new board never looks dead). Returns true when the run was written; false
+   * when the board already had entries. Atomic where the store allows it.
+   */
+  putIfBoardEmpty?(run: StoredRun): Promise<boolean>;
 }

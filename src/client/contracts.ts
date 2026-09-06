@@ -45,12 +45,18 @@ export interface LevelRecord {
   masks?: string;
   /** SIM_VERSION the masks were recorded on; masks from another version are dropped on load. */
   sim?: number;
+  /** Deaths in this zone during the current install (stuck detector input). */
+  sessionDeaths?: number;
 }
 
 export interface Progress {
   v: 1;
   levels: Record<string, LevelRecord>;
-  endless: { bestHeight: number; bestShards: number; runs: number };
+  endless: {
+    bestHeight: number; bestShards: number; runs: number;
+    /** Replay of the best endless run (encoded masks, SIM_VERSION) and its seed — for the self echo on "같은 탑 다시". */
+    bestMasks?: string; bestSeed?: number; bestSim?: number;
+  };
   daily: Record<string, { bestTicks: number; cleared: boolean; height: number; runId?: string; masks?: string; sim?: number; seed: number }>;
   totals: { deaths: number; shards: number };
   seen: Record<string, boolean>;
@@ -207,7 +213,15 @@ export type UIAction =
   | { type: 'resetProgress' }
   | { type: 'setName'; name: string }
   | { type: 'toggleEcho'; which: 'self' | 'world'; on: boolean }
-  | { type: 'requestLeaderboard'; mode: 'story' | 'daily'; board: string };
+  | { type: 'requestLeaderboard'; mode: 'story' | 'daily'; board: string }
+  /** Game-over comeback: replay the same tower seed, or draw a new one. */
+  | { type: 'sameTower' }
+  | { type: 'newTower' }
+  /** Daily screen: play yesterday's tower (still accepted by the server). */
+  | { type: 'retryYesterday' }
+  /** Stuck-detector offer: restart the zone in assist mode, or decline (never = do not ask again for this zone). */
+  | { type: 'assistAccept' }
+  | { type: 'assistDecline'; never: boolean };
 
 export interface HudState {
   hp: number; maxHp: number;
@@ -258,7 +272,11 @@ export interface UIPort {
   showResult(view: ResultView): void;
   /** Update the submission state of the result screen in place. */
   updateResult(view: ResultView): void;
-  showOver(summary: RunSummary, bestHeight: number): void;
+  showOver(summary: RunSummary, bestHeight: number, extra?: { worldBest?: number; sameTowerAvailable?: boolean }): void;
+  /** Stuck-detector modal: "보조 모드로 이 구역을 다시 시작할까?" — answers arrive as assistAccept / assistDecline actions. */
+  offerAssist?(zoneName: string): void;
+  /** Result screen: ask for a display name inline before the first eligible submission; resolves with the chosen name (null = skipped). */
+  askNameInline?(): Promise<string | null>;
   applySettings(s: Settings): void;
   /** Virtual controls state for the input layer. */
   readonly touch: TouchState;

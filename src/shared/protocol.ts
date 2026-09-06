@@ -150,6 +150,8 @@ export const DailyResponse = z.object({
   sim: z.number().int().optional(),
   /** ISO timestamp of the next UTC midnight. */
   expiresAt: z.string(),
+  /** Yesterday's date and seed: the server still accepts submissions for it (어제의 탑 재도전). */
+  yesterday: z.object({ date: DateStr, seed: z.number().int() }).optional(),
 });
 export type DailyResponse = z.infer<typeof DailyResponse>;
 
