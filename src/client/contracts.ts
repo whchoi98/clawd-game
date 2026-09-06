@@ -54,6 +54,10 @@ export interface Progress {
   seen: Record<string, boolean>;
   lastLevel: string | null;
   player: { id: string; name: string };
+  /** First boot (ms epoch) and distinct UTC days played — the only inputs of the anonymous retention buckets. */
+  firstSeen?: number;
+  playDays?: number;
+  lastPlayDay?: string;
 }
 
 // ---------------------------------------------------------------- input
@@ -78,7 +82,9 @@ export interface InputPort {
   /**
    * Bits that went down since the previous call, even if already released. The
    * loop ORs these into the FIRST tick of the frame only, so a tap shorter than
-   * a frame still produces exactly one press edge in the sim.
+   * a frame still produces exactly one press edge in the sim. The 'restart' bind
+   * contributes IN.RETRY (a tap = checkpoint retry inside the replay; the UI
+   * turns a ≥0.6 s hold into a full zone restart).
    */
   takeLatched(): InputMask;
   /** Edge-triggered menu actions since the last call (repeat handled by the UI). */
@@ -140,6 +146,13 @@ export interface RendererPort {
   clearParticles(): void;
   /** Skins available for the settings screen: id → { name, kr }. */
   readonly skins: Record<string, { name: string; kr: string }>;
+  /**
+   * Where the goal sits on screen after the last draw (CSS px relative to the
+   * canvas), or null while no level is set. `onScreen` false means the renderer
+   * drew an edge beacon toward it; the UI hides #hud-level when the goal is
+   * under the HUD's top-right block.
+   */
+  readonly goalScreen: { x: number; y: number; onScreen: boolean } | null;
 }
 
 // ---------------------------------------------------------------- audio
@@ -171,7 +184,7 @@ export interface AudioPort {
 }
 
 // ---------------------------------------------------------------- ui
-export type Screen = 'boot' | 'title' | 'select' | 'daily' | 'settings' | 'credits' | 'play' | 'pause' | 'result' | 'over' | 'name';
+export type Screen = 'boot' | 'title' | 'select' | 'daily' | 'settings' | 'credits' | 'data' | 'play' | 'pause' | 'result' | 'over' | 'name';
 
 export type UIAction =
   | { type: 'start'; levelId: string }
@@ -219,6 +232,8 @@ export interface ResultView {
   submit: { state: 'idle' | 'pending' | 'accepted' | 'rejected' | 'offline' | 'queued'; rank?: number; total?: number; reason?: string };
   leaderboard?: LeaderboardResponse;
   nextLevelId?: string;
+  /** The zone this clear just opened (shown as "다음 구역 해금"), when any. */
+  unlocked?: { levelId: string; name: string };
 }
 
 export interface UIPort {

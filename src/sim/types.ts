@@ -10,6 +10,15 @@
 
 export const TILE = 16;
 export const TICK_HZ = 120;
+/**
+ * Bumped whenever a change alters what a mask log reproduces (physics, phase
+ * timing, level geometry that ships with the sim). Replays and leaderboard
+ * boards are keyed by it; the server refuses submissions from another version.
+ * v1 = launch · v2 = free-failure loop (fast respawn, RETRY input).
+ */
+export const SIM_VERSION = 2;
+/** Bumped when the daily / endless tower generators change their output. */
+export const GEN_VERSION = 1;
 export const DT = 1 / TICK_HZ;
 /** Hard cap on replay length accepted anywhere (10 minutes at 120 Hz). */
 export const MAX_TICKS = TICK_HZ * 60 * 10;
@@ -23,7 +32,11 @@ export const IN = {
   DOWN: 8,
   JUMP: 16,
   DASH: 32,
+  /** Press edge = instant respawn at the last checkpoint (counts as a death). In the log so replays reproduce it. */
+  RETRY: 64,
 } as const;
+/** Every meaningful mask bit; the RLE codec masks with this. */
+export const IN_ALL = 0x7f;
 export type InputMask = number;
 
 // ---------------------------------------------------------------- levels
@@ -50,6 +63,8 @@ export interface LevelDef {
   baseY?: number;
   /** Armoured walkers placed by tile coordinate. */
   spikers?: [number, number][];
+  /** Geometry revision; bump when a shipped zone's tiles change (part of the story board key). Missing = 0. */
+  rev?: number;
 }
 
 export interface Spawn {
@@ -234,7 +249,8 @@ export interface SimOptions {
 
 // ---------------------------------------------------------------- replay
 export interface Replay {
-  v: 1;
+  /** SIM_VERSION the log was recorded against. */
+  v: number;
   levelId: string;
   seed: number;
   assist: boolean;
@@ -244,7 +260,7 @@ export interface Replay {
 
 export interface VerifyResult {
   ok: boolean;
-  /** Set when !ok: 'too-long' | 'not-finished' | 'claim-mismatch' | 'bad-level' | 'assist' */
+  /** Set when !ok: 'sim-version' | 'too-long' | 'not-finished' | 'claim-mismatch' | 'bad-level' | 'assist' */
   reason?: string;
   summary: RunSummary;
 }

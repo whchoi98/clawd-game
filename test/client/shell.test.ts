@@ -73,7 +73,7 @@ interface FakeRenderer extends RendererPort {
 }
 function fakeRenderer(): FakeRenderer {
   const r: FakeRenderer = {
-    setLevelCalls: 0, draws: 0, titleDraws: 0, events: [], lastView: null, lastGhosts: [], lastFx: null, lastDt: 0,
+    setLevelCalls: 0, draws: 0, titleDraws: 0, events: [], lastView: null, lastGhosts: [], lastFx: null, lastDt: 0, goalScreen: null,
     setLevel() { r.setLevelCalls++; },
     draw(_sim, view, fx, ghosts, dt) { r.draws++; r.lastView = view; r.lastFx = fx; r.lastGhosts = ghosts; r.lastDt = dt; },
     onEvent(ev) { r.events.push(ev); },

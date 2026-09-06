@@ -40,6 +40,8 @@ export type RendererOptions = StageOptions;
 const TITLE_SEEDS: Record<BiomeId, number> = { tidepool: 3, stormspire: 12, voidreef: 21 };
 
 export class Renderer implements RendererPort {
+  /** Goal projection after the last draw; see RendererPort. Filled in by the readability pass. */
+  goalScreen: { x: number; y: number; onScreen: boolean } | null = null;
   readonly stage: Stage;
   readonly sky: Sky;
   readonly particles: Particles;

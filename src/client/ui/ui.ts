@@ -65,6 +65,7 @@ export const REASON_KR: Readonly<Record<RejectReason, string>> = {
   'bad-masks': '입력 기록이 손상됐다',
   'rate-limited': '요청이 너무 잦다. 잠시 후 다시',
   duplicate: '이미 접수된 기록이다',
+  'sim-version': '새 버전이 나왔다. 새로고침 후 다시 제출된다',
 };
 /** Transport-level reasons the API client produces (ApiError.reason) when there is no server verdict. */
 const TRANSPORT_REASON_KR: Readonly<Record<string, string>> = {

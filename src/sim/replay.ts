@@ -6,7 +6,7 @@
  * holds, so this is ~20× smaller than the raw log.
  */
 import { Sim } from './sim.js';
-import { MAX_TICKS } from './types.js';
+import { IN_ALL, MAX_TICKS, SIM_VERSION } from './types.js';
 import type { LevelDef, Replay, RunClaim, VerifyResult } from './types.js';
 
 export function rleEncode(masks: Uint8Array): Uint8Array {
@@ -16,7 +16,7 @@ export function rleEncode(masks: Uint8Array): Uint8Array {
     const m = masks[i];
     let n = 1;
     while (i + n < masks.length && masks[i + n] === m && n < 255) n++;
-    out.push(m & 0x3f, n);
+    out.push(m & IN_ALL, n);
     i += n;
   }
   return Uint8Array.from(out);
@@ -33,7 +33,7 @@ export function rleDecode(bytes: Uint8Array, maxTicks = MAX_TICKS): Uint8Array {
   const out = new Uint8Array(total);
   let p = 0;
   for (let i = 0; i < bytes.length; i += 2) {
-    const m = bytes[i] & 0x3f, n = bytes[i + 1];
+    const m = bytes[i] & IN_ALL, n = bytes[i + 1];
     out.fill(m, p, p + n);
     p += n;
   }

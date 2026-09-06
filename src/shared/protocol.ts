@@ -42,6 +42,9 @@ export const RunSubmit = z.object({
   /** daily only — must equal the server's seed for `date`. Ignored for story. */
   seed: z.number().int().min(0).max(0xffffffff).optional(),
   assist: z.boolean(),
+  /** SIM_VERSION / GEN_VERSION the client ran; a mismatch is refused before replaying (missing = 0 = legacy). */
+  sim: z.number().int().min(0).max(1000).optional(),
+  gen: z.number().int().min(0).max(1000).optional(),
   /** RLE + base64 input masks, see sim/replay.ts. */
   masks: z.string().min(1).max(MAX_MASKS_B64),
   claim: RunClaim,
@@ -73,7 +76,7 @@ export const RunAccepted = z.object({
  */
 export const RejectReason = z.enum([
   'assist', 'too-long', 'not-finished', 'claim-mismatch', 'bad-level', 'bad-seed', 'stale-date',
-  'bad-masks', 'rate-limited', 'duplicate',
+  'bad-masks', 'rate-limited', 'duplicate', 'sim-version',
 ]);
 export type RejectReason = z.infer<typeof RejectReason>;
 
@@ -142,6 +145,9 @@ export const DailyResponse = z.object({
   date: DateStr,
   seed: z.number().int(),
   levelId: z.literal('daily'),
+  /** GEN_VERSION the server will verify with; the client refuses to start a daily it cannot reproduce. */
+  gen: z.number().int().optional(),
+  sim: z.number().int().optional(),
   /** ISO timestamp of the next UTC midnight. */
   expiresAt: z.string(),
 });
@@ -152,7 +158,42 @@ export const HealthResponse = z.object({
   version: z.string(),
   uptime: z.number(),
   region: z.string().optional(),
+  simVersion: z.number().int().optional(),
+  genVersion: z.number().int().optional(),
 });
+
+// ---------------------------------------------------------------- telemetry (anonymous)
+/**
+ * Product telemetry. No player id, name or IP ever travels here; a per-boot
+ * random session id ties events of one session together and nothing more.
+ * Retention is measured from client-derived buckets (daysSinceFirstSeen).
+ */
+export const TelemetryName = z.enum([
+  'boot', 'screen', 'zone_start', 'death', 'respawn', 'clear', 'result_shown', 'retry', 'quit',
+  'daily_start', 'daily_clear', 'daily_over', 'share_click', 'race_link_open', 'submit_result',
+  'fps_sample', 'js_error', 'install_prompt', 'install_done',
+]);
+export type TelemetryName = z.infer<typeof TelemetryName>;
+
+const TelemetryValue = z.union([z.string().max(200), z.number(), z.boolean()]);
+export const TelemetryEvent = z.object({
+  t: TelemetryName,
+  /** Milliseconds since the session started. */
+  at: z.number().int().min(0).max(1e9),
+  d: z.record(z.string().max(32), TelemetryValue).optional(),
+});
+export type TelemetryEvent = z.infer<typeof TelemetryEvent>;
+
+export const MAX_EVENTS_PER_BATCH = 20;
+export const MAX_EVENT_BODY_BYTES = 4096;
+export const EventBatch = z.object({
+  /** Random per-boot session id (16 hex chars). */
+  s: z.string().regex(/^[a-f0-9]{16}$/),
+  build: z.string().max(64),
+  sim: z.number().int().min(0).max(1000),
+  events: z.array(TelemetryEvent).min(1).max(MAX_EVENTS_PER_BATCH),
+});
+export type EventBatch = z.infer<typeof EventBatch>;
 export type HealthResponse = z.infer<typeof HealthResponse>;
 
 export const ErrorResponse = z.object({ error: z.string(), detail: z.unknown().optional() });
