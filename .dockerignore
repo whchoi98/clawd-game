@@ -8,6 +8,7 @@ node_modules
 dist
 cdk.out
 .git
+.github
 .claude
 .gitignore
 docs
@@ -21,6 +22,7 @@ tools/release.*
 tools/stats.*
 tools/admin.*
 tools/solve.ts
+tools/hash-corpus.ts
 infra
 cdk.json
 cdk.context.json

@@ -10,9 +10,11 @@
  * batches (POST /api/events carrying zone_start, quit and js_error, never the
  * player id); the service worker has precached the shell
  * and the title still renders after a reload with the network cut (offline);
- * then every story zone is rendered through the deterministic `?shot=` harness
- * and screenshotted. Screenshots land in tools/qa/out/. Exit code 1 on any
- * console error, page error or failed step.
+ * `?shot=selftest` runs the determinism corpus on this Chromium and its digests
+ * must equal test/fixtures/corpus-digests.json (Node's — see tools/qa/selftest.ts
+ * for the multi-engine version); then every story zone is rendered through the
+ * deterministic `?shot=` harness and screenshotted. Screenshots land in
+ * tools/qa/out/. Exit code 1 on any console error, page error or failed step.
  *
  * The offline step needs a secure context (https, or http on localhost); on a
  * plain-http remote BASE_URL it is skipped with a warning. --register-sw makes
@@ -23,6 +25,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
+import { FIXTURE_NAME, compareDigests, describeMismatches, loadFixture, parseSelftestStamp } from './corpus.js';
 
 const BASE_URL = (process.env.BASE_URL ?? 'http://127.0.0.1:8099').replace(/\/+$/, '');
 const NO_SHOTS = process.argv.includes('--no-shots');
@@ -322,6 +325,21 @@ async function run(browser: Browser): Promise<number> {
       });
     }
   }
+
+  // Determinism corpus on this engine vs. Node's fixture (runs with --no-shots too: CI's smoke is --no-shots).
+  await step('selftest', async () => {
+    const fixture = loadFixture();
+    await page.goto(`${BASE_URL}/?shot=selftest`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.documentElement.dataset.shot !== undefined);
+    const stamp = parseSelftestStamp(await page.evaluate(() => document.documentElement.dataset.shot ?? ''));
+    if (stamp.sim !== fixture.sim || stamp.gen !== fixture.gen) {
+      throw new Error(`page runs sim ${stamp.sim} / gen ${stamp.gen}, fixture is sim ${fixture.sim} / gen ${fixture.gen}`);
+    }
+    const rows = compareDigests(stamp.digests, fixture.digests);
+    const bad = describeMismatches(rows);
+    if (bad.length) throw new Error(`${bad.length} digest(s) differ from ${FIXTURE_NAME}: ${bad.join('; ')}`);
+    return `${rows.length}/${rows.length} digests equal Node's (${stamp.engine})`;
+  });
 
   if (!NO_SHOTS) {
     for (const id of ZONES) {
