@@ -20,6 +20,8 @@
  *   &ghost=par                            run the zone's bundled goal echo ('목표') from tick 0 — one ghost
  *   &grid=1                               level-author overlay after the frame: tile grid, coordinates every
  *                                         4 tiles, spawn characters, checkpoint segment lengths (render/debug.ts)
+ *   ?shot=selftest                        no capture: run the determinism corpus (selftest.ts) on this engine and
+ *                                         stamp its digests (data-shot.selftest, .engine) for tools/qa/selftest.ts
  */
 import { IN, IN_ALL } from '../sim/types.js';
 import type { InputMask, LevelDef, PlayerState, RunSummary, SimEvent } from '../sim/types.js';
@@ -28,6 +30,10 @@ import type { AudioPort, RendererPort, ResultView, Screen } from './contracts.js
 import type { Scenes, ShellUI } from './scenes.js';
 import { goalEchoFor } from './echo/goal.js';
 import { debugStageOf, drawDebugGrid, type GridStats } from './render/debug.js';
+import { selftestStamp } from './selftest.js';
+
+/** `?shot=` target that runs the determinism corpus instead of capturing a frame. */
+export const SHOT_SELFTEST = 'selftest';
 
 export const SHOT_MAX_FRAMES = 3000;
 export const SHOT_DEFAULT_FRAMES = 120;
@@ -200,6 +206,13 @@ export function runShot(spec: ShotSpec, ctx: ShotContext): Record<string, unknow
         ? { track: ctx.audio.track ?? null, voices: ctx.audio.voices ?? 0 }
         : { state: 'uninit' },
     });
+
+    // The determinism corpus: no level, no frame — the digests are the result.
+    // navigator is read through globalThis so the module stays loadable under Node (vitest).
+    if (spec.target === SHOT_SELFTEST) {
+      const nav = (globalThis as { navigator?: { userAgent?: string } }).navigator;
+      return stamp({ ...common(), ...selftestStamp(nav?.userAgent) });
+    }
 
     if (spec.target === 'title') {
       for (let i = 0; i < spec.frames; i++) scenes.titleFrame(1 / 60);

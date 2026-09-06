@@ -247,6 +247,44 @@ npm run destroy              # 전부 삭제 (테이블·로그·시크릿 포�
 
 `tools/qa/smoke.ts`가 타이틀 → 선택 → 플레이를 실제 키 입력으로 통과하고 9개 구역을 이 하네스로 캡처합니다(콘솔 오류 0 조건). 컨테이너 상태에서 12/12 통과를 확인했습니다.
 
+## CI와 결정론 자가진단
+
+### 크로스 엔진 결정론 코퍼스 (`?shot=selftest`)
+
+sim은 플레이어의 브라우저(V8·JavaScriptCore·SpiderMonkey)와 기록을 재생하는 서버(Node V8)에서 같은 입력 로그로 **비트 단위로 같은 상태**에 도달해야 합니다. 한 엔진이라도 어긋나면 그 기기에서 클리어한 기록이 서버 재생에서 `claim-mismatch`로 거절됩니다. `src/client/selftest.ts`는 번들된 골든 리플레이 9개(`GOAL_ECHOES`, 구역당 페이스 조절된 개발자 클리어 1개)와 고정 시드 2개(1, 20260906)의 데일리 타워(3000틱 고정 스크립트: 오른쪽 60틱 홀드 → 점프 탭, 반복)를 새 `Sim`에 끝까지 돌려 항목마다 다이제스트를 만듭니다 — `{ key, levelId, seed, tick, ticks, cleared, shards, deaths, x, y, hash }`, `x`·`y`는 플레이어 위치 ×1000, `hash`는 최종 `SimState`의 정규화 JSON(키 재귀 정렬)에 대한 FNV-1a 32비트입니다. DOM 의존이 없어 vitest·tsx·브라우저에서 같은 파일이 돕니다.
+
+- `npx tsx tools/hash-corpus.ts` — Node(V8)의 다이제스트를 `test/fixtures/corpus-digests.json`에 기록합니다(`--check`: 파일이 오래되면 exit 1). 이 픽스처는 **물리·지형·생성기 변경의 회귀망**이기도 합니다: `test/client/selftest.test.ts`가 프로세스 안의 다이제스트가 픽스처와 같은지 단언하므로, 의도한 sim 변경(`SIM_VERSION`/`GEN_VERSION` 범프, 골든 리플레이 재녹화)과 함께만 다시 씁니다.
+- `?shot=selftest` — 브라우저가 같은 코퍼스를 동기적으로 돌려 `<html data-shot>`에 `{ phase: 'selftest', engine: 'v8' | 'jsc' | 'spidermonkey', ua, sim, gen, corpus, selftest: [...] }`를 새깁니다(캡처 없음). `engine`은 UA에서 추정하며 iOS의 모든 브라우저는 `jsc`입니다.
+- `npx tsx tools/qa/selftest.ts` — Playwright로 Chromium·WebKit·Firefox를 차례로 띄워 스탬프를 픽스처와 필드별로 비교하고 **엔진 × 구역 표**를 출력합니다. 설치되지 않은 엔진은 SKIP(이유 표시), `--require=chromium,webkit`이면 그 엔진이 없을 때 실패. 다이제스트 불일치·같은 출처 콘솔 오류·sim/gen 버전 불일치·실행된 엔진 0개는 exit 1. `npm run qa:smoke`에도 같은 비교를 하는 `selftest` 단계(Chromium)가 들어 있습니다.
+
+이 개발 호스트(Amazon Linux)에는 WebKit의 시스템 의존성이 없어 Chromium만 실측했고(11/11 Node와 일치), **V8 ↔ JSC 증명은 CI(ubuntu)의 WebKit 단계**가 맡습니다. iOS 실기기 실측은 남은 과제입니다.
+
+### GitHub Actions (`.github/workflows/ci.yml`)
+
+`push`(main)·`pull_request`·수동 실행. ref별 concurrency 그룹(같은 브랜치의 이전 실행 취소), `permissions: contents: read`. job 세 개:
+
+| job | 내용 |
+|---|---|
+| `web` | Node 22 · `npm ci` → `npm run typecheck` → `npm run levels -- --check` → `npx tsx tools/hash-corpus.ts --check` → `npm test` → `npm run build` → Playwright Chromium+WebKit 설치(`~/.cache/ms-playwright` 캐시) → 빌드된 서버 기동(`PORT=8099 STATIC_DIR=dist/public DAILY_SECRET=ci`, `/healthz` 대기) → `tools/qa/smoke.ts --no-shots` · `mobile.ts` · `selftest.ts --require=chromium,webkit` · `readability.ts` · `grid.ts` → 서버 종료(로그 tail) → `tools/qa/out/*.png`를 아티팩트 `qa-screenshots`로 업로드(실패 시에도) |
+| `infra` | `npx tsc -p infra --noEmit` → `npx cdk synth --quiet --no-lookups --no-notices` — **AWS 자격 증명 없이**. `Vpc.fromLookup`은 커밋된 `cdk.context.json` 캐시에서 해결되는데 캐시 키가 계정·리전을 포함하므로(`vpc-provider:account=061525506239:…:region=ap-northeast-2:…`) job이 `CDK_DEFAULT_ACCOUNT=061525506239`, `CDK_DEFAULT_REGION`/`AWS_REGION=ap-northeast-2`를 고정합니다. 더미 계정을 쓰면 키가 달라져 룩업이 필요해지고 `--no-lookups`가 "Missing context keys"로 즉시 실패합니다(자격 증명을 찾아 헤매지 않음). `AWS_EC2_METADATA_DISABLED=true`로 자격 증명 탐색을 빨리 포기시키고 `CDK_DOCKER=echo`로 이미지 빌드를 무력화합니다. 마지막으로 템플릿에 ECS Service·CloudFront Distribution·DynamoDB GlobalTable이 있는지 확인. 저장소 시크릿 불필요 — VPC를 바꾸면 자격 증명이 있는 곳에서 `cdk synth` 후 갱신된 `cdk.context.json`을 커밋해야 CI가 다시 초록이 됩니다. |
+| `docker` | `docker/setup-qemu-action`(arm64) + `docker/setup-buildx-action` + `docker/build-push-action`으로 `linux/arm64` 이미지를 빌드(`push: false`, `load: true`, GHA 레이어 캐시) → `docker image inspect`로 아키텍처 `arm64`와 크기 ≤ 200 MB 단언(현재 약 174 MB). |
+
+CI는 배포하지 않습니다 — 배포는 `npm run release`(수동)입니다. main 보호 규칙에서 세 job을 required check로 지정하면 실패한 PR은 머지되지 않습니다.
+
+로컬에서 같은 검사:
+
+```bash
+npm ci && npm run typecheck && npm run levels -- --check && npx tsx tools/hash-corpus.ts --check && npm test && npm run build
+npx playwright install --with-deps chromium webkit        # ubuntu · Amazon Linux는 chromium만 가능
+PORT=8099 STATIC_DIR=dist/public DAILY_SECRET=ci node dist/server/index.js &
+npx tsx tools/qa/smoke.ts --no-shots && npx tsx tools/qa/mobile.ts && npx tsx tools/qa/selftest.ts \
+  && npx tsx tools/qa/readability.ts && npx tsx tools/qa/grid.ts
+npx tsc -p infra --noEmit
+CDK_DEFAULT_ACCOUNT=061525506239 CDK_DEFAULT_REGION=ap-northeast-2 AWS_REGION=ap-northeast-2 \
+  AWS_EC2_METADATA_DISABLED=true CDK_DOCKER=echo npx cdk synth --quiet --no-lookups
+docker buildx build --platform linux/arm64 -t clawd-echo-tower:ci .
+```
+
 ## 테스트
 
 | 영역 | 무엇을 단언하나 |

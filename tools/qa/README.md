@@ -43,10 +43,14 @@ is 1. Screenshots are written to `tools/qa/out/` (git-ignored):
    must appear with a painted canvas before the network is restored. Console
    errors of the `net::ERR_INTERNET_DISCONNECTED` kind are downgraded to
    warnings during this step only.
-5. For each zone the harness stamps `document.documentElement.dataset.shot`
+5. **selftest** (runs with `--no-shots` too): `?shot=selftest` steps the
+   determinism corpus on this Chromium and stamps one digest per zone; every
+   digest must equal `test/fixtures/corpus-digests.json` (Node's), and the
+   page's `sim` / `gen` must be the fixture's. See "Cross-engine selftest".
+6. For each zone the harness stamps `document.documentElement.dataset.shot`
    (JSON from the client's `shot.ts`); a stamp containing `error` fails, and the
    canvas must again be painted.
-6. Throughout: console messages of type `error` and `pageerror` events on the
+7. Throughout: console messages of type `error` and `pageerror` events on the
    page's own origin, and same-origin HTTP 5xx responses, are collected as
    issues and fail the run. Off-origin console errors (the Google Fonts
    stylesheet on an offline machine) and same-origin 4xx are printed as
@@ -81,6 +85,7 @@ JSON diagnostics blob on `<html data-shot>`. It never engages without the flag.
 &frames=240                          fixed 1/120 s steps to run
 &hold=right,left,up,down,jump,dash   actions held for the whole run
 &pulse=jump:26,dash:60               tap an action every N steps (jump and dash need a press edge)
+?shot=selftest                       no capture: run the determinism corpus and stamp its digests (see below)
 ```
 
 The smoke test uses `frames=240&hold=right&pulse=jump:26` for every zone so the
@@ -95,6 +100,48 @@ shipped a halved jump height that way. The first three steps therefore drive
 the real UI and `Input` through Playwright key presses; only the per-zone pass
 uses the synchronous harness. The same applies to `--register-sw`: it proves
 the worker, not the app.
+
+## Cross-engine selftest
+
+`npx tsx tools/qa/selftest.ts [--engines=chromium,webkit,firefox] [--require=chromium,webkit]`
+(`BASE_URL` env, default `http://127.0.0.1:8099`) is the determinism proof
+across JavaScript engines. The sim must reach bit-identical state from the
+same input log on the server (Node / V8) and in every player's browser
+(Blink / V8, WebKit / JavaScriptCore, Gecko / SpiderMonkey); a drift on one of
+them would make a run cleared there fail the server's replay with
+`claim-mismatch`.
+
+- `src/client/selftest.ts` steps the nine bundled goal echoes (`GOAL_ECHOES`,
+  one paced developer clear per story zone) and two scripted daily towers
+  (seeds 1 and 20260906, 3000 ticks of "hold right 60 ticks, tap jump") through
+  a fresh `Sim` and reduces each final state to a digest:
+  `{ key, levelId, seed, tick, ticks, cleared, shards, deaths, x, y, hash }` with
+  `hash` = FNV-1a 32 over the canonical (key-sorted) JSON of the final `SimState`.
+- `npx tsx tools/hash-corpus.ts` writes Node's digests to
+  `test/fixtures/corpus-digests.json` (`--check` exits 1 when stale). vitest
+  (`test/client/selftest.test.ts`, `test/tools/selftest.test.ts`) pins the
+  in-process digests to that file, so the fixture is also the regression net
+  for physics / level / generator edits — rewrite it only alongside a deliberate
+  sim change.
+- `?shot=selftest` makes the page run the same corpus synchronously and stamp
+  `{ phase: 'selftest', engine, ua, sim, gen, corpus, selftest: [...] }` on
+  `<html data-shot>`; `engine` is derived from the user agent (`v8`, `jsc`,
+  `spidermonkey`; every iOS browser is `jsc`).
+- The script launches each engine in turn, opens `?shot=selftest`, compares
+  every digest field by field with the fixture and prints an engine × zone
+  table (fixture hash, then each engine's hash; `!` marks a mismatch, `-` a
+  missing zone, `SKIP` an engine that could not launch). Exit 1 on any
+  mismatch, a same-origin console / page error, a `sim` / `gen` that differs
+  from the fixture, a `--require`d engine that could not run, or no engine at
+  all. An engine that is not installed is otherwise reported as SKIP with the
+  launcher's reason.
+
+`npm run qa:smoke` carries the same comparison as its `selftest` step (Chromium
+only, also with `--no-shots`). CI (`.github/workflows/ci.yml`) runs
+`selftest.ts --require=chromium,webkit` on ubuntu, where
+`npx playwright install --with-deps chromium webkit` works; on this Amazon
+Linux development host WebKit's system libraries are unavailable, so only
+Chromium is measured locally.
 
 ## Mobile layout QA
 

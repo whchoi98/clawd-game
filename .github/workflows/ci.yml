@@ -1,0 +1,195 @@
+# CLAWD JUMP: ECHO TOWER — continuous integration.
+#
+#   web     typecheck → levels --check → corpus fixture --check → vitest → build → Playwright QA
+#           against the built server: smoke (--no-shots), mobile, selftest (Chromium + WebKit —
+#           the V8 ↔ JavaScriptCore determinism proof), readability, grid. Screenshots are uploaded.
+#   infra   tsc over infra/ and `cdk synth` WITHOUT AWS credentials: the VPC lookup is served from
+#           the committed cdk.context.json cache (its key embeds the deployed account and region,
+#           which are therefore set below). `--no-lookups` makes a cache miss fail loudly instead
+#           of reaching for credentials. Deploys stay manual (npm run release) — CI never deploys.
+#   docker  the arm64 (Graviton) image through buildx + QEMU, never pushed; size must stay ≤ 200 MB.
+#
+# The same checks locally: see README.md → "CI와 결정론 자가진단".
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22
+  # The local server the browser QA drives; every tools/qa script defaults to this origin.
+  QA_PORT: 8099
+
+jobs:
+  web:
+    name: typecheck · tests · build · browser QA
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck (app + infra)
+        run: npm run typecheck
+
+      - name: Generated level files are current
+        run: npm run levels -- --check
+
+      - name: Determinism corpus fixture is current (Node / V8)
+        run: npx tsx tools/hash-corpus.ts --check
+
+      - name: Unit / integration tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright browsers (Chromium + WebKit) and their system libraries
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Install Playwright system libraries (browsers restored from cache)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium webkit
+
+      - name: Start the built server
+        run: |
+          PORT=$QA_PORT STATIC_DIR=dist/public DAILY_SECRET=ci APP_VERSION="ci-${GITHUB_SHA::7}" \
+            node dist/server/index.js > server.log 2>&1 &
+          echo $! > server.pid
+          for i in $(seq 1 100); do
+            if curl -fsS "http://127.0.0.1:$QA_PORT/healthz" > /dev/null; then break; fi
+            sleep 0.2
+          done
+          curl -fsS "http://127.0.0.1:$QA_PORT/api/health"
+
+      - name: QA smoke (Chromium, --no-shots)
+        run: npx tsx tools/qa/smoke.ts --no-shots
+
+      - name: QA mobile layouts
+        run: npx tsx tools/qa/mobile.ts
+
+      - name: QA determinism selftest (Chromium + WebKit vs. Node fixture)
+        run: npx tsx tools/qa/selftest.ts --require=chromium,webkit
+
+      - name: QA readability
+        run: npx tsx tools/qa/readability.ts
+
+      - name: QA grid overlay
+        run: npx tsx tools/qa/grid.ts
+
+      - name: Stop the server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then kill "$(cat server.pid)" 2>/dev/null || true; fi
+          echo "--- server.log (tail) ---"
+          tail -n 60 server.log 2>/dev/null || true
+
+      - name: Upload QA screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-screenshots
+          path: tools/qa/out/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  infra:
+    name: cdk synth (no credentials)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Must match the cdk.context.json lookup key (vpc-provider:account=…:region=…) so no lookup runs.
+      CDK_DEFAULT_ACCOUNT: '061525506239'
+      CDK_DEFAULT_REGION: ap-northeast-2
+      AWS_REGION: ap-northeast-2
+      AWS_DEFAULT_REGION: ap-northeast-2
+      # Fail credential discovery fast instead of probing the (absent) instance metadata service.
+      AWS_EC2_METADATA_DISABLED: 'true'
+      # `cdk synth` never builds the image; this keeps any accidental docker invocation inert.
+      CDK_DOCKER: echo
+      CDK_DISABLE_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck infra
+        run: npx tsc -p infra --noEmit
+
+      - name: cdk synth
+        run: npx cdk synth --quiet --no-lookups --no-notices
+
+      - name: Template exists and keeps its shape
+        run: |
+          test -s cdk.out/ClawdEchoTowerStack.template.json
+          node -e '
+            const t = require("./cdk.out/ClawdEchoTowerStack.template.json");
+            const types = Object.values(t.Resources).map((r) => r.Type);
+            for (const want of ["AWS::ECS::Service", "AWS::CloudFront::Distribution", "AWS::DynamoDB::GlobalTable"]) {
+              if (!types.includes(want)) { console.error("missing", want); process.exit(1); }
+            }
+            console.log(types.length, "resources");
+          '
+
+  docker:
+    name: arm64 image (buildx + QEMU, no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build linux/arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: clawd-echo-tower:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image size ≤ 200 MB
+        run: |
+          size=$(docker image inspect clawd-echo-tower:ci --format '{{.Size}}')
+          arch=$(docker image inspect clawd-echo-tower:ci --format '{{.Architecture}}')
+          echo "clawd-echo-tower:ci — $arch, $((size / 1024 / 1024)) MiB"
+          test "$arch" = "arm64"
+          test "$size" -le $((200 * 1024 * 1024))
