@@ -130,6 +130,7 @@ export const TIER_LINES: Readonly<Record<BiomeId, string>> = {
   tidepool: '조수가 물러난 자리에 첫 발자국을 남겼다.',
   stormspire: '번개 사이를 지나 탑의 허리를 넘었다.',
   voidreef: '공허의 끝에서 메아리가 되돌아왔다.',
+  summit: '오로라 아래, 탑의 정점에 메아리를 새겼다.',
 };
 /** What the card promises after the last tier (only shown when the ending has already played). */
 export const TIER_NEXT_SUMMIT = '정점 너머 · 메아리와 다시 겨룬다';

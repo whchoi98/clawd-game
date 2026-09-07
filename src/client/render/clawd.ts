@@ -12,11 +12,18 @@
  */
 import { TAU, alpha, clamp, mixHex } from './stage.js';
 
+/** Visual-only costume piece drawn by the rig (Phase 5 character pass); 'none' / missing = bare shell. */
+export type SkinAccessory = 'none' | 'scarf' | 'antenna' | 'crown' | 'fins' | 'hood' | 'halo' | 'goggles';
+
 export interface Skin {
   id: string; name: string; kr: string;
   shell: string; shellHi: string; shellLo: string;
   belly: string; limb: string; eye: string; pupil: string;
   glow: string;
+  /** Costume piece (Phase 5); undefined draws the classic bare shell. */
+  accessory?: SkinAccessory;
+  /** Accessory / trail colour; defaults to `glow`. */
+  trim?: string;
 }
 
 export const SKINS: Record<string, Skin> = {

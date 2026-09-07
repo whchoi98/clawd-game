@@ -71,7 +71,7 @@ export type SfxName =
   | 'hurt' | 'death' | 'respawn' | 'goal'
   | 'foeHit' | 'foeKilled' | 'bolt' | 'crumble' | 'splash' | 'tideOver'
   /** Clear stings, one per biome, written in that biome track's key (P3-9). */
-  | 'stingTidepool' | 'stingStormspire' | 'stingVoidreef'
+  | 'stingTidepool' | 'stingStormspire' | 'stingVoidreef' | 'stingSummit'
   /** Ceremony stingers (P3-9): the tier-break fanfare and the ending chord. */
   | 'fanfare' | 'endingSting'
   | 'uiMove' | 'uiConfirm' | 'uiCancel' | 'uiToggle' | 'uiUnlock' | 'uiError'
@@ -280,6 +280,16 @@ export const SFX: Record<SfxName, Recipe> = {
     s.tone(midi(81), null, 1.6, { type: 'triangle', gain: 0.05 * p.vol, at: 0.7, attack: 0.2, fx: 0.95 });
   },
 
+  stingSummit(s, p) {
+    // F# lydian (the summit track): placeholder — three glass bells rising F#–A#–C# with a high shimmer.
+    // The Phase 5 audio pass replaces this with the composed sting.
+    [0, 4, 7].forEach((iv, i) => {
+      const f = midi(66 + iv);
+      s.tone(f, null, 0.8, { type: 'sine', gain: 0.13 * p.vol, at: i * 0.1, fx: 0.9, pan: -0.3 + i * 0.3 });
+    });
+    s.tone(midi(90), null, 1.2, { type: 'triangle', gain: 0.04 * p.vol, at: 0.35, attack: 0.25, fx: 0.95 });
+  },
+
   // ------------------------------------------------------------ ceremonies
   fanfare(s, p) {
     // tier break: a brass-like F lydian motif (F–A–C, the lydian B as a grace, F) over a kick and a crash, ~2.4 s
@@ -369,7 +379,7 @@ export const UI_SFX: Record<UiSound, SfxName> = {
  * Any other track (the title, none) keeps the generic `goal` fanfare.
  */
 export const BIOME_STING: Readonly<Record<BiomeId, SfxName>> = {
-  tidepool: 'stingTidepool', stormspire: 'stingStormspire', voidreef: 'stingVoidreef',
+  tidepool: 'stingTidepool', stormspire: 'stingStormspire', voidreef: 'stingVoidreef', summit: 'stingSummit',
 };
 
 /** The clear sting for a track key, or null when the key is not a biome's. */

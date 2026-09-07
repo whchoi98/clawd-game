@@ -37,7 +37,7 @@ export interface SimView {
 
 export type RendererOptions = StageOptions;
 
-const TITLE_SEEDS: Record<BiomeId, number> = { tidepool: 3, stormspire: 12, voidreef: 21 };
+const TITLE_SEEDS: Record<BiomeId, number> = { tidepool: 3, stormspire: 12, voidreef: 21, summit: 30 };
 
 /** The goal counts as on screen only when its orb sits this far (world units) inside the view. */
 const GOAL_EDGE_MARGIN = 10;

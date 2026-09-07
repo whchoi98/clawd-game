@@ -314,6 +314,13 @@ export const TRACKS: Record<string, TrackDef> = {
     voice: { pad: 'dark', bass: 'sub', arp: 'glass', lead: 'arp', kick: 'heart' }, padCutoff: 500,
     arrange: voidreef,
   },
+  // Phase 5 placeholder so BIOMES.summit.track resolves; the audio pass composes the real track.
+  summit: {
+    key: 'summit', name: '오로라 정점', root: 42, scale: 'lydian', bpm: 76, prog: [0, 4, 5, 3],
+    mix: { pad: 0.34, bass: 0.22, arp: 0.2, lead: 0, bell: 0.26, drums: 0.1 },
+    voice: { pad: 'dark', bass: 'sub', arp: 'glass', lead: 'arp', kick: 'heart' }, padCutoff: 700,
+    arrange: voidreef,
+  },
   ending: {
     key: 'ending', name: '정점의 메아리', root: 53, scale: 'lydian', bpm: 64, prog: [0, 4, 1, 5],
     mix: { pad: 0.34, bass: 0.18, arp: 0.18, lead: 0, bell: 0.22, drums: 0 },

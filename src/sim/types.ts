@@ -45,10 +45,10 @@ export const IN_ALL = 0x7f;
 export type InputMask = number;
 
 // ---------------------------------------------------------------- levels
-export type BiomeId = 'tidepool' | 'stormspire' | 'voidreef';
+export type BiomeId = 'tidepool' | 'stormspire' | 'voidreef' | 'summit';
 
 export interface LevelDef {
-  /** 't1'..'t3', 's1'..'s3', 'v1'..'v3', 'daily', 'endless' */
+  /** 't1'..'t4', 's1'..'s4', 'v1'..'v4', 'm1'..'m4' (summit, Phase 5), 'daily', 'endless' */
   id: string;
   /** Korean display name (the game's UI language). */
   name: string;

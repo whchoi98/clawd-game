@@ -1,5 +1,5 @@
 /**
- * Art direction for the three tower tiers. Pure data — shared by the
+ * Art direction for the tower tiers (three shipped biomes + the Phase 5 summit). Pure data — shared by the
  * renderer (palettes) and the UI (names). The sim only knows BiomeId.
  */
 import type { BiomeId } from '../sim/types.js';
@@ -20,7 +20,7 @@ export interface Biome {
   rock: string; rockHi: string; rockDeep: string;
   crust: string; crustHi: string;
   accent: string;
-  weather: 'spray' | 'rain' | 'spores';
+  weather: 'spray' | 'rain' | 'spores' | 'snow';
   /** Occasional full-sky flash (stormspire). */
   lightning: boolean;
   ambient: number;
@@ -58,6 +58,18 @@ export const BIOMES: Record<BiomeId, Biome> = {
     crust: '#22E6D2', crustHi: '#B8FFF6', accent: '#FF5BC8',
     weather: 'spores', lightning: false, ambient: 0.16,
     spike: { hi: '#E0FFFF', mid: '#66B8C8', lo: '#123A48' }, props: ['polyp', 'glowvine'],
+  },
+  // Phase 5 (P5-1): the fourth tier above the clouds — aurora night, glacier rock, snow. Palette
+  // is provisional until the background pass tunes it against tools/qa/readability.ts.
+  summit: {
+    id: 'summit', name: 'AURORA SUMMIT', kr: '오로라 정점', track: 'summit',
+    sky: ['#03040F', '#0B1B3A', '#1E4A6E', '#7FD8E8'], skyLight: '#E8FBFF',
+    sun: { x: 0.22, y: 0.18, r: 30, color: '#FFFFFF', glow: '#A8E8FF', kind: 'disc' },
+    fog: '#6FA8C8', ridge: ['#0A1630', '#15305A', '#2A5A86'],
+    rock: '#3A4E6A', rockHi: '#7C9AB8', rockDeep: '#1A2638',
+    crust: '#3F7FB8', crustHi: '#CFEFFF', accent: '#9CF5C8',
+    weather: 'snow', lightning: false, ambient: 0.12,
+    spike: { hi: '#FFFFFF', mid: '#BFDDF0', lo: '#3F6484' }, props: ['pine', 'shrine'],
   },
 };
 
