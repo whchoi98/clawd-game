@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_PIT_TILES, SHAFT_WIDTH_TILES } from '../../src/sim/legend.js';
 import {
-  CHECKPOINT_MAX_GAP, CHECKPOINT_PAR_SEC, SHARD_MAX, SHARD_MIN, ZONE_SHAPES, assertValid, census, checkpointsFor, climbOrder, dumpAt, isVerticalZone,
-  room, validate, validateZone, zoneRules, zoneShape, zoneSizeProblem,
+  BUBBLE_P_CLEARANCE, CHECKPOINT_MAX_GAP, CHECKPOINT_PAR_SEC, SHARD_MAX, SHARD_MIN, ZONE_SHAPES, assertValid, census, checkpointsFor, climbOrder,
+  dumpAt, isVerticalZone, room, validate, validateZone, zoneRules, zoneShape, zoneSizeProblem,
   type ZoneMeta,
 } from '../../levels/dsl.js';
 import type { LevelDef } from '../../src/sim/types.js';
@@ -244,6 +244,45 @@ describe('validate', () => {
     const noG = room(40, 14).ground(0, 39, 10).ent('P', 2, 9).def({ ...META, hint: 'Space 점프' });
     expect(validate(noG).join('\n')).toMatch(/exactly one G[\s\S]*hint names a raw key|hint names a raw key[\s\S]*exactly one G/);
     expect(() => assertValid(flatRoom().def({ ...META, hint: '← →' }))).toThrow(/hint names a raw key/);
+  });
+});
+
+describe('validate — bubble rules (P5-5)', () => {
+  it('accepts a bubble with open air above it, or a shard perch above it, well away from P', () => {
+    expect(validate(flatRoom().ent('b', 20, 6).def(META))).toEqual([]);
+    expect(validate(flatRoom().ent('o', 20, 5).ent('b', 20, 6).def(META))).toEqual([]);
+    // just outside the clearance: P at (2,9), b at (9,9) is 7 columns away
+    expect(validate(flatRoom().ent('b', 2 + BUBBLE_P_CLEARANCE + 1, 9).def(META))).toEqual([]);
+  });
+
+  it('rejects a bubble with rock directly above it: nothing could stomp it', () => {
+    const errs = validate(flatRoom().plat(20, 20, 5).ent('b', 20, 6).def(META));
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatch(/b at \(20,6\) has no open tile above it \('#'\)/);
+    expect(errs[0]).toMatch(/has no open tile above\n?[\s\S]*cell \(20, 6\)/);
+    // any terrain counts, not only rock: a one-way ledge over a bubble is just as unstompable
+    expect(validate(flatRoom().owp(20, 20, 5).ent('b', 20, 6).def(META)).join('\n')).toMatch(/b at \(20,6\) has no open tile above it \('='\)/);
+  });
+
+  it('rejects a bubble on the top row: the map edge above reads as rock', () => {
+    const errs = validate(flatRoom().ent('b', 20, 0).def(META));
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatch(/b at \(20,0\) has no open tile above it/);
+  });
+
+  it(`rejects a bubble within ${BUBBLE_P_CLEARANCE} tiles (Chebyshev) of P, naming the distance`, () => {
+    expect(BUBBLE_P_CLEARANCE).toBe(6);
+    // P at (2,9): b at (8,9) is exactly 6 columns away — too close
+    const errs = validate(flatRoom().ent('b', 8, 9).def(META));
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatch(/b at \(8,9\) is 6 tile\(s\) from P at \(2,9\)/);
+    expect(errs[0]).toMatch(/tile\(s\) from P[\s\S]*cell \(8, 9\)/);
+    // the distance is Chebyshev: straight up counts the same as sideways
+    expect(validate(flatRoom().ent('b', 2, 3).def(META)).join('\n')).toMatch(/b at \(2,3\) is 6 tile\(s\) from P/);
+    // both rules report on one bubble
+    const both = validate(flatRoom().plat(8, 8, 8).ent('b', 8, 9).def(META)).join('\n');
+    expect(both).toMatch(/has no open tile above/);
+    expect(both).toMatch(/tile\(s\) from P/);
   });
 });
 

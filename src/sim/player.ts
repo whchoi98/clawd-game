@@ -593,6 +593,20 @@ export class Player {
     s.grounded = false;
   }
 
+  /**
+   * Launch off a popped bubble (P5-5): PHYS.bubbleBounce, harder than a stomp
+   * bounce and softer than a spring, and — like a stomp bounce — the air jump
+   * and the dash come back.
+   */
+  bubbleBounce(): void {
+    const s = this.s;
+    s.vy = PHYS.bubbleBounce;
+    s.jumps = 0;
+    s.stomping = false;
+    s.dashReady = true;
+    s.grounded = false;
+  }
+
   /** Spring launch. */
   launch(topY: number): void {
     const s = this.s;

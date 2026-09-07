@@ -12,11 +12,36 @@
  * over the floor and wakes only for whoever climbs to the relic perch · Act 4 a
  * third updraft to the goal shelf.
  *
+ * Rev 1 (P5-5): four bubbles ('b'). One hangs over the start yard a tile right
+ * of the dash-up perch, five rows over the floor — walk off the perch onto it
+ * (or double-jump beside it and hold {stomp}) and the launch passes a shard
+ * five rows up; a miss drops you back onto the yard. Three more zig-zag up the
+ * spiked side of the second column's well — widened from three spike columns
+ * to four (32..35) to make room for them — the bubble ladder between the
+ * updrafts: columns 33 → 35 → 33, three rows apart, so consecutive bubbles are
+ * TWO columns apart and a launch rises past the next bubble's side with a clear
+ * tile between before the rider drifts over onto it. The column lifts anyone
+ * who jumps off shelf 1 into the well: come down onto the lowest bubble from
+ * that lift (or ride the column and step off onto it), keep {jump} held through
+ * each launch — the held launch (≈ 72 units) clears the next bubble three rows
+ * up with room, the released one (≈ 55) barely — and the top launch steps onto
+ * shelf 2, an alternative to riding the column all the way. Straight down is
+ * still the spikes; a tile left is the column; the top bubble hangs over the
+ * lowest, so a launch straight up from the lowest meets it — steer toward the
+ * middle one at the pop. The lintel caps every launch, so the ladder never
+ * reaches the roof, no bubble hangs over shelf 1 (a launch plus two air jumps
+ * and a dash-up from there would), every bubble stays a tile clear of the
+ * column (a rider's box never touches one) and out of the phone spawn frame.
+ * Probed on the sim (Phase 5 C, task 1-B): the ride up the column exits onto
+ * shelf 2 without touching a bubble, the ladder chains with {jump} held, and a
+ * full-speed jump off shelf 1 into the well ends on the spikes, not a bubble.
+ *
  * The well of the second column is capped by a rock lintel and the roof runs
  * over the whole shelf, so no dash-up climb gets above the corridor. Shards are
- * side routes: the dash-up perch at the start, two over the yard off the first
- * column's top, two over shelf 1 off the second's, the '&' ledge, beside the
- * relic. Seven checkpoints, every neighbour pair within 32 columns.
+ * side routes: the dash-up perch at the start, the bubble perch beside it, two
+ * over the yard off the first column's top, two over shelf 1 off the second's,
+ * the '&' ledge, beside the relic. Seven checkpoints, every neighbour pair
+ * within 32 columns.
  */
 import { room } from '../dsl.js';
 
@@ -29,6 +54,10 @@ m.ent('P', 3, F - 1);
 m.plat(8, 9, F - 7);
 m.shards([[8, F - 8], [9, F - 8]]);
 m.ent('C', 11, F - 1);
+//     the bubble perch (P5-5): five rows over the yard floor, a tile right of the dash-up perch (walk off it onto the
+//     bubble), a shard five rows over the bubble inside the launch's reach; left of the column, clear of the checkpoint
+m.ent('b', 10, F - 6);
+m.ent('o', 10, F - 11);
 
 // --- act 1a: updraft 1 flush with the yard edge (column rows 15..27), spikes beyond; shards off its top over the yard
 m.ground(13, 16, F + 2);
@@ -41,16 +70,26 @@ m.ground(17, 30, 16);
 m.ent('C', 19, 15);
 m.ent('f', 24, 10);
 
-// --- act 1b: updraft 2 in a well between the shelves (column rows 6..18), a lintel over the well; shards off its top over shelf 1
-m.ground(31, 34, 19);
-m.spikes(32, 34, 18);
+// --- act 1b: updraft 2 in a four-column well between the shelves (column rows 6..18 at 31, spikes 32..35), a lintel over
+//     the well; shards off its top over shelf 1
+m.ground(31, 35, 19);
+m.spikes(32, 35, 18);
 m.ent('z', 31, 18);
-m.block(31, 34, 0, 3);
+m.block(31, 35, 0, 3);
 m.shards([[30, 4], [29, 3]]);
+//     the well ladder (P5-5): three bubbles zig-zag up the spiked side of the well, three rows apart and TWO columns
+//     apart (33 → 35 → 33), so a launch rises past the next bubble's side with a clear tile between and the rider drifts
+//     over onto it; every bubble is at least a tile clear of the column at 31. The column lifts a jump off shelf 1 —
+//     come down onto the lowest from that lift, or ride the column and step off onto it — and the top launch steps onto
+//     shelf 2. The lintel caps every launch, so nothing here reaches the roof; a miss falls onto the spikes, or drifts
+//     left into the column. The top bubble hangs over the lowest: steer toward the middle one at the first pop.
+m.ent('b', 33, 15);
+m.ent('b', 35, 12);
+m.ent('b', 33, 9);
 
 // --- act 2: shelf 2 and the switch corridor under one roof (rows 1..6 open): k → '%' gate → '&' ledge → k → '&' gate → turret
-m.ground(35, 80, 7);
-m.plat(35, 80, 0);
+m.ground(36, 80, 7);
+m.plat(36, 80, 0);
 //     each toggle stands four or five tiles before its gate, so a runner dashes it before the gate reads as a wall
 m.ent('C', 37, 6);
 m.ent('C', 51, 6);
@@ -82,6 +121,6 @@ m.ent('C', 104, F - 10);
 m.ent('G', 112, F - 10);
 
 export const m3 = m.def({
-  id: 'm3', name: '바람의 첨탑', en: 'WIND SPIRE', biome: 'summit', par: 110, seed: 251,
+  id: 'm3', name: '바람의 첨탑', en: 'WIND SPIRE', biome: 'summit', par: 110, seed: 251, rev: 1,
   hint: '상승기류는 꼭대기에서 옆으로 빠져나온다 · 토글을 {dash} 대시로 켜면 관문이 뒤바뀐다 · 유물을 지키는 추격자는 {dash} 대시로 뚫는다',
 });

@@ -7,9 +7,10 @@
  * is written to src/sim/levels.generated.ts.
  *
  * Coordinates are tile indices, x to the right and y DOWN (row 0 is the top).
- * All ranges are inclusive. Spawn characters (P G C o R S D k w h f t c m M s z)
+ * All ranges are inclusive. Spawn characters (P G C o R S D k w h f t c m M s z b)
  * sit in the empty tile directly above the floor they stand on; the runtime
- * anchors them to the bottom of that tile.
+ * anchors them to the bottom of that tile. A bubble ('b') floats where it is
+ * placed and needs open air above it (see validate).
  */
 import type { BiomeId, LevelDef } from '../src/sim/types.js';
 import {
@@ -31,6 +32,14 @@ const SPIKE_CH: Record<SpikeDir, string> = { up: '^', down: 'V', right: '{', lef
 
 /** Characters that count as a floor when measuring bottomless pits. */
 const FLOOR_CH = ROCK + CRUMBLE + ONE_WAY + WATER_SURFACE + WATER_BODY;
+/** Grid characters that are terrain (anything but empty air): a bubble cannot be stomped through one. */
+const TERRAIN_CH = GRID_CH.replace(EMPTY, '');
+/**
+ * A bubble ('b', P5-5) may not start within this many tiles (Chebyshev) of P:
+ * it is a hazard from the side, and the spawn frame must never hide one under a
+ * thumb (tools/qa/mobile.ts) or put one over a fresh player's first jump.
+ */
+export const BUBBLE_P_CLEARANCE = 6;
 
 /** Interior widths up to this are considered "facing walls" for the shaft rule; wider is a room or a yard. */
 const SHAFT_SCAN_MAX = 6;
@@ -388,6 +397,8 @@ function floodFrom(g: Grid, sx: number, sy: number, switchA: boolean): Uint8Arra
  *  - no run of bottomless columns wider than MAX_PIT_TILES
  *  - two rock walls ≥ 5 tall facing each other across an empty interior
  *    form a shaft, which must be 3..5 wide (real shafts are 4)
+ *  - a bubble ('b') has open air (or a spawn) in the tile above it, so it can
+ *    be stomped, and stands more than BUBBLE_P_CLEARANCE tiles from P
  *  - the hint is a token template ({move} {jump} {dash} {stomp} {down}): raw
  *    key names (Shift, Space, ← →, A/D, R) are wrong on a phone or after a rebind
  *
@@ -442,6 +453,18 @@ function validateGeometry(def: LevelDef, id: string): string[] {
   for (const [label, pts] of [['P', ps], ['G', gs]] as const) {
     for (const [x, y] of pts) {
       if (g.at(x, y + 1) !== ROCK || y + 1 >= g.h) located(`${id}: ${label} at (${x},${y}) is not standing on rock`, x, y);
+    }
+  }
+
+  // bubbles (P5-5): popped only from above, so the tile over one must be open air (or another spawn — a shard perch);
+  // and never inside the spawn frame
+  for (const [x, y] of find('b')) {
+    const above = g.at(x, y - 1);   // out of range reads as rock: a bubble on the top row has nothing to stomp from
+    if (TERRAIN_CH.includes(above)) located(`${id}: b at (${x},${y}) has no open tile above it ('${above}') — a bubble must be stompable from above`, x, y);
+    if (ps.length === 1) {
+      const [px, py] = ps[0];
+      const d = Math.max(Math.abs(x - px), Math.abs(y - py));
+      if (d <= BUBBLE_P_CLEARANCE) located(`${id}: b at (${x},${y}) is ${d} tile(s) from P at (${px},${py}) — a bubble stays more than ${BUBBLE_P_CLEARANCE} tiles from the start`, x, y);
     }
   }
 

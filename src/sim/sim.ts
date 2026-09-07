@@ -133,7 +133,7 @@ export class Sim implements SimHost {
   stompShock(x: number, y: number): void {
     for (const f of this.foeList) {
       if (f.s.dead || f.s.dying > 0) continue;
-      if (Math.abs(f.s.x - x) < 34 && Math.abs(f.s.y - y) < 22) f.damage(this, 1);
+      if (Math.abs(f.s.x - x) < 34 && Math.abs(f.s.y - y) < 22) f.shock(this);
     }
   }
 
@@ -284,13 +284,18 @@ export class Sim implements SimHost {
 
     let foeDied = false;
     for (const f of this.foeList) {
-      if (f.s.dead) continue;
+      if (f.s.dead) {
+        // a popped bubble keeps counting down to its return wherever the player is; every other dead foe is inert
+        if (f.reforms) f.update(DT, this, this.player);
+        continue;
+      }
       if (f.s.dying > 0 || this.awake(f)) {
         f.update(DT, this, this.player);
-        if (f.s.dead) foeDied = true;
+        if (f.s.dead && !f.reforms) foeDied = true;
       }
     }
-    if (foeDied) st.foes = this.foeList.filter((f) => !f.s.dead).map((f) => f.s);
+    // dead foes leave the public list; a re-forming one (bubble) stays, flagged dead, so the renderer can telegraph it
+    if (foeDied) st.foes = this.foeList.filter((f) => !f.s.dead || f.reforms).map((f) => f.s);
 
     this.updateBolts();
     if (st.tide && st.phase === 'play') this.updateTide();

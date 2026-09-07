@@ -13,9 +13,16 @@
  * the relic on a perch over the first shelf · Act 5 a walker behind a stub and
  * one last ice stone over the goal pit.
  *
+ * Rev 1 (P5-5): two bubbles ('b') hang over the spike bed, one under each gap
+ * between the shelves, each a shard perch — stomp the bubble (fall onto it, or
+ * hold {stomp}) and the launch carries you through a shard five rows up, then
+ * drift onto the next shelf; the popped bubble is gone for 2.5 s, so falling
+ * straight back is the spikes. The tower's first bubbles, on a side route only.
+ *
  * Shards are side routes only: the dash-up perch at the start, the far left end
  * of the upper hall floor (walk back once you are up), a perch a dash left of
- * the ladder top, beside the relic, and three tiles over the last ice stone.
+ * the ladder top, beside the relic, the two bubble perches over the spike bed,
+ * and three tiles over the last ice stone.
  * Checkpoints: hall floor, first bank, cliff top, second bank — every neighbour
  * pair within 32 columns; foes start at column 54 so a phone's spawn frame never
  * hides one under a thumb (tools/qa/mobile.ts).
@@ -70,6 +77,13 @@ m.plat(78, 80, F - 15);
 m.ent('R', 79, F - 16);
 m.shards([[78, F - 16], [80, F - 16]]);
 m.ent('f', 84, F - 19);                          // a flyer drifting over the descent
+//     bubble perches (P5-5): one bubble in each shelf gap, one tile left of the next shelf and high enough that the
+//     launch (55 units with JUMP released) clears that shelf's top with room to spare; a shard six or seven rows over
+//     each, inside the launch's reach. Straight back down is the spikes — drift right onto the ice instead.
+m.ent('b', 79, F - 5);
+m.ent('o', 80, F - 11);
+m.ent('b', 84, F - 3);
+m.ent('o', 84, F - 9);
 
 // --- bank 2: checkpoint behind a one-tile stub that pens the walker to the right half
 m.ground(89, 100, F - 2);
@@ -84,6 +98,6 @@ m.ground(108, 113, F - 2);
 m.ent('G', 111, F - 3);
 
 export const m1 = m.def({
-  id: 'm1', name: '얼음 회랑', en: 'FROST GALLERY', biome: 'summit', par: 80, seed: 211,
-  hint: '얼음 선반은 아래에서 위로 통과한다 — 천장을 향해 공중에서 {jump} 한 번 더 · 절벽의 수정은 {dash} 위로 대시하며 잇는다',
+  id: 'm1', name: '얼음 회랑', en: 'FROST GALLERY', biome: 'summit', par: 80, seed: 211, rev: 1,
+  hint: '얼음 선반은 아래에서 위로 통과한다 — 천장을 향해 공중에서 {jump} 한 번 더 · 절벽의 수정은 {dash} 위로 대시하며 잇는다 · 거품은 {stomp} 위에서만 밟는다',
 });
