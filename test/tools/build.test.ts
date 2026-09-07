@@ -48,10 +48,11 @@ export {};
 `;
 
 const CLIENT_MAIN = `declare const __BUILD__: string;
+declare const __VERSION__: string;
 import { greet } from './greet.js';
 const mode: string = process.env.NODE_ENV ?? 'unknown';
 const el = document.getElementById('scr-title');
-if (el) el.textContent = greet('클로드') + ' ' + mode + ' ' + __BUILD__;
+if (el) el.textContent = greet('클로드') + ' ' + mode + ' ' + __BUILD__ + ' v' + __VERSION__;
 export {};
 `;
 const CLIENT_GREET = `export function greet(name: string): string {
@@ -80,6 +81,8 @@ function scaffold(dir: string, names: Names = DEFAULT_NAMES): void {
   const clientDir = join(dir, names.client, '..');
   mkdirSync(clientDir, { recursive: true });
   writeFileSync(join(dir, names.client), CLIENT_MAIN);
+  // The stub's package.json version becomes __VERSION__ (title-screen badge).
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'stub', private: true, version: '9.9.9' }));
   writeFileSync(join(clientDir, 'greet.ts'), CLIENT_GREET);
   mkdirSync(join(dir, names.sw, '..'), { recursive: true });
   writeFileSync(join(dir, names.sw), CLIENT_SW);
@@ -157,6 +160,9 @@ describe('tools/build.mjs', () => {
     // esbuild constant-folds the concatenation, so look for the id itself.
     expect(appSrc).toContain(buildJson.build);
     expect(appSrc).not.toContain('__BUILD__');
+    // __VERSION__ inlined from the stub's package.json (title-screen badge).
+    expect(appSrc).toContain('9.9.9');
+    expect(appSrc).not.toContain('__VERSION__');
     // Korean strings survive un-escaped (charset utf8).
     expect(appSrc).toContain('안녕');
 

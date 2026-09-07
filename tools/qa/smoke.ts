@@ -234,7 +234,12 @@ async function run(browser: Browser): Promise<number> {
     const sample = await page.evaluate(sampleCanvas);
     assertPainted(sample);
     await page.screenshot({ path: join(OUT_DIR, '01-title.png') });
-    return `canvas ${sample.w}x${sample.h}, ${sample.unique} colours`;
+    // Version badge at the bottom of the title (title-meta.ts): 'v<semver> · 빌드 <8 hex>' on a real build.
+    const badge = ((await page.locator('#title-version').textContent()) ?? '').trim();
+    if (!/^v\d+\.\d+\.\d+ · 빌드 [0-9a-f]{8}$/.test(badge)) throw new Error(`title version badge reads "${badge}"`);
+    const note = ((await page.locator('#tower-note').textContent()) ?? '').trim();
+    if (!/^스토리 · \d+개 층 · \d+개 구역$/.test(note)) throw new Error(`tower note reads "${note}"`);
+    return `canvas ${sample.w}x${sample.h}, ${sample.unique} colours · ${badge} · ${note}`;
   });
 
   if (titleOk) {

@@ -88,8 +88,23 @@ export function walk(dir, out = []) {
   return out;
 }
 
-/** esbuild options for the browser bundle → DIST/public/assets/app.<hash>.js */
-export function clientOptions(paths, { prod, build }) {
+/**
+ * The game's semantic version for the title-screen badge: package.json "version"
+ * at ROOT, or '0.0.0' when the tree has none (stub projects in tests).
+ */
+export function appVersion(paths) {
+  const p = join(paths.root, 'package.json');
+  if (!existsSync(p)) return '0.0.0';
+  try {
+    const v = JSON.parse(readFileSync(p, 'utf8')).version;
+    return typeof v === 'string' && v.length > 0 ? v : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+/** esbuild options for the browser bundle → DIST/public/assets/app.<hash>.js (`__VERSION__` = package.json version) */
+export function clientOptions(paths, { prod, build, version = appVersion(paths) }) {
   return {
     absWorkingDir: paths.root,
     entryPoints: { app: paths.srcClient },
@@ -107,6 +122,7 @@ export function clientOptions(paths, { prod, build }) {
     define: {
       'process.env.NODE_ENV': JSON.stringify(prod ? 'production' : 'development'),
       __BUILD__: JSON.stringify(build),
+      __VERSION__: JSON.stringify(version),
     },
     logLevel: 'warning',
   };

@@ -1,6 +1,6 @@
 {
   "name": "clawd-echo-tower",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "CLAWD JUMP: ECHO TOWER — a precision platformer with a verified-replay backend on CloudFront → ALB → ECS Fargate",

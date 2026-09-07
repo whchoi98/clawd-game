@@ -82,7 +82,8 @@
     </div>
     <nav class="menu" id="title-menu" aria-label="메인 메뉴">
       <button class="menu__item" data-act="continue" hidden>이어하기<small id="continue-note"></small></button>
-      <button class="menu__item" data-act="openSelect">탑 오르기<small>스토리 · 3개 층 · 9개 구역</small></button>
+      <!-- The subtitle is rewritten from the level list at boot (src/client/ui/title-meta.ts towerSummary). -->
+      <button class="menu__item" data-act="openSelect">탑 오르기<small id="tower-note">스토리 · 3개 층 · 12개 구역</small></button>
       <!-- The subtitle is dynamic: 오늘 미도전 · N일 연속 / 오늘 클리어 · 세계 N위 (src/client/ui/ui.ts refreshTitle). -->
       <button class="menu__item" data-act="openDaily">데일리 타워<small id="daily-note">매일 바뀌는 탑 · 세계 순위</small></button>
       <button class="menu__item" data-act="endless">끝없는 등반<small>차오르는 조류 · 개인 기록</small></button>
@@ -104,6 +105,8 @@
       <!-- iOS Safari has no install prompt: point at the share sheet once, dismissable. -->
       <span class="title__ios" id="ios-hint" hidden>공유 → 홈 화면에 추가 하면 전체 화면으로 플레이할 수 있다
         <button class="title__ios-x" type="button" data-act="dismissIos" data-nonav aria-label="안내 닫기">×</button></span>
+      <!-- Game version + build id, filled at boot (src/client/ui/title-meta.ts); 'dev' in a plain dev tree. -->
+      <span class="title__version" id="title-version" aria-label="게임 버전">dev</span>
     </div>
   </section>
 

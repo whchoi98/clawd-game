@@ -18,7 +18,7 @@ import { build } from 'esbuild';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  buildId, clientOptions, collectOutputs, findEntryOutput, publishPublic, publishServiceWorker, resolvePaths,
+  appVersion, buildId, clientOptions, collectOutputs, findEntryOutput, publishPublic, publishServiceWorker, resolvePaths,
   serverOptions, sizeTable, writeBuildInfo,
 } from './lib.mjs';
 
@@ -50,7 +50,7 @@ async function main() {
     ...collectOutputs([sw.metafile], paths.root),
     ...collectOutputs([server.metafile], paths.root),
   ];
-  process.stdout.write(`build ${id} (${prod ? 'production' : 'development'}) in ${Date.now() - t0} ms → ${paths.dist}\n`);
+  process.stdout.write(`build ${id} v${appVersion(paths)} (${prod ? 'production' : 'development'}) in ${Date.now() - t0} ms → ${paths.dist}\n`);
   process.stdout.write(`sw.js precaches ${sw.precache.length} paths\n\n`);
   process.stdout.write(`${sizeTable(paths.dist, dedupe(files))}\n`);
 }

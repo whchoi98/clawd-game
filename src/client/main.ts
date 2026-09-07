@@ -32,11 +32,15 @@ import { defaultShareEnv, parseRaceQuery, stripRaceQuery } from './echo/race.js'
 import { parseGoQuery, stripGoQuery } from './share/go.js';
 import { loadFonts } from './fonts.js';
 import { installPrompt, isIosSafariNotStandalone, isShotHarness, registerServiceWorker } from './pwa.js';
+import { applyTitleMeta } from './ui/title-meta.js';
 
 declare const __BUILD__: string | undefined;
+declare const __VERSION__: string | undefined;
 
 /** Build id inlined by tools/build.mjs; 'dev' under vitest / plain tsc. */
 const BUILD: string = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
+/** package.json version inlined by tools/build.mjs (title-screen badge); 'dev' under vitest / plain tsc. */
+const VERSION: string = typeof __VERSION__ === 'string' ? __VERSION__ : 'dev';
 
 declare global {
   interface Window {
@@ -124,6 +128,8 @@ async function start(): Promise<void> {
     },
   });
   uiRef = ui;
+  // Title footer: game version + build id, and the tower summary (tiers · zones) from the level list.
+  applyTitleMeta(document, { version: VERSION, build: BUILD, levels: LEVELS });
   input.attachTouch(ui.touch);
   const api = new Api({ base: '' });
   const queue = new SubmitQueue();

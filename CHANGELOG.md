@@ -7,6 +7,11 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-07
+
+### Changed
+- 타이틀 하단에 **게임 버전 표기** `v0.3.0 · 빌드 5a9af50a`(`package.json` 버전을 esbuild `__VERSION__`으로 인라인, 빌드 id 8자 — 스크린샷·버그 리포트가 어느 빌드인지 말해준다; `src/client/ui/title-meta.ts`, dev 트리는 `dev`). 탑 오르기 부제 'N개 층 · N개 구역'을 레벨 목록에서 계산해 층이 늘어도 낡지 않는다(9개로 굳어 있던 문구 수정). `tools/build.mjs` 요약 줄에 버전 출력, 빌드 테스트·스모크가 인라인/표기를 검사.
+
 ## [0.3.0] - 2026-09-07
 
 배포: https://clawd-game.whchoi.net/ (CloudFront E38DW91AO2DWTB, ECS 롤아웃 완료 242 s, 라이브 QA 통과 — 배포 점검 13/13, 스모크 18/18(12구역 캡처·자가진단), 모바일 46/46, 데일리 기록 제출 E2E, 알람 11/11 OK). SIM_VERSION 3으로 모든 스토리 보드가 `s3r1`(새 세로형 존은 `s3r0`)로 새로 열리고, 이전 클라이언트는 `sim-version` 거절 → 업데이트 바를 받는다. Fargate 태스크는 512 CPU / 1024 MiB로 커졌다.

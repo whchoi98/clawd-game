@@ -878,3 +878,8 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
 @media (max-width:820px){
   .tier__cards{grid-template-columns:repeat(4,minmax(0,1fr));gap:.4rem}
 }
+
+/* Title footer version badge (title-meta.ts): quiet, tabular, always visible — it names the build in screenshots. */
+.title__version{margin-left:.25rem;font-size:.62rem;font-weight:600;letter-spacing:.12em;color:var(--muted-2);opacity:.72;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+@media (max-width:640px){.title__version{font-size:.58rem;flex-basis:100%;text-align:right;opacity:.6}}
