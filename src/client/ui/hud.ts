@@ -16,6 +16,8 @@ export const TOAST_SECONDS = 1.8;
 export const BANNER_SECONDS = 2.1;
 /** How long the dash meter lingers after the dash comes back, so the refill reads. */
 const DASH_LINGER = 0.35;
+/** Shard combo at which the HUD chip turns hot (the sfx ladder adds its fifth at the same step, P3-6). */
+export const COMBO_HOT = 8;
 
 /** `m:ss.cc` — negative or non-finite input reads as zero. */
 export function fmtTime(sec: number): string {
@@ -193,11 +195,15 @@ export class Hud {
       this.combo.hidden = h.combo < 2;
       if (this.comboN) this.comboN.textContent = String(h.combo);
       if (h.combo >= 2 && h.combo !== L.combo) replay(this.combo, 'bump');
+      // 8+ turns the chip hot (the sfx ladder shimmers from the same step)
+      this.combo.classList.toggle('is-hot', h.combo >= COMBO_HOT);
       L.combo = h.combo;
     }
 
-    if (h.assist !== L.assist && this.assist) {
-      this.assist.hidden = !h.assist;
+    if (h.assist !== L.assist) {
+      if (this.assist) this.assist.hidden = !h.assist;
+      // SIM v3: hazards kill outright outside assist, so hp never moves there — the hearts only mean something in assist mode.
+      if (this.hearts) this.hearts.hidden = !h.assist;
       L.assist = h.assist;
     }
 

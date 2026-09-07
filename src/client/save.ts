@@ -10,9 +10,10 @@
 import type { Binds, LevelRecord, Progress, Settings } from './contracts.js';
 import type { DailyResponse, TransferGetResponse } from '../shared/protocol.js';
 import { MAX_TRANSFER_BYTES } from '../shared/protocol.js';
-import type { LevelDef } from '../sim/types.js';
+import type { LevelDef, Rank } from '../sim/types.js';
 import { SIM_VERSION, GEN_VERSION } from '../sim/types.js';
 import { BIND_ACTIONS, DEFAULT_BINDS, cloneBinds } from './input/binds.js';
+import { MEDAL_ORDER } from './ui/ceremony.js';
 
 export const SETTINGS_KEY = 'clawd-echo.settings.v1';
 export const PROGRESS_KEY = 'clawd-echo.progress.v1';
@@ -204,11 +205,89 @@ export function toggleMute(s: Settings): boolean {
  * 0 = no record yet. The LevelRecord contract does not name the field, so it
  * is an extra property handled through these helpers and `repairLevelRecord`.
  */
-export interface LevelRecordExtra { segBest?: number[] }
+export interface LevelRecordExtra {
+  segBest?: number[];
+  /** Best clear rank letter of the zone (P3-6). */
+  bestRank?: Rank;
+  /** Longest shard combo reached in the zone (P3-6). */
+  bestCombo?: number;
+  /** Last known world rank of the best on the zone's board (accepted submission / GET /api/me), P3-6. */
+  rank?: number;
+}
 
 export function segmentBests(rec: LevelRecord): readonly number[] {
   const v = (rec as LevelRecord & LevelRecordExtra).segBest;
   return Array.isArray(v) ? v : [];
+}
+
+// ---------------------------------------------------------------- rank · combo · world rank (P3-6)
+const RANKS: readonly Rank[] = ['C', 'B', 'A', 'S'];
+const isRankValue = (v: unknown): v is Rank => typeof v === 'string' && (RANKS as readonly string[]).includes(v);
+
+/** The record's best clear rank, or null before any clear. */
+export function bestRankOf(rec: LevelRecord | undefined | null): Rank | null {
+  const v = (rec as (LevelRecord & LevelRecordExtra) | undefined | null)?.bestRank;
+  return isRankValue(v) ? v : null;
+}
+
+/** Keep the better of the stored rank and `rank`; returns true when the record improved. */
+export function recordBestRank(rec: LevelRecord, rank: Rank): boolean {
+  if (!isRankValue(rank)) return false;
+  const r = rec as LevelRecord & LevelRecordExtra;
+  const prev = bestRankOf(rec);
+  if (prev && RANKS.indexOf(prev) >= RANKS.indexOf(rank)) return false;
+  r.bestRank = rank;
+  return true;
+}
+
+export function bestComboOf(rec: LevelRecord | undefined | null): number {
+  const v = (rec as (LevelRecord & LevelRecordExtra) | undefined | null)?.bestCombo;
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+
+/** Keep the longer of the stored combo and `combo`; returns true when the record improved (a first combo counts). */
+export function recordBestCombo(rec: LevelRecord, combo: number): boolean {
+  const c = Number.isFinite(combo) && combo > 0 ? Math.floor(combo) : 0;
+  if (c <= bestComboOf(rec)) return false;
+  (rec as LevelRecord & LevelRecordExtra).bestCombo = c;
+  return true;
+}
+
+/** The world rank last stored for the record's best (undefined = never known). */
+export function worldRankOf(rec: LevelRecord | undefined | null): number | undefined {
+  const v = (rec as (LevelRecord & LevelRecordExtra) | undefined | null)?.rank;
+  return typeof v === 'number' && Number.isFinite(v) && v >= 1 ? Math.floor(v) : undefined;
+}
+
+/** Store the world rank of the record's best; returns true when it changed. */
+export function setWorldRank(rec: LevelRecord, rank: number): boolean {
+  if (!Number.isFinite(rank) || rank < 1) return false;
+  const r = rec as LevelRecord & LevelRecordExtra;
+  const v = Math.floor(rank);
+  if (r.rank === v) return false;
+  r.rank = v;
+  return true;
+}
+
+/** Forget the world rank (the record's best changed and the board has not answered yet). */
+export function clearWorldRank(rec: LevelRecord): void {
+  delete (rec as LevelRecord & LevelRecordExtra).rank;
+}
+
+const MEDAL_IDS: ReadonlySet<string> = new Set(MEDAL_ORDER);
+const SKIN_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+
+/** Known medal ids in display order, duplicates and junk dropped. */
+export function cleanMedals(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const have = new Set(raw.filter((m): m is string => typeof m === 'string' && MEDAL_IDS.has(m)));
+  return MEDAL_ORDER.filter((m) => have.has(m));
+}
+
+/** Well-formed skin ids, unique, in the order given. */
+export function cleanSkins(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.filter((s): s is string => typeof s === 'string' && SKIN_ID_RE.test(s)))];
 }
 
 /** Record `ticks` for segment `idx` when it beats the stored best; returns true when it did. */
@@ -444,6 +523,15 @@ function repairLevelRecord(raw: unknown): LevelRecord {
   if (Array.isArray(seg) && seg.length > 0 && seg.length <= 65 && seg.some((v) => int(v) > 0)) {
     (r as LevelRecord & LevelRecordExtra).segBest = seg.map((v) => int(v));
   } else delete (r as LevelRecord & LevelRecordExtra).segBest;
+  // Medals · best rank · best combo · world rank (P3-6): known ids only, absent when empty.
+  const medals = cleanMedals(r.medals);
+  if (medals.length) r.medals = medals; else delete r.medals;
+  const x = r as LevelRecord & LevelRecordExtra;
+  if (!isRankValue(x.bestRank)) delete x.bestRank;
+  const combo = int(x.bestCombo);
+  if (combo > 0) x.bestCombo = combo; else delete x.bestCombo;
+  const rank = int(x.rank);
+  if (rank > 0) x.rank = rank; else delete x.rank;
   return r;
 }
 
@@ -482,6 +570,9 @@ export function repairProgress(raw: unknown, defaults: Progress): Progress {
     : [];
   if (tiers.length) p.tiersBroken = tiers; else delete p.tiersBroken;
   if (rawCeremony.endingSeen === true) p.endingSeen = true; else delete p.endingSeen;
+  // Skins unlocked so far (P3-6): well-formed ids, unique; absent when none.
+  const skins = cleanSkins(rawCeremony.unlockedSkins);
+  if (skins.length) p.unlockedSkins = skins; else delete p.unlockedSkins;
   // The best endless run's replay (self echo on 같은 탑 다시) survives only with the SIM_VERSION that recorded it.
   const e = (isObj(p.endless) ? p.endless : {}) as Record<string, unknown>;
   const bestMasks = typeof e.bestMasks === 'string' && e.bestMasks && e.bestSim === SIM_VERSION && e.bestGen === GEN_VERSION && typeof e.bestSeed === 'number'
@@ -620,9 +711,11 @@ export class Save {
   resetProgress(): void {
     const fresh = defaultProgress(this.progress.player.id, this.progress.player.name);
     Object.assign(this.progress, fresh);
-    // Optional flags are not in the defaults, so Object.assign leaves them: a wiped save must earn its ceremonies again (P3-9).
+    // Optional flags are not in the defaults, so Object.assign leaves them: a wiped save must earn its ceremonies again (P3-9)
+    // and its skins again (P3-6; the selected skin stays available through grandfathering).
     delete this.progress.tiersBroken;
     delete this.progress.endingSeen;
+    delete this.progress.unlockedSkins;
     if (this.prgTimer !== null) { this.cancel(this.prgTimer); this.prgTimer = null; }
     this.write(PROGRESS_KEY, this.progress);
   }
@@ -672,9 +765,13 @@ export function snapshotProgress(p: Progress, maxBytes = MAX_TRANSFER_BYTES - TR
   const levels: Record<string, unknown> = {};
   for (const [id, rec] of Object.entries(p.levels)) {
     if (!isObj(rec)) continue;
+    const medals = cleanMedals(rec.medals);
+    const bestRank = bestRankOf(rec), bestCombo = bestComboOf(rec), rank = worldRankOf(rec);
     levels[id] = {
       done: !!rec.done, bestTicks: int(rec.bestTicks), bestShards: int(rec.bestShards), stars: Math.min(3, int(rec.stars)),
       relics: int(rec.relics), deaths: int(rec.deaths), ...(typeof rec.runId === 'string' ? { runId: rec.runId } : {}),
+      // Medals, best rank, best combo and the world rank (P3-6) are records, not replays: they travel.
+      ...(medals.length ? { medals } : {}), ...(bestRank ? { bestRank } : {}), ...(bestCombo > 0 ? { bestCombo } : {}), ...(rank ? { rank } : {}),
     };
   }
   const dailyDates = Object.keys(p.daily).sort();
@@ -707,6 +804,8 @@ export function snapshotProgress(p: Progress, maxBytes = MAX_TRANSFER_BYTES - TR
     // Ceremonies seen (P3-9) travel too: the other device must not replay the 층 돌파 card or the ending.
     ...(Array.isArray(p.tiersBroken) && p.tiersBroken.length ? { tiersBroken: p.tiersBroken.filter((t) => typeof t === 'string') } : {}),
     ...(p.endingSeen === true ? { endingSeen: true } : {}),
+    // Skins unlocked (P3-6) travel too: the other device keeps the look without re-earning it.
+    ...(cleanSkins(p.unlockedSkins).length ? { unlockedSkins: cleanSkins(p.unlockedSkins) } : {}),
   };
   // Daily history is the only unbounded part: shed the oldest dates until the document fits.
   let keep = dailyDates.length;
@@ -724,16 +823,27 @@ function mergeLevelRecord(local: LevelRecord, remote: LevelRecord): LevelRecord 
   out.done = local.done || remote.done;
   const lt = local.bestTicks > 0 ? local.bestTicks : Infinity;
   const rt = remote.bestTicks > 0 ? remote.bestTicks : Infinity;
+  const ox = out as LevelRecord & LevelRecordExtra;
   if (rt < lt) {
-    // The other device's clear is the best now: the local replay no longer belongs to the record.
+    // The other device's clear is the best now: the local replay no longer belongs to the record, nor does its world rank.
     out.bestTicks = remote.bestTicks;
     if (remote.runId) out.runId = remote.runId; else delete out.runId;
     delete out.masks; delete out.sim;
+    const rr = worldRankOf(remote);
+    if (rr) ox.rank = rr; else delete ox.rank;
   } else if (rt === lt && !out.runId && remote.runId) out.runId = remote.runId;
   out.bestShards = Math.max(local.bestShards, remote.bestShards);
   out.stars = Math.max(local.stars, remote.stars);
   out.relics = Math.max(local.relics, remote.relics);
   out.deaths = Math.max(local.deaths, remote.deaths);
+  // Medals are a union, the rank the better letter, the combo the longer one (P3-6).
+  const medals = cleanMedals([...(local.medals ?? []), ...(remote.medals ?? [])]);
+  if (medals.length) out.medals = medals; else delete out.medals;
+  const lr = bestRankOf(local), rr2 = bestRankOf(remote);
+  const best = !lr ? rr2 : !rr2 ? lr : RANKS.indexOf(lr) >= RANKS.indexOf(rr2) ? lr : rr2;
+  if (best) ox.bestRank = best; else delete ox.bestRank;
+  const combo = Math.max(bestComboOf(local), bestComboOf(remote));
+  if (combo > 0) ox.bestCombo = combo; else delete ox.bestCombo;
   return out;
 }
 
@@ -797,6 +907,9 @@ export function mergeProgress(local: Progress, snap: TransferGetResponse): Progr
   // Ceremonies already seen on either device stay seen (P3-9): no second 층 돌파 card or ending after an import.
   if (remote.tiersBroken?.length) local.tiersBroken = [...new Set([...(local.tiersBroken ?? []), ...remote.tiersBroken])];
   if (remote.endingSeen) local.endingSeen = true;
+  // Skins unlocked on either device stay unlocked (P3-6).
+  const skins = cleanSkins([...(local.unlockedSkins ?? []), ...(remote.unlockedSkins ?? [])]);
+  if (skins.length) local.unlockedSkins = skins;
   local.player = { id, name };
   return local;
 }

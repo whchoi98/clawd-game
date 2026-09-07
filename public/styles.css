@@ -688,6 +688,45 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
 .medal--relic::before{background:var(--magenta);box-shadow:0 0 8px var(--magenta)}
 @keyframes medalIn{from{opacity:0;transform:translateY(8px) scale(.7)}to{opacity:1;transform:none}}
 
+/* ---------- P3-6: zone medals · rank · world rank · skin locks · hot combo ---------- */
+/* a medal this clear just earned: a brighter ring, a NEW tag, and a pop on top of the landing */
+.medal{--medal-c:var(--gold-hi)}
+.medal--nodeath{--medal-c:var(--teal-hi)}
+.medal--relic{--medal-c:#F3C9E4}
+.medal.is-new{box-shadow:0 0 0 1px rgba(255,255,255,.25),0 0 18px -4px var(--medal-c)}
+.medal.is-new::after{content:"NEW";font-family:var(--f-ui);font-size:.56rem;font-weight:900;letter-spacing:.14em;color:var(--ink);
+  padding:.08rem .34rem;border-radius:99px;background:var(--medal-c);line-height:1.2}
+@keyframes medalPop{0%{transform:scale(1)}30%{transform:scale(1.18) rotate(-2deg)}60%{transform:scale(.96)}100%{transform:scale(1)}}
+#scr-result .modal:is([data-stage="medals"],[data-stage="board"],[data-stage="done"]) .res__medals .medal.is-new{
+  animation:medalIn .5s var(--e-back) both,medalPop .9s .55s var(--e-out) both}
+/* select header: "별 N/36 · 메달 N/48" */
+.pg__totals{font-family:var(--f-kr);color:var(--muted);font-variant-numeric:tabular-nums}
+/* card top-left: the best rank letter and the four medal slots (earned / empty) */
+.card__top{position:absolute;z-index:2;top:.6rem;left:.75rem;display:flex;align-items:center;gap:.4rem}
+.card__rank{display:grid;place-items:center;width:1.25rem;height:1.25rem;border-radius:6px;font-family:var(--f-num);font-size:.72rem;font-weight:900;
+  color:var(--ink);background:var(--muted);box-shadow:0 2px 8px rgba(0,0,0,.5)}
+.card__rank[data-rank="S"]{background:var(--gold);box-shadow:0 0 12px -2px var(--gold)}
+.card__rank[data-rank="A"]{background:var(--teal);box-shadow:0 0 12px -2px var(--teal)}
+.card__rank[data-rank="B"]{background:var(--paper)}
+.card__medals{display:flex;gap:.22rem}
+.cmedal{display:block;width:.58rem;height:.58rem;border-radius:50%;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.05);
+  box-shadow:inset 0 0 0 1px rgba(5,10,18,.4)}
+.cmedal.is-on{border-color:transparent}
+.cmedal--nodeath.is-on{background:var(--teal);box-shadow:0 0 7px var(--teal)}
+.cmedal--par.is-on{background:var(--gold);box-shadow:0 0 7px var(--gold)}
+.cmedal--shards.is-on{background:var(--shard);box-shadow:0 0 7px var(--shard)}
+.cmedal--relic.is-on{background:var(--magenta);box-shadow:0 0 7px var(--magenta)}
+/* the world rank of the submitted best, bottom-right of the card */
+.card__world{position:absolute;z-index:2;right:.75rem;bottom:.85rem;padding:.14rem .5rem;border-radius:99px;font-family:var(--f-kr);font-size:.64rem;font-weight:700;
+  color:var(--teal-hi);background:rgba(5,10,18,.6);border:1px solid rgba(127,227,214,.35);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* settings: a locked skin is shown greyed with its unlock hint and refuses the click */
+.seg button.is-locked{opacity:.5;cursor:not-allowed}
+.seg button.is-locked canvas{filter:grayscale(1) brightness(.7)}
+.seg button.is-locked.on{background:transparent}
+.seg__hint{display:block;font-family:var(--f-kr);font-size:.6rem;font-weight:500;letter-spacing:0;color:var(--muted-2)}
+/* HUD combo chip at 8+: hot. (The reduced-motion block at the end of this file stills the medal pop through its global .01ms rule.) */
+.hud__chip--combo.is-hot{color:var(--gold-hi);border-color:rgba(244,201,93,.6);background:rgba(244,201,93,.16);text-shadow:0 0 10px rgba(244,201,93,.7)}
+
 /* the clear ceremony: the result modal carries data-stage = rank → stars → medals → board → done (ui.ts + ceremony.ts).
    Blocks of a later stage stay invisible and untappable until their stage, then fade up; the stars pop when theirs comes. */
 #scr-result .modal[data-stage="rank"] :is(.res__stars,.res__medals,.res__vs,.res__unlock,.name-inline,.submit,.lb,.install,.menu),
@@ -757,6 +796,10 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
   .daily__card{align-self:auto}
   .tier__cards{grid-template-columns:repeat(3,minmax(0,1fr));gap:.5rem}
   .card__meta{display:none}
+  .card__top{top:.5rem;left:.6rem;gap:.3rem}
+  .card__rank{width:1.05rem;height:1.05rem;font-size:.62rem}
+  .cmedal{width:.5rem;height:.5rem}
+  .card__world{right:.6rem;bottom:.6rem;font-size:.6rem;padding:.08rem .4rem}
 }
 @media (max-width:640px){
   .title__foot .kbd,.title__foot .sep{display:none}

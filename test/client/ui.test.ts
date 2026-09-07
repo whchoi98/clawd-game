@@ -18,7 +18,7 @@ import type { LeaderboardResponse } from '../../src/shared/protocol.js';
 import {
   GAMEPAD_HIDE_S, HUD_TOPRIGHT_H, HUD_TOPRIGHT_W, IOS_HINT_DISMISSED_KEY, MUTE_KR, NAG_DISMISSED_KEY, REASON_KR, RESTART_HOLD_S, UI, reasonKr,
 } from '../../src/client/ui/ui.js';
-import { INSTALL_CARD_KR } from '../../src/client/ui/ui.js';
+import { INSTALL_CARD_KR, QUEUED_KR } from '../../src/client/ui/ui.js';
 import { LAYOUT_VARS, MIN_HIT_PX, MIN_LABEL_PX, touchHitPx, type TouchElementKind } from '../../src/client/ui/touch.js';
 import { TOUCH_KR, TOUCH_SLIDERS } from '../../src/client/ui/settings.js';
 import { DEFAULT_TOUCH } from '../../src/client/save.js';
@@ -30,7 +30,7 @@ import { PHONE_MAX_SHORT_SIDE, isPhoneViewport, wantsRotatePrompt } from '../../
 import { renderLeaderboard } from '../../src/client/ui/leaderboard.js';
 import { findBindConflict } from '../../src/client/ui/settings.js';
 import { CODE_MODULES, TRANSFER_KR, codeModules, drawCodeCanvas, normalizeCode } from '../../src/client/ui/transfer.js';
-import { LIVE_INTERVAL, fmtTicks, fmtTime } from '../../src/client/ui/hud.js';
+import { COMBO_HOT, LIVE_INTERVAL, fmtTicks, fmtTime } from '../../src/client/ui/hud.js';
 import { echoWorldMode, setEchoWorldMode } from '../../src/client/save.js';
 import { validateName } from '../../src/client/ui/screens.js';
 import { Input } from '../../src/client/input/index.js';
@@ -2418,5 +2418,185 @@ describe('UI ceremonies (P3-9)', () => {
     ui.refreshSelect(prog, LEVELS);
     expect($('#title-hook').hidden).toBe(false);
     expect($('#title-hook').textContent).toBe(TITLE_HOOK);
+  });
+});
+
+// ================================================================ P3-6 · medals · rank · world rank · skins · HUD
+describe('P3-6 · select cards, header totals, result medals, skin locks, HUD hearts / combo', () => {
+  beforeEach(() => { document.body.innerHTML = ''; });
+
+  const SKINS4 = {
+    clawd: { name: 'CLAWD', kr: '클로드' }, azure: { name: 'AMAZONI', kr: '아마조니' }, ember: { name: 'EMBER', kr: '엠버' }, void: { name: 'VOID', kr: '보이드' },
+  };
+  /** The plain setup with the four skins and a stinger recorder. */
+  function setupP() {
+    mountTemplate();
+    const input = makeInput();
+    const sounds: string[] = [];
+    const stingers: string[] = [];
+    const settings = makeSettings();
+    const ui = new UI({
+      document, input, defaultBinds: BINDS, skins: SKINS4,
+      audio: { ui: (n) => { sounds.push(n); }, init() {}, stinger: (kind) => { stingers.push(kind); } },
+    });
+    ui.applySettings(settings);
+    return { ui, input, sounds, stingers, settings };
+  }
+  const frames = (ui: UI, input: FakeInput, seconds: number): void => { for (let i = 0; i < Math.round(seconds * 60); i++) ui.frame(1 / 60, input); };
+  const view = (over: Partial<ResultView> = {}): ResultView =>
+    ({ summary: makeSummary(), levelName: '첫 물결', personalBest: true, stars: 3, submit: { state: 'pending' }, nextLevelId: 't2', ...over });
+
+  it('cards show four medal slots, the best rank letter and 세계 N위 when known; the header counts stars and medals over LEVELS', () => {
+    const { ui } = setup();
+    const prog = makeProgress(['t1', 't2']);
+    prog.levels.t1.medals = ['par', 'relic'];
+    Object.assign(prog.levels.t1, { bestRank: 'S', rank: 12 });
+    Object.assign(prog.levels.t2, { bestRank: 'B', rank: 1001 });
+    ui.refreshSelect(prog, LEVELS);
+    const t1 = $('#sel-tiers .card[data-id="t1"]');
+    const slots = [...t1.querySelectorAll('.card__medals .cmedal')];
+    expect(slots).toHaveLength(4);
+    expect(slots.map((s) => s.classList.contains('is-on'))).toEqual([false, true, false, true]);
+    expect(t1.querySelector('.card__medals')!.getAttribute('aria-label')).toBe('메달 2 / 4');
+    expect(t1.querySelector('.card__rank')!.textContent).toBe('S');
+    expect(t1.querySelector('.card__rank')!.getAttribute('data-rank')).toBe('S');
+    expect(t1.querySelector('.card__world')!.textContent).toBe('세계 12위');
+    const t2 = $('#sel-tiers .card[data-id="t2"]');
+    expect(t2.querySelector('.card__rank')!.textContent).toBe('B');
+    expect(t2.querySelector('.card__world')!.textContent).toBe('세계 1,000위 밖');
+    const t3 = $('#sel-tiers .card[data-id="t3"]');
+    expect(t3.querySelector('.card__rank')).toBeNull();
+    expect(t3.querySelector('.card__world')).toBeNull();
+    expect(t3.querySelectorAll('.cmedal')).toHaveLength(4);
+    expect(t3.querySelectorAll('.cmedal.is-on')).toHaveLength(0);
+    // header: makeProgress gives 3 stars per cleared zone; nine zones → /27 and /36 (LEVELS × 3 · × 4)
+    expect($('#sel-totals').textContent).toBe('별 6/27 · 메달 2/36');
+    expect($('#sel-progress').textContent).toContain('2 / 9');
+    ui.refreshSelect(makeProgress(), LEVELS);
+    expect($('#sel-totals').textContent).toBe('별 0/27 · 메달 0/36');
+  });
+
+  it("the clear's fresh medals pop (is-new) with the unlock chime at the medal stage, and the '최고 콤보' row reads the run's combo", () => {
+    const { ui, input, sounds, stingers } = setupP();
+    const prog = makeProgress(['t1']);
+    prog.levels.t1.medals = ['nodeath', 'par', 'relic'];
+    ui.refreshSelect(prog, LEVELS);
+    ui.show('play');
+    ui.setClearExtras({ newMedals: ['par'], combo: 9, comboRecord: true });
+    ui.showResult(view());
+    const chips = [...document.querySelectorAll('#res-medals .medal')];
+    expect(chips.map((c) => c.classList.contains('is-new'))).toEqual([false, true, false]);
+    expect(chips[1].getAttribute('aria-label')).toContain('새 메달');
+    const combo = $('#res-combo');
+    expect(combo.querySelector('span')!.textContent).toBe('최고 콤보 · 신기록!');
+    expect(combo.querySelector('b')!.textContent).toBe('×9');
+    expect(combo.classList.contains('best')).toBe(true);
+    // the chime comes with the medal stage, once
+    expect(sounds).not.toContain('unlock');
+    frames(ui, input, 1.2);
+    expect(stingers).toContain('medal');
+    expect(sounds.filter((s) => s === 'unlock')).toHaveLength(1);
+    frames(ui, input, 1);
+    expect(sounds.filter((s) => s === 'unlock')).toHaveLength(1);
+    // no fresh medal, no combo → no chime, no row; a plain combo reads without 신기록
+    ui.setClearExtras({ newMedals: [], combo: 0, comboRecord: false });
+    ui.show('play');
+    ui.showResult(view());
+    expect(document.querySelector('#res-medals .medal.is-new')).toBeNull();
+    expect(document.getElementById('res-combo')).toBeNull();
+    frames(ui, input, 2);
+    expect(sounds.filter((s) => s === 'unlock')).toHaveLength(1);
+    ui.setClearExtras({ newMedals: [], combo: 3, comboRecord: false });
+    ui.show('play');
+    ui.showResult(view());
+    expect($('#res-combo span').textContent).toBe('최고 콤보');
+    expect($('#res-combo b').textContent).toBe('×3');
+    expect($('#res-combo').classList.contains('best')).toBe(false);
+    ui.setClearExtras(null);
+    ui.show('play');
+    ui.showResult(view());
+    expect(document.getElementById('res-combo')).toBeNull();
+  });
+
+  it('settings: locked skins are greyed with their unlock hint and refuse the click; the selected skin is grandfathered; stars unlock', () => {
+    const { ui, sounds, settings } = setupP();
+    settings.skin = 'void';
+    ui.applySettings(settings);
+    const btn = (id: string) => $<HTMLButtonElement>(`#pane-av .seg--skins button[data-value="${id}"]`);
+    expect(btn('azure').classList.contains('is-locked')).toBe(true);
+    expect(btn('azure').getAttribute('aria-disabled')).toBe('true');
+    expect(btn('azure').querySelector('.seg__hint')!.textContent).toBe('별 6개');
+    expect(btn('ember').querySelector('.seg__hint')!.textContent).toBe('2층 진입');
+    expect(btn('void').classList.contains('is-locked')).toBe(false);   // selected: grandfathered
+    expect(btn('void').querySelector('.seg__hint')).toBeNull();
+    expect(btn('clawd').classList.contains('is-locked')).toBe(false);
+    // a click on a locked skin changes nothing but plays the error sound
+    btn('azure').click();
+    expect(settings.skin).toBe('void');
+    expect(sounds.at(-1)).toBe('error');
+    // six stars open 아마조니: the picker follows the save on refreshSelect; void locks once it is no longer worn
+    settings.skin = 'clawd';
+    ui.refreshSelect(makeProgress(['t1', 't2']), LEVELS);
+    expect(btn('azure').classList.contains('is-locked')).toBe(false);
+    expect(btn('azure').querySelector('.seg__hint')).toBeNull();
+    expect(btn('void').classList.contains('is-locked')).toBe(true);
+    expect(btn('void').querySelector('.seg__hint')!.textContent).toBe('첫 S 등급');
+    btn('azure').click();
+    expect(settings.skin).toBe('azure');
+    // a recorded unlock counts even when the rule is not met by the records
+    const p = makeProgress(['t1']);
+    p.unlockedSkins = ['ember'];
+    ui.refreshSelect(p, LEVELS);
+    expect(btn('ember').classList.contains('is-locked')).toBe(false);
+    expect(btn('azure').classList.contains('is-locked')).toBe(false);   // worn now: grandfathered
+  });
+
+  it('HUD: the hearts hide unless assist (hp keeps flowing into them); the combo chip turns hot at 8', () => {
+    const { ui } = setup();
+    ui.show('play');
+    ui.hud(makeHud({ hp: 2, maxHp: 3, assist: false }));
+    expect($('#hud-hearts').hidden).toBe(true);
+    expect(document.querySelectorAll('#hud-hearts .heart')).toHaveLength(3);
+    expect(document.querySelectorAll('#hud-hearts .heart.off')).toHaveLength(1);
+    ui.hud(makeHud({ hp: 1, maxHp: 3, assist: true }));
+    expect($('#hud-hearts').hidden).toBe(false);
+    expect(document.querySelectorAll('#hud-hearts .heart.off')).toHaveLength(2);
+    ui.hud(makeHud({ hp: 3, maxHp: 3, assist: false }));
+    expect($('#hud-hearts').hidden).toBe(true);
+    ui.hud(makeHud({ combo: 7 }));
+    expect($('#hud-combo').hidden).toBe(false);
+    expect($('#hud-combo').classList.contains('is-hot')).toBe(false);
+    ui.hud(makeHud({ combo: COMBO_HOT }));
+    expect($('#hud-combo').classList.contains('is-hot')).toBe(true);
+    expect($('#hud-combo-n').textContent).toBe(String(COMBO_HOT));
+    ui.hud(makeHud({ combo: 0 }));
+    expect($('#hud-combo').classList.contains('is-hot')).toBe(false);
+    expect($('#hud-combo').hidden).toBe(true);
+  });
+
+  it("a queued submission refused with busy reads '서버가 붐빈다 …'; an offline one keeps the offline line", () => {
+    const { ui } = setup();
+    ui.show('play');
+    const base = { summary: makeSummary(), levelName: '첫 물결', personalBest: false, stars: 1 };
+    ui.showResult({ ...base, submit: { state: 'queued', reason: 'busy' } });
+    expect($('#res-submit').textContent).toBe(QUEUED_KR.busy);
+    ui.updateResult({ ...base, submit: { state: 'queued' } });
+    expect($('#res-submit').textContent).toBe(QUEUED_KR.offline);
+  });
+
+  it('renderLeaderboard flags our row by run id when the page carries no `you` (public page + /api/me) and formats a capped rank', () => {
+    mountTemplate();
+    const host = document.getElementById('daily-lb')!;
+    const lb = makeLb();
+    const pub: LeaderboardResponse = { ...lb, entries: lb.entries.map((e) => ({ ...e, you: false })), yours: { ...lb.yours!, you: true } };
+    renderLeaderboard(host, pub);
+    const rows = [...host.querySelectorAll('tr.lb__row')];
+    expect(rows.map((r) => r.classList.contains('is-you'))).toEqual([false, true, false]);
+    expect(host.querySelector('.lb__gap')).toBeNull();
+    expect(host.querySelector('.lb__you b')!.textContent).toBe('2위');
+    renderLeaderboard(host, { ...pub, yours: { ...pub.yours!, rank: 1001, runId: 'run-far', playerTag: 'ffffffffffff' } });
+    expect(host.querySelector('.lb__you b')!.textContent).toBe('1,000위 밖');
+    expect(host.querySelector('.lb__gap')).not.toBeNull();
+    expect([...host.querySelectorAll('tr.lb__row')].filter((r) => r.classList.contains('is-you'))).toHaveLength(1);
   });
 });

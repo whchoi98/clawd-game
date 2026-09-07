@@ -23,7 +23,10 @@ import type { DailyResponse, LeaderboardResponse, RejectReason } from '../../sha
 import type { Biome } from '../../shared/biomes.js';
 import { BIOMES, BIOME_ORDER } from '../../shared/biomes.js';
 import { DEFAULT_BINDS } from '../input/binds.js';
-import { MS_PER_DAY, isMuted, streakFor, toggleMute, touchLayout, unlockedZones, utcDateStr, type TouchLayout } from '../save.js';
+import {
+  MS_PER_DAY, bestRankOf, isMuted, streakFor, toggleMute, touchLayout, unlockedZones, utcDateStr, worldRankOf, type TouchLayout,
+} from '../save.js';
+import { skinAvailable, skinHint, totalsText, worldRankText } from '../unlocks.js';
 import { fmtVersus } from '../echo/rival.js';
 import {
   LEAVE_MS, MODAL_SCREENS, Navigator, ScreenStack, el, lockSvg, replay, starSvg, validateName, NAME_MAX,
@@ -35,7 +38,7 @@ import { TRANSFER_KR, TransferPanel, normalizeCode, type TransferStatusKind } fr
 import { TouchControls, wantsRotatePrompt } from './touch.js';
 import { renderLeaderboard, type LbStatus } from './leaderboard.js';
 import {
-  CLEAR_TIMELINE, MEDAL_KR, SUMMIT, TITLE_HOOK, Timeline, drawEndingSky, endingTimeline, endingView, medalsOf, prefersReducedMotion,
+  CLEAR_TIMELINE, MEDAL_KR, MEDAL_ORDER, SUMMIT, TITLE_HOOK, Timeline, drawEndingSky, endingTimeline, endingView, medalsOf, prefersReducedMotion,
   tierCardView, tierTimeline,
   type ClearStage, type EndingStage, type EndingView, type TierCardView, type TierStage,
 } from './ceremony.js';
@@ -142,6 +145,19 @@ export interface VersusView {
   deltaTicks: number;
 }
 
+/** What a clear adds to the result beyond its summary (P3-6, see Scenes.ClearExtras): fresh medals and the longest combo. */
+export interface ClearExtrasView {
+  newMedals: readonly string[];
+  combo: number;
+  comboRecord: boolean;
+}
+
+/** Result-line copy for a run kept in the queue: offline, or the server asked for a retry (503 busy / 429). */
+export const QUEUED_KR = {
+  offline: '오프라인 · 온라인이 되면 보낸다',
+  busy: '서버가 붐빈다 · 잠시 후 자동으로 다시 보낸다',
+} as const;
+
 /** The inline name prompt while it is open on the result / game-over modal. */
 interface InlineName {
   root: HTMLElement;
@@ -209,6 +225,8 @@ export class UI implements UIPort {
   private segRows: SegmentView[] | null = null;
   /** The result screen's 라이벌보다 row, as the shell last set it (null = no world echo was raced). */
   private versus: VersusView | null = null;
+  /** The clear's fresh medals and longest combo (P3-6), as the shell last set them before showResult. */
+  private clearExtras: ClearExtrasView | null = null;
   /** The inline name prompt, while open. */
   private inlineName: InlineName | null = null;
   /** Whole-tile best height the game-over screen shows (rewritten with the world best when the board arrives). */
@@ -302,6 +320,8 @@ export class UI implements UIPort {
       },
       onRebuilt: () => { if (this.screens.top === 'settings') this.nav.refresh(this.screens.el('settings'), true); },
       onTouchLayout: (layout) => this.previewTouchLayout(layout),
+      // Skin locks (P3-6): the rules over the current save; the selected skin is always available (grandfathering).
+      skinLocked: (id) => (skinAvailable(id, this.progress, this.settings, this.levels) ? null : skinHint(id) ?? '잠김'),
       sound: (n) => this.sound(n),
       portrait: () => this.portrait,
       build: opts.build,
@@ -418,12 +438,20 @@ export class UI implements UIPort {
     return prefersReducedMotion(this.win) || isShotHarness(this.win);
   }
 
-  /** The record's medals as chips (hidden without any); the reveal shows the row at its 'medals' stage. */
+  /**
+   * The record's medals as chips (hidden without any); the reveal shows the row
+   * at its 'medals' stage. The ones this clear just earned (setClearExtras) carry
+   * `is-new`: they pop and the unlock sound plays with their stage.
+   */
   private paintMedals(view: ResultView): void {
     const host = this.doc.getElementById('res-medals');
     if (!host) return;
     const medals = medalsOf(this.progress?.levels[view.summary.levelId]);
-    host.replaceChildren(...medals.map((m) => el(this.doc, 'span', { class: `medal medal--${m}`, role: 'listitem' }, MEDAL_KR[m])));
+    const fresh = new Set(this.clearExtras?.newMedals ?? []);
+    host.replaceChildren(...medals.map((m) => el(this.doc, 'span', {
+      class: `medal medal--${m}${fresh.has(m) ? ' is-new' : ''}`, role: 'listitem',
+      'aria-label': fresh.has(m) ? `${MEDAL_KR[m]} · 새 메달` : MEDAL_KR[m],
+    }, MEDAL_KR[m])));
     host.hidden = medals.length === 0;
   }
 
@@ -444,7 +472,11 @@ export class UI implements UIPort {
       for (let i = 0; i < n; i++) this.audio?.stinger?.('star', i);
     } else if (stage === 'medals') {
       const medals = this.doc.getElementById('res-medals');
-      if (medals && !medals.hidden) this.audio?.stinger?.('medal');
+      if (medals && !medals.hidden) {
+        this.audio?.stinger?.('medal');
+        // a medal earned by this very clear: the unlock chime on top of the landing
+        if (medals.querySelector('.medal.is-new')) this.sound('unlock');
+      }
     }
   }
 
@@ -681,6 +713,11 @@ export class UI implements UIPort {
     this.paintVersus();
   }
 
+  /** Result screen (P3-6): the medals this clear just earned and its longest combo; null for a run without them. Call before showResult. */
+  setClearExtras(x: ClearExtrasView | null): void {
+    this.clearExtras = x ? { newMedals: [...x.newMedals], combo: x.combo, comboRecord: x.comboRecord } : null;
+  }
+
   /**
    * Where the renderer drew the goal (canvas CSS px) after the last frame, or
    * null: the zone name chip hides while the goal sits under the HUD's
@@ -766,7 +803,12 @@ export class UI implements UIPort {
       if (cursorCard) cursorCard.setAttribute('data-default', '');
       const prog = this.doc.getElementById('sel-progress');
       if (prog) prog.textContent = `${done} / ${levels.length} 구역 돌파 · ${unlocked.size} 해금`;
+      // "별 N/36 · 메달 N/48" — the denominators follow LEVELS (a new zone widens them by 3 and 4).
+      const totals = this.doc.getElementById('sel-totals');
+      if (totals) totals.textContent = totalsText(progress, levels);
     }
+    // A clear may have opened a skin: the picker's locks follow the save (P3-6).
+    this.settingsPanel.syncSkins();
     this.refreshTitle();
     this.renderDailyStrip();
     if (this.screens.top === 'select') {
@@ -811,6 +853,13 @@ export class UI implements UIPort {
       ];
       if (s.totalRelics > 0) list.push(this.resRow('유물', `${s.relics} / ${s.totalRelics}`));
       list.push(this.resRow('쓰러진 횟수', String(s.deaths)));
+      // the run's longest shard combo (P3-6); 신기록 when it beat the zone's stored best
+      const x = this.clearExtras;
+      if (x && x.combo > 0) {
+        const row = this.resRow(x.comboRecord ? '최고 콤보 · 신기록!' : '최고 콤보', `×${x.combo}`, x.comboRecord);
+        row.id = 'res-combo';
+        list.push(row);
+      }
       if (s.height > 0) list.push(this.resRow('도달 높이', String(Math.floor(s.height))));
       rows.replaceChildren(...list);
     }
@@ -1620,16 +1669,28 @@ export class UI implements UIPort {
     card.append(el(d, 'div', { class: 'card__sky' }), el(d, 'div', { class: 'card__ridge' }));
     const stars = el(d, 'div', { class: 'card__stars' });
     for (let s = 0; s < 3; s++) stars.appendChild(starSvg(d, (rec?.stars ?? 0) > s));
+    // P3-6: the best rank letter, the four medal slots (earned / empty) and the world rank of the submitted best, when known.
+    const top = el(d, 'div', { class: 'card__top' });
+    const rank = bestRankOf(rec);
+    if (rank) top.appendChild(el(d, 'span', { class: 'card__rank', 'data-rank': rank, 'aria-label': `최고 등급 ${rank}` }, rank));
+    const have = new Set(rec?.medals ?? []);
+    const slots = el(d, 'div', { class: 'card__medals', role: 'img', 'aria-label': `메달 ${MEDAL_ORDER.filter((m) => have.has(m)).length} / ${MEDAL_ORDER.length}` });
+    for (const m of MEDAL_ORDER) {
+      slots.appendChild(el(d, 'i', { class: `cmedal cmedal--${m}${have.has(m) ? ' is-on' : ''}`, title: have.has(m) ? MEDAL_KR[m] : `${MEDAL_KR[m]} · 미획득` }));
+    }
+    top.appendChild(slots);
     const meta = el(d, 'div', { class: 'card__meta' },
       el(d, 'span', {}, rec?.bestTicks ? fmtTicks(rec.bestTicks) : '—:——.——'),
       el(d, 'span', { class: 'shards' }, String(rec?.bestShards ?? 0)),
       rec?.relics ? el(d, 'span', { class: 'relic' }, '유물') : null,
       el(d, 'span', {}, `목표 ${fmtTime(lv.par).slice(0, -3)}`),
     );
-    card.append(stars, el(d, 'div', { class: 'card__body' },
+    card.append(stars, top, el(d, 'div', { class: 'card__body' },
       el(d, 'div', { class: 'card__idx' }, `${biome.name} · ${String(idx + 1).padStart(2, '0')}`),
       el(d, 'div', { class: 'card__title' }, lv.name),
       meta));
+    const world = rec?.done ? worldRankOf(rec) : undefined;
+    if (world) card.appendChild(el(d, 'span', { class: 'card__world', 'data-rank': String(world) }, worldRankText(world)));
     if (!unlocked) card.appendChild(el(d, 'div', { class: 'card__lock' }, lockSvg(d), el(d, 'span', {}, '잠김')));
     return card;
   }
@@ -1734,7 +1795,8 @@ export class UI implements UIPort {
         }
         case 'rejected': submit.append(`거절됨: ${reasonKr(sub.reason)}`); break;
         case 'offline': submit.append('오프라인 · 기록은 이 기기에만 남는다'); break;
-        case 'queued': submit.append('오프라인 · 온라인이 되면 보낸다'); break;
+        // queued: offline, or the server asked for a retry (503 busy / 429 — the queue's timer resends it)
+        case 'queued': submit.append(sub.reason === 'busy' ? QUEUED_KR.busy : QUEUED_KR.offline); break;
         default: break;
       }
       submit.hidden = sub.state === 'idle';

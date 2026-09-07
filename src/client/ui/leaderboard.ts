@@ -6,6 +6,7 @@
 import type { LeaderboardEntry, LeaderboardResponse } from '../../shared/protocol.js';
 import { el } from './screens.js';
 import { fmtTicks } from './hud.js';
+import { fmtWorldRank } from '../unlocks.js';
 
 export type LbStatus = 'loading' | 'ok' | 'error';
 
@@ -58,7 +59,8 @@ export function renderLeaderboard(host: HTMLElement, lb: LeaderboardResponse | n
   const total = Math.max(lb.total, lb.entries.length);
   const head = el(doc, 'p', { class: 'lb__you' });
   if (yours) {
-    head.append(el(doc, 'span', {}, '내 순위 ', el(doc, 'b', {}, `${yours.rank}위`)), el(doc, 'span', {}, `${total.toLocaleString('ko-KR')}명 참가`));
+    // a rank past the server's count cap reads "1000위 밖" (GET /api/me rankCapped)
+    head.append(el(doc, 'span', {}, '내 순위 ', el(doc, 'b', {}, fmtWorldRank(yours.rank))), el(doc, 'span', {}, `${total.toLocaleString('ko-KR')}명 참가`));
   } else {
     head.append(el(doc, 'span', {}, '내 순위 —'), el(doc, 'span', {}, `${total.toLocaleString('ko-KR')}명 참가`));
   }
@@ -72,12 +74,15 @@ export function renderLeaderboard(host: HTMLElement, lb: LeaderboardResponse | n
     el(doc, 'th', { scope: 'col', class: 'lb__shards' }, '파편'),
   ));
   const tbody = el(doc, 'tbody');
-  // The server marks the row of the `playerId` sent with the query; the raw id
-  // never appears in a response (entries carry only an opaque playerTag).
+  // Our row: the entry the server flagged `you` (a personal page), or the one
+  // matching `yours` by run id / opaque player tag when the page is a public,
+  // edge-cached one and `yours` came from /api/me. Raw ids never appear here.
+  const isYou = (e: LeaderboardEntry): boolean => e.you || (!!yours && (e.runId === yours.runId || e.playerTag === yours.playerTag));
   let yoursShown = false;
   for (const e of entries) {
-    yoursShown ||= e.you;
-    tbody.appendChild(entryRow(doc, e, e.you));
+    const you = isYou(e);
+    yoursShown ||= you;
+    tbody.appendChild(entryRow(doc, e, you));
   }
   if (yours && !yoursShown) {
     tbody.appendChild(el(doc, 'tr', { class: 'lb__gap', 'aria-hidden': 'true' }, el(doc, 'td', { colspan: 4 }, '···')));

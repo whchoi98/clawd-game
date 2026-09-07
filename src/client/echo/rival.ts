@@ -15,8 +15,28 @@
  * reached that checkpoint yet.
  */
 import { TICK_HZ } from '../../sim/types.js';
-import type { LeaderboardEntry, LeaderboardResponse } from '../../shared/protocol.js';
+import type { LeaderboardEntry, LeaderboardResponse, MeResponse } from '../../shared/protocol.js';
 import type { EchoWorldMode } from '../save.js';
+
+/**
+ * A public board page plus our own row (P3-12 split the two: /api/leaderboard
+ * is edge-cached and carries nothing personal, /api/me answers with `yours`).
+ * Returns a new response with `yours` set and the matching entry — same run
+ * id, else same player tag — flagged `you`, so the picker, the tables and the
+ * gap row keep reading the shape they always did. `me` null = no personal row
+ * (offline, or the API has no such call): the page is returned as it came.
+ */
+export function withPersonalRow(lb: LeaderboardResponse, me: MeResponse | null | undefined): LeaderboardResponse {
+  if (!me || me.board !== lb.board || me.mode !== lb.mode) return lb;
+  const yours = me.yours;
+  const total = Math.max(lb.total, me.total);
+  if (!yours) return { ...lb, total, yours: undefined, entries: lb.entries.map((e) => (e.you ? { ...e, you: false } : e)) };
+  const entries = lb.entries.map((e) => {
+    const you = e.runId === yours.runId || e.playerTag === yours.playerTag;
+    return e.you === you ? e : { ...e, you };
+  });
+  return { ...lb, total, entries, yours: { ...yours, you: true } };
+}
 
 export type WorldEchoKind = 'top' | 'rival';
 

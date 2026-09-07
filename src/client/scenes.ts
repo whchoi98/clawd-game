@@ -23,7 +23,7 @@ import { bandBiome, makeDailyLevel } from '../sim/gen/daily.js';
 import { makeEndlessLevel } from '../sim/gen/endless.js';
 import { BIOMES, BIOME_ORDER, C, type Biome } from '../shared/biomes.js';
 import { MAX_MASKS_B64, TransferCode } from '../shared/protocol.js';
-import type { DailyResponse, GhostResponse, LeaderboardResponse, RunSubmit } from '../shared/protocol.js';
+import type { DailyResponse, GhostResponse, LeaderboardResponse, MeResponse, Mode, RunSubmit } from '../shared/protocol.js';
 import type {
   ApiPort, AudioPort, HudState, InputPort, Progress, RendererPort, ResultView, UIAction, UIPort,
 } from './contracts.js';
@@ -31,9 +31,10 @@ import { MAX_FRAME_DT, TickScheduler } from './loop.js';
 import { FxBus } from './fx.js';
 import { Camera } from './camera.js';
 import {
-  DEFAULT_NAME, MS_PER_DAY, PERSIST_ASKED_KEY, Save, echoMasks, echoWorldMode, fallbackName, isValidName, markEcho, recordSegmentBest,
-  retentionBuckets, segmentBests, unlockedZones, utcDateStr,
+  DEFAULT_NAME, MS_PER_DAY, PERSIST_ASKED_KEY, Save, clearWorldRank, echoMasks, echoWorldMode, fallbackName, isValidName, markEcho,
+  recordBestCombo, recordBestRank, recordSegmentBest, retentionBuckets, segmentBests, setWorldRank, unlockedZones, utcDateStr,
 } from './save.js';
+import { medalsFor, mergeMedals, newMedals, syncUnlockedSkins } from './unlocks.js';
 import { cloneBinds } from './input/binds.js';
 import type { HapticsPort } from './haptics.js';
 import { ApiError } from './net/api.js';
@@ -44,7 +45,7 @@ import { Echo, checkpointKey } from './echo/echo.js';
 import { GUIDE_COLOR, GUIDE_DELAY, GUIDE_LABEL, guideDropX, guideFor } from './echo/guide.js';
 import { GOAL_LABEL, goalEchoFor } from './echo/goal.js';
 import {
-  RIVAL_LABEL, SPLIT_NONE, SPLIT_SECONDS, TOP_LABEL, fmtSplit, pickWorldEcho, worldEchoLabel, type SplitSign, type WorldEchoKind,
+  RIVAL_LABEL, SPLIT_NONE, SPLIT_SECONDS, TOP_LABEL, fmtSplit, pickWorldEcho, withPersonalRow, worldEchoLabel, type SplitSign, type WorldEchoKind,
 } from './echo/rival.js';
 import {
   RACE_COLOR, RACE_KR, RUN_ID_RE, buildRaceUrl, defaultShareEnv, isFreshDailyDate, raceBanner, raceLabel, shareRaceLink, type ShareEnv,
@@ -79,6 +80,16 @@ export interface VersusView {
   /** '라이벌' or '1위'. */
   label: string;
   deltaTicks: number;
+}
+
+/** What a clear adds to the result screen beyond the summary (P3-6): the medals it just earned and the run's longest shard combo. */
+export interface ClearExtras {
+  /** Medal ids the record did not hold before this clear (they pop, with the unlock sound). */
+  newMedals: string[];
+  /** Longest shard combo of this run. */
+  combo: number;
+  /** The combo beat the zone's stored best (a first combo counts). */
+  comboRecord: boolean;
 }
 
 /** Everything a zone remembers across restarts within one browser session (never saved). */
@@ -145,6 +156,8 @@ export interface ShellUI extends UIPort {
   segments?(rows: SegmentRow[] | null): void;
   /** Result screen: the "라이벌보다 0.62s 빠름" row when a world echo was raced; null hides it. */
   setVersus?(v: VersusView | null): void;
+  /** Result screen (P3-6): the medals this clear just earned and its longest combo; null for a run without them. Call before showResult. */
+  setClearExtras?(x: ClearExtras | null): void;
   /** Settings → 데이터: a one-time transfer code was created (P3-5). */
   showTransferCode?(code: string, expiresAt: string): void;
   /** Settings → 데이터: progress / error line under the transfer widgets; null clears it. */
@@ -249,6 +262,10 @@ export const NAME_ASKED_KEY = 'name:asked';
 export const assistSeenKey = (levelId: string): string => `assist:${levelId}`;
 /** 나중에 presses on the result screen's install card before it stays hidden for good (P3-4). */
 export const INSTALL_CARD_MAX_DISMISS = 3;
+/** A zone's world rank (the select card's 세계 N위) is re-read from the board at most this often (P3-6). */
+export const RANK_REFRESH_MS = 5 * 60_000;
+/** The public top page consulted before /api/me when a card's rank is refreshed (our run id is in it when we are that high). */
+export const RANK_TOP_LIMIT = 20;
 
 /** Growable per-tick mask recording, capped at MAX_TICKS. */
 export class MaskLog {
@@ -340,6 +357,10 @@ export interface Run {
   tierCard: TierCardView | null;
   /** This clear completed the tower for the first time: the ending stands in for the result (P3-9). */
   ending: boolean;
+  /** Medals this clear added to the zone's record (P3-6); they pop on the result screen. */
+  newMedals: string[];
+  /** This run's longest shard combo beat the zone's stored best (P3-6). */
+  comboRecord: boolean;
   /** Best height before this run (tide modes), for the 신기록 label. */
   prevBestHeight: number;
   hintTimer: number;
@@ -413,6 +434,8 @@ export class Scenes {
   private readonly runEndListeners: (() => void)[] = [];
   /** Per-zone session memory (death marks, segment deaths), keyed by mode · zone · seed. */
   private readonly sessions = new Map<string, ZoneSession>();
+  /** When each zone's world rank was last re-read from the board (P3-6), for the RANK_REFRESH_MS throttle. */
+  private readonly rankRefreshedAt = new Map<string, number>();
 
   private titleT = 0;
   private titleSwitchT = 0;
@@ -461,6 +484,7 @@ export class Scenes {
   bootSync(): void {
     this.applySettings();
     this.ui.setPortraitPainter((ctx, skin, size, t) => this.renderer.drawPortrait(ctx, skin, size, t));
+    this.unlockSkins(false);
     this.ui.refreshSelect(this.save.progress, this.levels);
     this.bootTelemetry();
     this.showTitle();
@@ -482,6 +506,8 @@ export class Scenes {
     if (hooks.fonts) { try { await Promise.race([hooks.fonts, hooks.wait(1400)]); } catch { /* no font API */ } }
     ui.boot?.(0.7, '레벨 로드…');
     await hooks.raf();
+    // Skins the rules grant to this save (a rule may have arrived after the clears that satisfy it) — silently at boot.
+    this.unlockSkins(false);
     this.ui.refreshSelect(this.save.progress, this.levels);
     this.bootTelemetry();
     ui.boot?.(1, '준비 완료');
@@ -563,7 +589,11 @@ export class Scenes {
       case 'retryYesterday': this.startYesterday(); break;
       case 'assistAccept': this.acceptAssist(); break;
       case 'assistDecline': this.declineAssist(a.never); break;
-      case 'openSelect': this.ui.refreshSelect(this.save.progress, this.levels); break;
+      case 'openSelect':
+        this.ui.refreshSelect(this.save.progress, this.levels);
+        // The cards' 세계 N위 badges: re-read from the boards in the background (throttled per zone).
+        void this.track(this.refreshWorldRanks());
+        break;
       case 'openDaily': void this.track(this.openDaily()); break;
       case 'openSettings':
       case 'openCredits':
@@ -810,6 +840,7 @@ export class Scenes {
     try {
       const snap = await this.api.transferGet(code);
       this.save.importSnapshot(snap);
+      this.unlockSkins(false);
       this.ui.refreshSelect(this.save.progress, this.levels);
       this.ui.transferStatus?.(`${TRANSFER_KR.imported} · ${snap.name}`, 'ok');
       this.ui.toast(TRANSFER_KR.imported);
@@ -931,6 +962,7 @@ export class Scenes {
       pendingSubmit: null,
       summary: null, view: null, resultKind: null, resultTimer: -1, resultShown: false,
       tierCard: null, ending: false,
+      newMedals: [], comboRecord: false,
       // Stored heights are whole tiles; floor defensively for saves written before that rule.
       prevBestHeight: Math.floor(mode === 'daily' && daily ? (this.save.progress.daily[daily.date]?.height ?? 0)
         : mode === 'endless' ? this.save.progress.endless.bestHeight : 0),
@@ -1104,6 +1136,7 @@ export class Scenes {
     this.ui.refreshSelect(this.save.progress, this.levels);
     this.ui.show(to);
     if (to === 'daily') void this.track(this.refreshDailyBoard());
+    if (to === 'select') void this.track(this.refreshWorldRanks());
   }
 
   // ================================================================ per frame
@@ -1600,6 +1633,8 @@ export class Scenes {
     const openBefore = this.unlockedZones();
     // A locked zone raced through a link leaves no trace: no record, no totals, nothing opens.
     const personalBest = run.raceLocked ? false : this.recordProgress(run, summary, encoded);
+    // Skins the record now grants (P3-6): announced over the clear animation, before the result lands.
+    if (run.mode === 'story' && !run.raceLocked) this.unlockSkins(true);
     const justUnlocked = new Set<string>();
     for (const id of this.unlockedZones()) if (!openBefore.has(id)) justUnlocked.add(id);
     const i = this.levels.findIndex((l) => l.id === run.def.id);
@@ -1664,9 +1699,18 @@ export class Scenes {
           rec.bestTicks = s.ticks;
           if (encoded) markEcho(rec, encoded);
           else { delete rec.masks; delete rec.runId; }
+          // The world rank described the previous best: the submission / the board says the new one.
+          clearWorldRank(rec);
         }
         rec.stars = Math.max(rec.stars, starsFor(s));
+        // Medals (P3-6): earned ones are never lost; the new ones pop on the result screen.
+        const earned = medalsFor(s);
+        run.newMedals = newMedals(rec.medals, earned);
+        const medals = mergeMedals(rec.medals, earned);
+        if (medals.length) rec.medals = medals;
+        recordBestRank(rec, s.rank);
       }
+      run.comboRecord = recordBestCombo(rec, run.sim.state.stats.bestCombo);
       rec.bestShards = Math.max(rec.bestShards, s.shards);
       rec.relics = Math.max(rec.relics, s.relics);
       rec.deaths += s.deaths;
@@ -1720,6 +1764,10 @@ export class Scenes {
       this.ui.setVersus?.(this.raceVersus(run) ?? (r && run.summary.cleared
         ? { label: r.kind === 'top' ? TOP_LABEL : RIVAL_LABEL, deltaTicks: run.summary.ticks - r.ticks }
         : null));
+      // The medals this clear added and its longest combo (P3-6); a locked race recorded nothing.
+      this.ui.setClearExtras?.(run.raceLocked ? null : {
+        newMedals: run.newMedals.slice(), combo: run.sim.state.stats.bestCombo, comboRecord: run.comboRecord,
+      });
       this.ui.installCard?.(this.installCardAllowed(run));
       this.ui.showResult(run.view);
     } else {
@@ -1788,34 +1836,123 @@ export class Scenes {
     try {
       const res = await this.api.submitRun(body);
       if (res.accepted) {
+        // The immediate rank is the submission's own answer: the public board page may lag it by a few seconds.
         view.submit = { state: 'accepted', rank: res.rank, total: res.total };
         run.acceptedRunId = res.runId;
         this.storeRunId(run, res.runId, encoded);
         if (mode === 'daily') this.storeDailyRank(board, res.rank);
+        else this.storeStoryRank(run.def.id, res.rank, encoded);
         this.trackVerdict(run, { accepted: true });
       } else {
         view.submit = { state: 'rejected', reason: res.reason };
         this.trackVerdict(run, { accepted: false, reason: res.reason });
       }
     } catch (err) {
-      const offline = !(err instanceof ApiError) || err.offline;
-      reachable = !offline;
-      if (!offline) {
-        view.submit = { state: 'rejected', reason: (err as ApiError).reason };
-        this.trackVerdict(run, { accepted: false, reason: (err as ApiError).reason });
+      const e = err instanceof ApiError ? err : null;
+      // 503 busy (the verification pool is full) / 429: the server is up but wants a retry — queued, resent after Retry-After.
+      const retryable = e !== null && e.retryable;
+      const offline = e === null || e.offline;
+      reachable = false;
+      if (e && !offline && !retryable) {
+        reachable = true;
+        view.submit = { state: 'rejected', reason: e.reason };
+        this.trackVerdict(run, { accepted: false, reason: e.reason });
       } else if (this.queue) {
-        // Kept locally and sent on the next boot / `online`; the result line says so.
+        // Kept locally and sent on the next boot / `online` (or the retry timer); the result line says which.
         this.queue.enqueue(body, { mode, board, levelId: run.def.id });
-        view.submit = { state: 'queued' };
+        view.submit = retryable ? { state: 'queued', reason: 'busy' } : { state: 'queued' };
+        if (retryable) this.queue.retryLater(this.api, (ev) => this.onQueued(ev), e?.retryAfter);
       } else view.submit = { state: 'offline' };
     }
     this.pushResult(run);
     if (!reachable) return;
     try {
-      view.leaderboard = await this.api.leaderboard({ mode, board, limit: 20, playerId: player.id });
+      // The public top page (edge-cached, no player id) plus our own row from /api/me.
+      view.leaderboard = await this.boardWithMe(mode, board, 20);
       if (mode === 'daily') this.adoptDailyBoard(board, view.leaderboard);
+      else if (view.leaderboard.yours) this.storeStoryRank(run.def.id, view.leaderboard.yours.rank, encoded);
     } catch { /* the board is decoration */ }
     this.pushResult(run);
+  }
+
+  // ================================================================ personal rows (P3-12 / P3-6)
+  /** Our own row on a board (GET /api/me, never cached), or null when the API has no such call or it failed. */
+  private async myRow(mode: Mode, board: string): Promise<MeResponse | null> {
+    if (!this.api.me) return null;
+    try { return await this.api.me({ mode, board, limit: 1, playerId: this.save.progress.player.id }); } catch { return null; }
+  }
+
+  /**
+   * A public board page plus our own row: /api/leaderboard is shared between
+   * viewers at the edge and carries nothing personal, so `yours` (and the `you`
+   * flag on the matching entry) come from /api/me. Rejects only when the page
+   * itself failed; a missing personal row leaves the page as it came.
+   */
+  private async boardWithMe(mode: Mode, board: string, limit: number): Promise<LeaderboardResponse> {
+    const [lb, me] = await Promise.all([this.api.leaderboard({ mode, board, limit }), this.myRow(mode, board)]);
+    return withPersonalRow(lb, me);
+  }
+
+  /**
+   * Remember the world rank of a story zone's best (the card's 세계 N위): from an
+   * accepted submission or a board row. `encoded` names the run the rank is
+   * about; it must still be the record's best. The cards repaint on a change.
+   */
+  private storeStoryRank(levelId: string, rank: number, encoded?: string): void {
+    const rec = this.save.progress.levels[levelId];
+    if (!rec || !(rank >= 1)) return;
+    if (encoded !== undefined && rec.masks !== encoded) return;
+    if (!setWorldRank(rec, rank)) return;
+    this.save.saveProgress();
+    this.ui.refreshSelect(this.save.progress, this.levels);
+  }
+
+  /**
+   * The select screen's 세계 N위 badges (P3-6): for every zone whose best was
+   * submitted, at most once per RANK_REFRESH_MS, read the public top page
+   * first (our run id sits in it when we are that high — one cached request)
+   * and ask /api/me only when it does not. Failures keep the last known rank.
+   */
+  async refreshWorldRanks(): Promise<void> {
+    const now = this.now();
+    const jobs: Promise<void>[] = [];
+    for (const lv of this.levels) {
+      const rec = this.save.progress.levels[lv.id];
+      if (!rec?.runId) continue;
+      const last = this.rankRefreshedAt.get(lv.id);
+      if (last !== undefined && now - last < RANK_REFRESH_MS) continue;
+      this.rankRefreshedAt.set(lv.id, now);
+      jobs.push(this.refreshWorldRank(lv.id, rec.runId));
+    }
+    if (jobs.length) await Promise.allSettled(jobs);
+  }
+
+  private async refreshWorldRank(levelId: string, runId: string): Promise<void> {
+    try {
+      const lb = await this.api.leaderboard({ mode: 'story', board: levelId, limit: RANK_TOP_LIMIT });
+      const hit = lb.entries.find((e) => e.runId === runId);
+      if (hit) { this.storeStoryRank(levelId, hit.rank); return; }
+      const me = await this.myRow('story', levelId);
+      if (me?.yours) this.storeStoryRank(levelId, me.yours.rank);
+    } catch {
+      // The badge keeps what it knew; the throttle lets the next select visit try again after RANK_REFRESH_MS.
+    }
+  }
+
+  // ================================================================ skin unlocks (P3-6)
+  /**
+   * Record every skin the rules grant to this save; the new ones are announced
+   * (toast + unlock sound) when `announce` is set — after a clear, never at boot.
+   * The UI's skin picker follows on the next refreshSelect.
+   */
+  private unlockSkins(announce: boolean): void {
+    const fresh = syncUnlockedSkins(this.save.progress, this.levels);
+    if (!fresh.length) return;
+    this.save.saveProgress();
+    if (!announce) return;
+    const names = fresh.map((id) => this.renderer.skins[id]?.kr ?? id);
+    this.ui.toast(`새 캐릭터 해금 · ${names.join(' · ')}`);
+    this.audio.ui('unlock');
   }
 
   /**
@@ -1871,7 +2008,11 @@ export class Scenes {
   private onQueued(ev: FlushEvent): void {
     if (ev.kind !== 'sent') return;
     const { item, response } = ev;
-    if (response.accepted) this.adoptRunId(item, response.runId);
+    if (response.accepted) {
+      this.adoptRunId(item, response.runId);
+      if (item.mode === 'story') this.storeStoryRank(item.levelId, response.rank, item.body.masks);
+      else this.storeDailyRank(item.board, response.rank);
+    }
     this.trackVerdict({ mode: item.mode, def: { id: item.levelId } as LevelDef },
       response.accepted ? { accepted: true } : { accepted: false, reason: response.reason });
     // The result screen of the run that was just queued is still up: settle its line.
@@ -1931,10 +2072,10 @@ export class Scenes {
     const mode = run.mode === 'daily' ? 'daily' : 'story';
     const board = run.mode === 'daily' ? run.daily!.date : run.def.id;
     try {
-      // The whole top 50 with our own row flagged (`you` / `yours`; entries never
-      // carry a raw player id, only an opaque tag): the 라이벌 is the entry ranked
-      // just above ours, the 1위 the leader — see echo/rival.ts.
-      const lb = await this.api.leaderboard({ mode, board, limit: 50, playerId: prog.player.id });
+      // The whole top 50 (public, edge-cached) with our own row from /api/me flagged
+      // `you` / `yours` (entries never carry a raw player id, only an opaque tag):
+      // the 라이벌 is the entry ranked just above ours, the 1위 the leader — see echo/rival.ts.
+      const lb = await this.boardWithMe(mode, board, 50);
       if (this.run !== run) return;
       if (lb.entries.length === 0) { goal(); return; }
       const pick = pickWorldEcho(lb, echoWorldMode(s));
@@ -1982,7 +2123,7 @@ export class Scenes {
     const d = this.daily;
     if (!d) return;
     try {
-      const lb = await this.api.leaderboard({ mode: 'daily', board: d.date, limit: 20, playerId: this.save.progress.player.id });
+      const lb = await this.boardWithMe('daily', d.date, 20);
       if (this.daily !== d) return;
       this.dailyLb = lb;
       this.ui.setDaily(d, lb, 'ok');
@@ -2014,7 +2155,7 @@ export class Scenes {
     this.ui.setYesterday?.(info);
     if (info.lb) return;
     try {
-      const lb = await this.api.leaderboard({ mode: 'daily', board: date, limit: 1, playerId: this.save.progress.player.id });
+      const lb = await this.boardWithMe('daily', date, 1);
       if (this.yesterday !== info) return;
       this.yesterday = { ...info, lb };
       this.ui.setYesterday?.(this.yesterday);
