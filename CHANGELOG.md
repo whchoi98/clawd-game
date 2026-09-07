@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### Added (Phase 5 A)
+- P5-3 배경 강화(`src/client/render/{sky,tiles,renderer,stage}.ts`, 렌더 전용 — sim·리플레이 무관): 스카이에 패럴랙스 층 2개를 더했다 — **원경 구조물 실루엣**(조수 웅덩이 등대(회전 광선)·난파선·야자, 폭풍 첨탑 창불 켜진 첨탑(번개 때 밝아짐), 공허의 초 해파리 갓·산호 아치, 정점 눈 봉우리·부유 사당)과 **중경 동물 무리**(갈매기/박쥐/빛벌레/눈바다제비 14마리 V자 편대, 화면 상단 42 % 밴드 안에서만). 정점 **오로라 리본** 3줄(fbm 흐름, `accent`↔`skyLight`, 느린 드리프트), 눈 날씨 `'snow'`(느린 낙하·바람 흔들림, 고품질 90개), 세로 구역 **구름 갑판**(`cloudDeck`: 높이 55 % 지점의 구름층을 뚫고 오르면 별이 짙어지고 발밑이 구름 바다로, `deckFactor` 단조), 가로 구역 **시간대 드리프트**(진행도에 따라 하늘 그라디언트를 최대 0.15 보간, 캐시 48단계). `tiles.ts` 바이옴 **면 장식 패스**(노출면만, 타일 좌표 결정론 `tileDecor`, 종류별 Path2D 1회 채우기 — 지형 Path2D fill 상한 6→9): 조수 웅덩이 따개비·이끼, 폭풍 첨탑 발광 룬, 공허의 초 결정, 정점 얼음 광택·눈 모자; 정점 가시에도 민트 림(`SPIKE_RIM_BIOMES`), 정점 선반 소나무 소품. 품질 게이트: `low`는 새 층 전부 끄고(`Sky.counters` 스파이 0) `balanced`는 무리 절반. **정점 팔레트 확정**(`BIOMES.summit` 값만: crust `#5FA3D6`·crustHi `#D8F4FF`·fog `#4F86A8` — 가시 윤곽 대비 4.5:1↑, 상승기류 밝기 차 ≥25/255, 비콘 accent와 하늘·지형 색 거리 >48). `tools/qa/readability.ts`에 `backdrop:t1/s1/v1` 단계(스카이만 다시 그려 플레이필드 밴드의 어느 픽셀 열 평균도 crust 루마를 넘지 않음)와 `tier4-updraft/spike/beacon` 단계(임시로 기존 구역을 가리키는 `SUMMIT_*` 상수, P5-1 병합 후 m1/m3로 전환) 추가. 테스트: `sky.test.ts`(층·게이트·눈·갑판·시간대·팔레트 판독성 수식) · `tiles.test.ts`(장식 결정론·면 규칙) · `render.test.ts`(4바이옴 setLevel+draw, 게이트 스파이, 지형 fill 상한, 정점 림).
+
 ## [0.3.0] - 2026-09-07
 
 배포: https://clawd-game.whchoi.net/ (CloudFront E38DW91AO2DWTB, ECS 롤아웃 완료 242 s, 라이브 QA 통과 — 배포 점검 13/13, 스모크 18/18(12구역 캡처·자가진단), 모바일 46/46, 데일리 기록 제출 E2E, 알람 11/11 OK). SIM_VERSION 3으로 모든 스토리 보드가 `s3r1`(새 세로형 존은 `s3r0`)로 새로 열리고, 이전 클라이언트는 `sim-version` 거절 → 업데이트 바를 받는다. Fargate 태스크는 512 CPU / 1024 MiB로 커졌다.

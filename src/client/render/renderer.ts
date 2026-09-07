@@ -6,9 +6,11 @@
  * lives here and is advanced by `dtFrame`, so a replay verified on the server
  * is never influenced by what the player saw.
  *
- * Frame order: sky (device space) → world transform → terrain → hazards →
- * entities → foes → bolts → echoes → player → particles → tide → screen-space
- * fog band → composite (bloom, vignette, grain, flash, fade, letterbox).
+ * Frame order: sky (device space: gradient, stars, aurora, sun, clouds,
+ * ridges with far structures, props, cloud deck, flock, back wall, weather) →
+ * world transform → terrain (with the biome face decor) → hazards → entities →
+ * foes → bolts → echoes → player → particles → tide → screen-space fog band →
+ * composite (bloom, vignette, grain, flash, fade, letterbox).
  */
 import { TILE } from '../../sim/types.js';
 import type { BiomeId, PlayerState, SimEvent, SimState } from '../../sim/types.js';
@@ -114,7 +116,8 @@ export class Renderer implements RendererPort {
   setLevel(sim: SimView, biome: Biome): void {
     this.level = sim.level;
     this.biome = biome;
-    this.sky.setBiome(biome, sim.level.def.seed);
+    // the level box tells the sky whether this is a vertical zone (cloud deck) or a horizontal one (time-of-day drift)
+    this.sky.setBiome(biome, sim.level.def.seed, { pxW: sim.level.pxW, pxH: sim.level.pxH });
     this.skyOwner = 'level';
     this.terrain = new Terrain(this.stage, sim.level, biome, this.createCanvas);
     this.actors.setLevel(biome);

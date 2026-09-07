@@ -11,17 +11,22 @@
  *      Path2D filled once — per-tile translucent rects would double-blend on
  *      every boundary and print seams
  *   3. exposed-face detail (crust, bevel, ambient occlusion, cracks) — only
- *      tiles with an open face pay for it
+ *      tiles with an open face pay for it — plus the biome face decor (P5-3):
+ *      tidepool barnacles and moss, stormspire runes, voidreef crystals,
+ *      summit ice sheen and snow caps. Decor is deterministic per tile
+ *      (`tileDecor`) and batched: every kind is ONE Path2D filled once
  *   4. crumbling blocks, switch blocks (polarity glow / ghost outline), decor
  *
- * The whole-screen terrain therefore costs at most 6 Path2D fills per frame:
- * rock + tint + 3 depth bands + sub-surface bounce light.
+ * The whole-screen terrain therefore costs at most TERRAIN_MAX_PATH_FILLS
+ * Path2D fills per frame: rock + tint + 3 depth bands + sub-surface bounce
+ * light + up to 3 face-decor batches.
  *
  * Gradients and patterns are created once per level: CanvasGradient/Pattern
  * coordinates resolve in user space at paint time, so one object serves every
  * tile as long as the context is translated.
  */
 import { TILE } from '../../sim/types.js';
+import type { BiomeId } from '../../sim/types.js';
 import { PHYS } from '../../sim/config.js';
 import { SWITCH_A, SWITCH_B } from '../../sim/legend.js';
 import type { Level } from '../../sim/level.js';
@@ -31,6 +36,79 @@ import { Stage, TAU, alpha, clamp01, fbm, hashStr, hexToRgb, lerp, mixHex, noise
 const ROCK_PX = 128;      // one texture repeat == 128 world units == 8 tiles
 const DEPTH_BANDS = [1, 3, 6];
 const DEPTH_ALPHA = [0.1, 0.14, 0.2];
+/** Upper bound of Path2D fills on the main context per terrain draw (see the file comment). */
+export const TERRAIN_MAX_PATH_FILLS = 9;
+/** Biomes whose spikes carry an accent rim: their blade colours otherwise dissolve into the crust beside them. */
+export const SPIKE_RIM_BIOMES: ReadonlySet<BiomeId> = new Set<BiomeId>(['voidreef', 'summit']);
+
+// ------------------------------------------------------------------ face decor (P5-3)
+/** Which faces of a '#' tile are open (the neighbour on that side is not solid). */
+export interface TileFaces { up: boolean; dn: boolean; lf: boolean; rt: boolean }
+export type FaceDecorKind = 'barnacle' | 'moss' | 'rune' | 'crystal' | 'sheen' | 'snowcap';
+/**
+ * One decor primitive in tile-local units (0..TILE). `side` is the face it
+ * hangs on (-1 left, 1 right, 0 top/bottom); `v` a 0..1 variant knob.
+ */
+export interface FaceDecor { kind: FaceDecorKind; x: number; y: number; w: number; h: number; side: -1 | 0 | 1; v: number }
+
+/** The open side face a decoration goes on when both are open: the hash picks. */
+function pickSide(f: TileFaces, h: number): -1 | 1 {
+  return f.lf && (!f.rt || (h & 4) !== 0) ? -1 : 1;
+}
+
+/**
+ * Biome decor for an exposed '#' tile — a pure function of the biome and the
+ * tile coordinates, so the same tile always grows the same barnacles and a
+ * ledge never shimmers. Tiles with no open face get nothing.
+ */
+export function tileDecor(biome: BiomeId, tx: number, ty: number, f: TileFaces): FaceDecor[] {
+  const out: FaceDecor[] = [];
+  if (!f.up && !f.dn && !f.lf && !f.rt) return out;
+  const h = hashStr(`f${tx},${ty}`);
+  const v = ((h >>> 24) & 255) / 255;
+  switch (biome) {
+    case 'tidepool': {
+      // barnacle clusters on three of four side faces, a moss streak under one lip in four
+      if ((f.lf || f.rt) && (h & 3) !== 0) {
+        const side = pickSide(f, h);
+        const n = 2 + ((h >>> 3) & 1);
+        for (let i = 0; i < n; i++) {
+          const y = 3.5 + (((h >>> (5 + i * 3)) & 7) / 7) * (TILE - 7);
+          out.push({ kind: 'barnacle', x: side < 0 ? 0.6 : TILE - 0.6, y, w: 1 + ((h >>> (9 + i)) & 1) * 0.5, h: 0, side, v });
+        }
+      }
+      if (f.up && ((h >>> 9) & 3) === 0) out.push({ kind: 'moss', x: 1.5 + ((h >>> 11) & 7), y: 9.4, w: 4 + ((h >>> 14) & 3), h: 1.3, side: 0, v });
+      break;
+    }
+    case 'stormspire': {
+      // a glowing rune on one side face in five
+      if ((f.lf || f.rt) && h % 5 === 0) {
+        const side = pickSide(f, h);
+        out.push({ kind: 'rune', x: side < 0 ? 3.2 : TILE - 3.2, y: 3 + ((h >>> 6) & 7), w: 2.2, h: 5, side, v });
+      }
+      break;
+    }
+    case 'voidreef': {
+      // crystals hang from one ceiling in four and jut from one side face in eight
+      if (f.dn && (h & 3) === 0) out.push({ kind: 'crystal', x: 3 + ((h >>> 6) % 10), y: TILE, w: 1.5 + ((h >>> 10) & 1) * 0.6, h: 3 + ((h >>> 11) & 3), side: 0, v });
+      if ((f.lf || f.rt) && ((h >>> 2) & 7) === 0) {
+        const side = pickSide(f, h);
+        out.push({ kind: 'crystal', x: side < 0 ? 0 : TILE, y: 3 + ((h >>> 12) % 9), w: 1.4, h: 2.6 + ((h >>> 15) & 1), side, v });
+      }
+      break;
+    }
+    case 'summit': {
+      // every lip carries a snow cap of slightly varying depth; half the side faces an ice sheen
+      if (f.up) out.push({ kind: 'snowcap', x: 0, y: 0, w: TILE, h: 2.4 + ((h >>> 5) & 3) * 0.4, side: 0, v });
+      if ((f.lf || f.rt) && (h & 1) === 0) {
+        const side = pickSide(f, h);
+        out.push({ kind: 'sheen', x: side < 0 ? 0 : TILE, y: 2 + ((h >>> 7) & 3), w: 2.4, h: TILE - 5, side, v });
+      }
+      break;
+    }
+  }
+  return out;
+}
 
 /**
  * Spikes are drawn 1.3× the reference art: blade width 4.2 → 5.5, and blade
@@ -93,6 +171,106 @@ function makeRockTexture(b: Biome, create: () => HTMLCanvasElement): HTMLCanvasE
   return cv;
 }
 
+/**
+ * Collects the frame's face decor into one Path2D per kind (and colour), then
+ * paints each once. Geometry is world space; tile offsets are added on `add`.
+ */
+class DecorBatches {
+  private readonly paths = new Map<string, Path2D>();
+  count = 0;
+
+  private path(key: string): Path2D {
+    let p = this.paths.get(key);
+    if (!p) { p = new Path2D(); this.paths.set(key, p); }
+    return p;
+  }
+
+  add(items: FaceDecor[], ox: number, oy: number): void {
+    for (const d of items) {
+      const x = ox + d.x, y = oy + d.y;
+      this.count++;
+      switch (d.kind) {
+        case 'barnacle': {
+          // a half disc bulging out of the face. moveTo first: a bare arc() would join the previous
+          // subpath's point to the arc start with a stroke-length line across the whole screen
+          const p = this.path('barnacle');
+          const a0 = d.side < 0 ? Math.PI / 2 : -Math.PI / 2;
+          p.moveTo(x + Math.cos(a0) * d.w, y + Math.sin(a0) * d.w);
+          p.arc(x, y, d.w, a0, a0 + Math.PI);
+          p.closePath();
+          break;
+        }
+        case 'moss':
+          this.path('moss').roundRect(x, y, d.w, d.h, 0.65);
+          break;
+        case 'rune': {
+          // a three-stroke zigzag glyph, plus a soft rect for the bloom buffer
+          const p = this.path('rune'), hw = d.w / 2;
+          p.moveTo(x - hw, y); p.lineTo(x + hw, y + d.h * 0.4); p.lineTo(x - hw, y + d.h * 0.7); p.lineTo(x + hw, y + d.h);
+          this.path('runeGlow').rect(x - hw - 1.5, y - 1.5, d.w + 3, d.h + 3);
+          break;
+        }
+        case 'crystal': {
+          const p = this.path(d.v < 0.5 ? 'crystalA' : 'crystalB');
+          if (d.side === 0) { p.moveTo(x - d.w, y); p.lineTo(x + d.w, y); p.lineTo(x + d.w * 0.15, y + d.h); }
+          else { p.moveTo(x, y - d.w); p.lineTo(x, y + d.w); p.lineTo(x + d.side * d.h, y + d.w * 0.2); }
+          p.closePath();
+          break;
+        }
+        case 'sheen': {
+          // a diagonal streak of light down the ice face
+          const p = this.path('sheen');
+          const x0 = d.side < 0 ? x : x - d.w, x1 = d.side < 0 ? x + d.w : x;
+          p.moveTo(x0, y + 1.2); p.lineTo(x1, y); p.lineTo(x1, y + d.h * 0.55); p.lineTo(x0, y + d.h);
+          p.closePath();
+          break;
+        }
+        case 'snowcap':
+          this.path('snowcap').roundRect(x + 0.3, y - 0.7, d.w - 0.6, d.h, [1.4, 1.4, 0.6, 0.6]);
+          this.path('snowShadow').rect(x + 0.6, y + d.h - 0.8, d.w - 1.2, 0.9);
+          break;
+      }
+    }
+  }
+
+  paint(st: Stage, b: Biome, t: number): void {
+    if (this.count === 0) return;
+    const ctx = st.ctx, gctx = st.gctx;
+    const bloom = st.settings.bloom;
+    const fill = (key: string, style: string): void => {
+      const p = this.paths.get(key);
+      if (!p) return;
+      ctx.fillStyle = style;
+      ctx.fill(p);
+    };
+    ctx.save();
+    fill('barnacle', alpha(mixHex(b.crustHi, '#FFFFFF', 0.3), 0.62));
+    fill('moss', alpha(mixHex(b.accent, b.crust, 0.5), 0.5));
+    fill('crystalA', alpha(b.crust, 0.82));
+    fill('crystalB', alpha(b.accent, 0.82));
+    fill('sheen', alpha('#FFFFFF', 0.13));
+    fill('snowcap', alpha(mixHex('#FFFFFF', b.crustHi, 0.12), 0.92));
+    fill('snowShadow', alpha(mixHex(b.crust, '#000000', 0.35), 0.45));
+    const rune = this.paths.get('rune');
+    if (rune) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 2.2);
+      ctx.strokeStyle = alpha(b.accent, 0.5 + 0.3 * pulse);
+      ctx.lineWidth = 0.8;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.stroke(rune);
+      const glow = this.paths.get('runeGlow');
+      if (glow && bloom) { gctx.fillStyle = alpha(b.accent, 0.22 * pulse); gctx.fill(glow); }
+    }
+    if (bloom) {
+      const a = this.paths.get('crystalA'), c = this.paths.get('crystalB');
+      if (a) { gctx.fillStyle = alpha(b.crust, 0.2); gctx.fill(a); }
+      if (c) { gctx.fillStyle = alpha(b.accent, 0.2); gctx.fill(c); }
+    }
+    ctx.restore();
+  }
+}
+
 export class Terrain {
   private rockPat: CanvasPattern | string = '#000000';
   private gTint!: CanvasGradient;
@@ -102,6 +280,8 @@ export class Terrain {
   private gSideL!: CanvasGradient;
   private gSideR!: CanvasGradient;
   private depthCol: string[] = [];
+  /** Face-decor primitives the last draw batched (tests, the fps overlay). */
+  decorCount = 0;
 
   constructor(
     private readonly stage: Stage,
@@ -240,7 +420,8 @@ export class Terrain {
       }
     }
 
-    // ---------- pass 3: exposed-face detail ----------
+    // ---------- pass 3: exposed-face detail (+ batched biome face decor) ----------
+    const decor = new DecorBatches();
     ctx.save();
     for (let ty = y0; ty <= y1; ty++) {
       for (let tx = x0; tx <= x1; tx++) {
@@ -248,6 +429,7 @@ export class Terrain {
         const up = L.solid(tx, ty - 1), dn = L.solid(tx, ty + 1);
         const lf = L.solid(tx - 1, ty), rt = L.solid(tx + 1, ty);
         if (up && dn && lf && rt) continue;
+        decor.add(tileDecor(b.id, tx, ty, { up: !up, dn: !dn, lf: !lf, rt: !rt }), tx * TILE, ty * TILE);
 
         ctx.save();
         ctx.translate(tx * TILE, ty * TILE);
@@ -315,6 +497,8 @@ export class Terrain {
       }
     }
     ctx.restore();
+    this.decorCount = decor.count;
+    decor.paint(this.stage, b, t);
 
     this.switchBlocks(t, switchFlash, x0, x1, y0, y1);
     this.decor(t, x0, x1, y0, y1);
@@ -484,6 +668,27 @@ export class Terrain {
             gctx.fillStyle = alpha(col, 0.3 * pulse);
             gctx.beginPath(); gctx.arc(px, py - h * 0.5, w * 1.8, 0, TAU); gctx.fill();
           }
+        } else if (kind === 'pine') {
+          // summit: a small snow-laden pine — trunk, two dark tiers, white on the windward tips
+          const hgt = (8 + ((hs >>> 8) % 6)) * sc;
+          const dark = mixHex(b.rockDeep, b.ridge[1], 0.4);
+          ctx.fillStyle = dark;
+          ctx.fillRect(px - 0.5, py - hgt * 0.3, 1, hgt * 0.3);
+          for (let i = 0; i < 2; i++) {
+            const by = py - hgt * (0.25 + i * 0.4), tw = (3.4 - i * 1.1) * sc, th = hgt * 0.45;
+            ctx.fillStyle = dark;
+            ctx.beginPath(); ctx.moveTo(px, by - th); ctx.lineTo(px + tw, by); ctx.lineTo(px - tw, by); ctx.closePath(); ctx.fill();
+            ctx.fillStyle = alpha(b.crustHi, 0.8);
+            ctx.beginPath(); ctx.moveTo(px, by - th); ctx.lineTo(px + tw * 0.55, by - th * 0.4); ctx.lineTo(px + tw * 0.2, by - th * 0.42); ctx.closePath(); ctx.fill();
+          }
+          // a frost tuft beside it on half the tiles
+          if ((hs & 8) === 0) {
+            ctx.strokeStyle = alpha(b.crustHi, 0.7);
+            ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            for (let i = -1; i <= 1; i++) { ctx.moveTo(px + 5 * sc, py); ctx.lineTo(px + 5 * sc + i * 1.6 + sway * 0.2, py - 3.2 * sc); }
+            ctx.stroke();
+          }
         } else {
           // voidreef polyps: soft bumps with a bioluminescent mouth and a drifting wisp
           const pulse = 0.4 + 0.6 * Math.abs(Math.sin(t * 1.7 + tx * 1.3));
@@ -538,7 +743,7 @@ export class Terrain {
     const px = tx * TILE, py = ty * TILE;
     const pulse = 0.55 + 0.45 * Math.sin(t * 4 + tx * 0.9 + ty);
     const sp = this.biome.spike;
-    const rim = this.biome.id === 'voidreef' ? this.biome.accent : null;
+    const rim = SPIKE_RIM_BIOMES.has(this.biome.id) ? this.biome.accent : null;
     ctx.save();
     ctx.beginPath();
     ctx.rect(px, py, TILE, TILE);

@@ -24,6 +24,12 @@ import { TILE } from '../../src/sim/types.js';
 import { MENU_FRAME_DT } from '../../src/client/scenes.js';
 import type { SimView, TierStorage } from '../../src/client/render/index.js';
 import { DEATH_MARK_COLOR } from '../../src/client/render/actors.js';
+import type { BiomeId } from '../../src/sim/types.js';
+import { AURORA_RIBBONS, FLOCK_SIZE } from '../../src/client/render/sky.js';
+import { TERRAIN_MAX_PATH_FILLS, type Terrain } from '../../src/client/render/tiles.js';
+
+/** Every biome the renderer must draw: the shipped order plus the Phase 5 summit (which joins BIOME_ORDER with P5-1). */
+const ALL_BIOMES: BiomeId[] = [...new Set<BiomeId>([...BIOME_ORDER, 'summit'])];
 
 // ------------------------------------------------------------------ stubs
 class StubPath2D {
@@ -269,7 +275,7 @@ describe('Renderer', () => {
     }
   });
 
-  it.each(BIOME_ORDER)('setLevel + draw does not throw for biome %s', (biomeId) => {
+  it.each(ALL_BIOMES)('setLevel + draw does not throw for biome %s', (biomeId) => {
     const { r, ctx } = makeRenderer();
     const sim = fakeSim(fixtureDef(biomeId), { tide: true });
     r.applySettings(SETTINGS);
@@ -359,8 +365,10 @@ describe('Renderer', () => {
 
   it('draws the title backdrop and portraits for every biome and skin', () => {
     const { r, ctx } = makeRenderer();
-    for (const id of BIOME_ORDER) {
+    for (const id of ALL_BIOMES) {
       for (let i = 0; i < 3; i++) r.drawTitle(i * 0.5, 1 / 60, BIOMES[id]);
+      // the title vista carries the new layers too (structures, flock; aurora on the summit)
+      expect(r.sky.counters.structures + r.sky.counters.flock + r.sky.counters.aurora).toBeGreaterThan(0);
     }
     expect(ctx.__calls.some((c) => c.name === 'fillRect')).toBe(true);
     const portrait = new StubCanvas();
@@ -536,6 +544,154 @@ describe('Renderer', () => {
     ctx.__sets.strokeStyle = [];
     r.draw(sim, VIEW, FX, [], 1 / 60);
     expect(marksDrawn()).toBe(0);
+  });
+});
+
+// ------------------------------------------------------------------ background pass (P5-3)
+describe('background pass (P5-3)', () => {
+  /** The renderer's terrain (TypeScript-private; a plain property at runtime). */
+  const terrainOf = (r: Renderer): Terrain => (r as unknown as { terrain: Terrain }).terrain;
+  /** A 44×72 tower box (rows > cols): the vertical fixture with the FIXTURE rows stacked on a tall shaft. */
+  const TOWER_ROWS = (() => {
+    const w = 44, rows: string[] = [];
+    for (let y = 0; y < 72; y++) {
+      if (y === 3) rows.push('##' + '.'.repeat(w - 4).replace(/^(.{5})./, '$1P') + '##');
+      else if (y === 68) rows.push('##' + '.'.repeat(20) + 'G' + '.'.repeat(w - 25) + '##');
+      else if (y >= 69) rows.push('#'.repeat(w));
+      else if (y % 6 === 0) rows.push('##' + '###'.padEnd(12, '.') + '.'.repeat(w - 4 - 12 - 8) + '.....###' + '##');
+      else rows.push('##' + '.'.repeat(w - 4) + '##');
+    }
+    return rows;
+  })();
+
+  it('quality gating: the low tier draws no flock, aurora or structures while high draws them all (summit)', () => {
+    const low = makeRenderer();
+    const simLow = fakeSim(fixtureDef('summit'));
+    low.r.applySettings({ ...SETTINGS, quality: 'low' });
+    low.r.setLevel(simLow, BIOMES.summit);
+    for (let i = 0; i < 90; i++) low.r.draw(simLow, { camX: 256 + i * 4, camY: 96, zoom: 1 }, FX, [], 1 / 60);
+    expect(low.r.qualityTier).toBe('low');
+    expect(low.r.sky.counters.flock).toBe(0);
+    expect(low.r.sky.counters.aurora).toBe(0);
+    expect(low.r.sky.counters.structures).toBe(0);
+
+    const high = makeRenderer();
+    const simHigh = fakeSim(fixtureDef('summit'));
+    high.r.applySettings({ ...SETTINGS, quality: 'high' });
+    high.r.setLevel(simHigh, BIOMES.summit);
+    for (let i = 0; i < 90; i++) high.r.draw(simHigh, { camX: 256 + i * 4, camY: 96, zoom: 1 }, FX, [], 1 / 60);
+    expect(high.r.sky.counters.aurora).toBe(90 * AURORA_RIBBONS);
+    expect(high.r.sky.counters.structures).toBeGreaterThan(0);
+    // the flock crosses the screen slowly: give it time, then it must have been drawn
+    for (let i = 0; i < 40; i++) { high.r.sky.update(1, 400, 96); high.r.draw(simHigh, { camX: 400, camY: 96, zoom: 1 }, FX, [], 1 / 60); }
+    expect(high.r.sky.counters.flock).toBeGreaterThan(0);
+
+    const mid = makeRenderer();
+    const simMid = fakeSim(fixtureDef('tidepool'));
+    mid.r.applySettings({ ...SETTINGS, quality: 'balanced' });
+    mid.r.setLevel(simMid, BIOMES.tidepool);
+    let last = 0, maxPerFrame = 0;
+    for (let i = 0; i < 60; i++) {
+      mid.r.sky.update(1, 300, 96);
+      mid.r.draw(simMid, { camX: 300, camY: 96, zoom: 1 }, FX, [], 1 / 60);
+      maxPerFrame = Math.max(maxPerFrame, mid.r.sky.counters.flock - last);
+      last = mid.r.sky.counters.flock;
+    }
+    expect(maxPerFrame).toBeGreaterThan(0);
+    expect(maxPerFrame).toBeLessThanOrEqual(Math.floor(FLOCK_SIZE / 2));
+  });
+
+  it('snow weather on the summit: 90 motes at high, 31 at low (budget 0.35), and they keep falling', () => {
+    const { r } = makeRenderer();
+    const sim = fakeSim(fixtureDef('summit'));
+    r.applySettings({ ...SETTINGS, quality: 'high' });
+    r.setLevel(sim, BIOMES.summit);
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(r.sky.weatherCount).toBe(90);
+    for (let i = 0; i < 120; i++) r.draw(sim, VIEW, FX, [], 1 / 30);
+    expect(r.sky.weatherCount).toBe(90);
+    r.applySettings({ ...SETTINGS, quality: 'low' });
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(r.sky.weatherCount).toBe(Math.round(90 * 0.35));
+  });
+
+  it('cloud deck: a vertical level gets one whose factor rises monotonically as the camera climbs; horizontal levels none', () => {
+    const { r } = makeRenderer();
+    const tower = fakeSim(fixtureDef('voidreef', TOWER_ROWS));
+    expect(tower.level.pxH).toBeGreaterThan(tower.level.pxW);
+    r.setLevel(tower, BIOMES.voidreef);
+    expect(r.sky.hasCloudDeck).toBe(true);
+    let prev = -1;
+    for (let camY = tower.level.pxH; camY >= 0; camY -= 48) {
+      r.draw(tower, { camX: tower.level.pxW / 2, camY, zoom: 1 }, FX, [], 1 / 60);
+      const k = r.sky.deckLast;
+      expect(k).toBeGreaterThanOrEqual(prev);
+      expect(k).toBeGreaterThanOrEqual(0);
+      expect(k).toBeLessThanOrEqual(1);
+      prev = k;
+    }
+    expect(r.sky.deckLast).toBe(1);
+    expect(r.sky.counters.deck).toBeGreaterThan(0);
+    const flat = fakeSim(fixtureDef('voidreef'));
+    r.setLevel(flat, BIOMES.voidreef);
+    expect(r.sky.hasCloudDeck).toBe(false);
+    r.draw(flat, { camX: 200, camY: -500, zoom: 1 }, FX, [], 1 / 60);
+    expect(r.sky.deckLast).toBe(0);
+    expect(r.sky.counters.deck).toBe(0);
+  });
+
+  it('time of day: the sky drifts with progress on a horizontal level only', () => {
+    const { r } = makeRenderer();
+    const sim = fakeSim(fixtureDef('tidepool'));
+    r.setLevel(sim, BIOMES.tidepool);
+    r.draw(sim, { camX: 0, camY: 96, zoom: 1 }, FX, [], 1 / 60);
+    expect(r.sky.dayShift).toBe(0);
+    r.draw(sim, { camX: sim.level.pxW, camY: 96, zoom: 1 }, FX, [], 1 / 60);
+    expect(r.sky.dayShift).toBeCloseTo(0.15, 9);
+    const tower = fakeSim(fixtureDef('tidepool', TOWER_ROWS));
+    r.setLevel(tower, BIOMES.tidepool);
+    r.draw(tower, { camX: tower.level.pxW, camY: 300, zoom: 1 }, FX, [], 1 / 60);
+    expect(r.sky.dayShift).toBe(0);
+  });
+
+  it.each(ALL_BIOMES)('%s: face decor is batched — terrain Path2D fills stay within TERRAIN_MAX_PATH_FILLS and the decor count is deterministic', (biomeId) => {
+    const { r, ctx } = makeRenderer(1280, 800, 1);
+    const sim = fakeSim(fixtureDef(biomeId));
+    r.setLevel(sim, BIOMES[biomeId]);
+    r.draw(sim, { camX: 300, camY: 96, zoom: 1 }, FX, [], 1 / 60);
+    ctx.__calls.length = 0;
+    r.draw(sim, { camX: 300, camY: 96, zoom: 1 }, FX, [], 1 / 60);
+    const pathFills = ctx.__calls.filter((c) => c.name === 'fill' && c.args[0] instanceof StubPath2D);
+    // terrain + decor batches only: the other Path2D fills of a frame come from nowhere else
+    expect(pathFills.length).toBeLessThanOrEqual(TERRAIN_MAX_PATH_FILLS);
+    const t = terrainOf(r);
+    expect(t.decorCount).toBeGreaterThan(0);
+    const first = t.decorCount;
+    r.draw(sim, { camX: 300, camY: 96, zoom: 1 }, FX, [], 1 / 60);
+    expect(t.decorCount).toBe(first);
+    // a different window → possibly different count, but still bounded fills
+    ctx.__calls.length = 0;
+    r.draw(sim, { camX: 500, camY: 60, zoom: 1 }, FX, [], 1 / 60);
+    expect(ctx.__calls.filter((c) => c.name === 'fill' && c.args[0] instanceof StubPath2D).length).toBeLessThanOrEqual(TERRAIN_MAX_PATH_FILLS);
+  });
+
+  it('summit spikes carry the mint accent rim and the snow caps paint near-white', () => {
+    const { r, ctx } = makeRenderer();
+    const sim = fakeSim(fixtureDef('summit'));
+    r.setLevel(sim, BIOMES.summit);
+    // fixture '^^' at row 4, columns 13-14 → world x 208..240, y 64..80
+    r.draw(sim, { camX: 224, camY: 72, zoom: 1 }, FX, [], 1 / 60);
+    const styles = [...(ctx.__sets.fillStyle ?? []), ...(ctx.__sets.strokeStyle ?? [])].filter((v): v is string => typeof v === 'string');
+    const rgbOf = (hex: string) => {
+      const n = parseInt(hex.slice(1), 16);
+      return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+    };
+    const mentions = (hex: string) => styles.some((s) => s.toLowerCase().includes(hex.toLowerCase()) || s.includes(rgbOf(hex)));
+    expect(mentions(BIOMES.summit.accent)).toBe(true);
+    expect(mentions(BIOMES.summit.spike.hi)).toBe(true);
+    // the snow cap fill: white mixed 12 % toward crustHi at alpha 0.92
+    const capRgb = styles.find((s) => /^rgba\(2(4\d|5\d),2(4\d|5\d),255,0\.92\)$/.test(s.replace(/\s/g, '')));
+    expect(capRgb).toBeDefined();
   });
 });
 
