@@ -1,12 +1,12 @@
 {
   "levelId": "s3",
-  "sim": 2,
-  "rev": 0,
+  "sim": 3,
+  "rev": 1,
   "seed": 79,
-  "masks": "AjASCgIEIgMCHyIDAhESDgIOEgoCBCIDAh8qAwIdIgMCLSIDAhESDgIOIgMCNRISAgQiAwIfKgMCHSIDAh0iAwIREg4CDiIDAi0iAwIdIgMCHSIDAh0iAwIdIgMCHSIDAh0iAwIdIgMCHSIDAh0iAwIdIgMCERIOAg4iAwADEAoCAxIENAMSBgggJgMCHSoDAj8=",
-  "ticks": 1069,
-  "time": 8.908,
-  "shards": 4,
+  "masks": "AjASCgIEIgMCHyIDAhESDgIOEgoCBCIDAh8qAwIdIgMCLSIDAhESDgIOIgMCNRISAgQiAwIfKgMCHSIDAh0iAwIREg4CDiIDAi0iAwIdIgMCHSIDAh0iAwIdIgMCHSIDAh0iAwIdIgMCHSIDAh0iAwIdIgMCERIOAg4iAwADEAoSCgIEIgMCHwAQEgoCChIKAgQiAwI7",
+  "ticks": 1083,
+  "time": 9.025,
+  "shards": 0,
   "deaths": 0,
-  "recordedAt": "2026-09-06T16:21:12.508Z"
+  "recordedAt": "2026-09-06T23:55:21.785Z"
 }

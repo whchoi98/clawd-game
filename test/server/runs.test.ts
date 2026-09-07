@@ -10,6 +10,7 @@ import { DynamoRepo, KEY } from '../../src/server/repo/dynamo.js';
 import { REPLACED_RUN_TTL_SECONDS } from '../../src/server/repo/ttl.js';
 import { RUNS_PER_IP_PER_MINUTE } from '../../src/server/routes/runs.js';
 import { replayHash } from '../../src/server/hash.js';
+import { storyBoardSuffix } from '../../src/server/boards.js';
 import {
   DEATH_TICKS, INTRO_TICKS, MASK_SLACK, PlayerLimiter, RESPAWN_INTRO_TICKS, asyncVerifier, maxMasksFor, phaseTicks, submitRun,
   toRejectReason, versionMismatch,
@@ -557,10 +558,12 @@ describe('POST /api/runs', () => {
       repo: new DynamoRepo(client, TABLE), now: () => FIXED_NOW, dailySecret: SECRET, verify: echoVerify(), resolve: fakeResolveLevel,
     });
     const otherBest = (score: number) => ({ Item: {
-      pk: 'PLAYER#player-0001', sk: 'BEST#story#t1#s2r0', runId: 'run-other', mode: 'story', board: 't1', levelId: 't1', seed: FIX_T1.seed, assist: false,
+      pk: 'PLAYER#player-0001', sk: `BEST#story#${T1_BOARD}`, runId: 'run-other', mode: 'story', board: 't1', levelId: 't1', seed: FIX_T1.seed, assist: false,
       playerId: 'player-0001', name: '클로드', score, ticks: score, shards: 2, deaths: 0, cleared: true, height: 0, createdAt: '2026-09-06T11:59:59.000Z',
     } });
     type Tx = Array<Record<string, Record<string, unknown>>>;
+    /** `s<SIM_VERSION>r<rev>` of the real t1 (the board key is derived from the shipped geometry revision). */
+    const T1_BOARD = `t1#${storyBoardSuffix('t1')}`;
 
     it('answers personalBest:false with the winner when the run that landed first is at least as good', async () => {
       const client = new FakeClient();
@@ -579,7 +582,7 @@ describe('POST /api/runs', () => {
       expect(items[2].Put.ConditionExpression).toBe('attribute_not_exists(runId)');
       // the replay hash rides in the same transaction, guarded by attribute_not_exists
       expect(items[3].Put.ConditionExpression).toBe('attribute_not_exists(pk)');
-      expect(items[3].Put.Item).toMatchObject({ pk: `HASH#story#t1#s2r0#${replayHash(MASKS, 't1', FIX_T1.seed)}`, sk: 'META', playerId: 'player-0001' });
+      expect(items[3].Put.Item).toMatchObject({ pk: `HASH#story#${T1_BOARD}#${replayHash(MASKS, 't1', FIX_T1.seed)}`, sk: 'META', playerId: 'player-0001' });
     });
 
     it('retries once against the re-read best when this run still beats it (and gives the replaced story RUN its ttl)', async () => {
@@ -604,7 +607,7 @@ describe('POST /api/runs', () => {
       expect(items[2].Put.ConditionExpression).toBe('runId = :prev');
       expect(items[2].Put.ExpressionAttributeValues).toEqual({ ':prev': 'run-other' });
       expect(items[3].Put.Item).toMatchObject({ sk: 'META', runId: (out.body as { runId: string }).runId });
-      expect(items[4].Delete.Key).toEqual({ pk: 'LB#story#t1#s2r0', sk: KEY.lbSk(900, 2, 'run-other') });
+      expect(items[4].Delete.Key).toEqual({ pk: `LB#story#${T1_BOARD}`, sk: KEY.lbSk(900, 2, 'run-other') });
       expect(items[5].Update).toMatchObject({
         Key: { pk: 'RUN#run-other', sk: 'META' },
         UpdateExpression: 'SET #ttl = :ttl',
@@ -635,7 +638,7 @@ describe('POST /api/runs', () => {
       expect(out.status).toBe(422);
       expect(out.body).toMatchObject({ accepted: false, reason: 'duplicate' });
       expect(client.sent.map((c) => c.name)).toEqual(['GetCommand', 'TransactWriteCommand', 'GetCommand']);
-      expect(client.sent[2].input.Key).toEqual({ pk: `HASH#story#t1#s2r0#${replayHash(MASKS, 't1', FIX_T1.seed)}`, sk: 'META' });
+      expect(client.sent[2].input.Key).toEqual({ pk: `HASH#story#${T1_BOARD}#${replayHash(MASKS, 't1', FIX_T1.seed)}`, sk: 'META' });
     });
 
     it("a cancelled HASH condition owned by the same player is that player's existing run (200, personalBest:false)", async () => {

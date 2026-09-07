@@ -536,10 +536,18 @@ export class Player {
   }
 
   // ------------------------------------------------------------------ damage
-  /** Lose one hp with knockback away from `fromX` (0 = away from facing). */
+  /**
+   * Hazard contact (spikes, saws, bolts, foes, a switch block closing on the
+   * player). Outside assist mode every hit is a death on the same tick — hp is
+   * never touched and no 'hurt' event fires (SIM_VERSION 3: the free-failure
+   * loop makes a death cheaper than a hurt-and-blink). Assist mode keeps the
+   * three hearts: lose one hp with knockback away from `fromX` (0 = away from
+   * facing) and a spell of invulnerability.
+   */
   hurt(fromX: number, cause = 'hit'): void {
     const s = this.s;
     if (s.dead || s.invuln > 0 || this.host.invincible) return;
+    if (!this.host.assist) { this.kill(cause); return; }
     s.hp--;
     this.host.emit({ type: 'hurt', x: this.cx, y: this.cy, hp: s.hp });
     if (s.hp <= 0) { this.kill(cause); return; }

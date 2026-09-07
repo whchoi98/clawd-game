@@ -1,0 +1,397 @@
+{
+  "levelId": "v3",
+  "name": "메아리의 정점",
+  "sim": 3,
+  "rev": 1,
+  "seed": 181,
+  "par": 120,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 0,
+  "clearRate": 0,
+  "gaveUp": 300,
+  "deaths": 7432,
+  "deathsPerEpisode": 24.773333333333333,
+  "medianClearSec": null,
+  "causes": {
+    "foe": 7121,
+    "saw": 211,
+    "bolt": 69,
+    "spike": 31
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 10,
+      "ty": 25,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 1,
+      "tx": 31,
+      "ty": 25,
+      "reached": 262,
+      "rate": 0.8733333333333333
+    },
+    {
+      "index": 2,
+      "tx": 43,
+      "ty": 25,
+      "reached": 284,
+      "rate": 0.9466666666666667
+    },
+    {
+      "index": 3,
+      "tx": 56,
+      "ty": 25,
+      "reached": 271,
+      "rate": 0.9033333333333333
+    },
+    {
+      "index": 4,
+      "tx": 68,
+      "ty": 10,
+      "reached": 297,
+      "rate": 0.99
+    },
+    {
+      "index": 5,
+      "tx": 82,
+      "ty": 10,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 6,
+      "tx": 89,
+      "ty": 5,
+      "reached": 0,
+      "rate": 0
+    }
+  ],
+  "cells": [
+    {
+      "tx": 72,
+      "ty": 10,
+      "deaths": 4740,
+      "causes": {
+        "foe": 4740
+      }
+    },
+    {
+      "tx": 72,
+      "ty": 9,
+      "deaths": 2072,
+      "causes": {
+        "foe": 2072
+      }
+    },
+    {
+      "tx": 24,
+      "ty": 25,
+      "deaths": 183,
+      "causes": {
+        "foe": 182,
+        "bolt": 1
+      }
+    },
+    {
+      "tx": 50,
+      "ty": 25,
+      "deaths": 84,
+      "causes": {
+        "saw": 84
+      }
+    },
+    {
+      "tx": 24,
+      "ty": 24,
+      "deaths": 71,
+      "causes": {
+        "foe": 71
+      }
+    },
+    {
+      "tx": 49,
+      "ty": 24,
+      "deaths": 39,
+      "causes": {
+        "saw": 39
+      }
+    },
+    {
+      "tx": 50,
+      "ty": 24,
+      "deaths": 35,
+      "causes": {
+        "saw": 35
+      }
+    },
+    {
+      "tx": 23,
+      "ty": 23,
+      "deaths": 29,
+      "causes": {
+        "bolt": 29
+      }
+    },
+    {
+      "tx": 37,
+      "ty": 27,
+      "deaths": 27,
+      "causes": {
+        "spike": 27
+      }
+    },
+    {
+      "tx": 52,
+      "ty": 22,
+      "deaths": 23,
+      "causes": {
+        "foe": 23
+      }
+    },
+    {
+      "tx": 48,
+      "ty": 24,
+      "deaths": 20,
+      "causes": {
+        "saw": 20
+      }
+    },
+    {
+      "tx": 49,
+      "ty": 25,
+      "deaths": 17,
+      "causes": {
+        "saw": 17
+      }
+    },
+    {
+      "tx": 51,
+      "ty": 24,
+      "deaths": 14,
+      "causes": {
+        "saw": 14
+      }
+    },
+    {
+      "tx": 23,
+      "ty": 22,
+      "deaths": 11,
+      "causes": {
+        "bolt": 11
+      }
+    },
+    {
+      "tx": 23,
+      "ty": 24,
+      "deaths": 11,
+      "causes": {
+        "bolt": 11
+      }
+    },
+    {
+      "tx": 25,
+      "ty": 24,
+      "deaths": 9,
+      "causes": {
+        "foe": 9
+      }
+    },
+    {
+      "tx": 71,
+      "ty": 9,
+      "deaths": 7,
+      "causes": {
+        "foe": 7
+      }
+    },
+    {
+      "tx": 71,
+      "ty": 10,
+      "deaths": 7,
+      "causes": {
+        "foe": 7
+      }
+    },
+    {
+      "tx": 31,
+      "ty": 25,
+      "deaths": 6,
+      "causes": {
+        "bolt": 6
+      }
+    },
+    {
+      "tx": 53,
+      "ty": 22,
+      "deaths": 5,
+      "causes": {
+        "foe": 5
+      }
+    },
+    {
+      "tx": 22,
+      "ty": 23,
+      "deaths": 4,
+      "causes": {
+        "bolt": 4
+      }
+    },
+    {
+      "tx": 24,
+      "ty": 22,
+      "deaths": 3,
+      "causes": {
+        "bolt": 3
+      }
+    },
+    {
+      "tx": 18,
+      "ty": 24,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 20,
+      "ty": 25,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 38,
+      "ty": 27,
+      "deaths": 2,
+      "causes": {
+        "spike": 2
+      }
+    },
+    {
+      "tx": 47,
+      "ty": 24,
+      "deaths": 2,
+      "causes": {
+        "saw": 2
+      }
+    },
+    {
+      "tx": 22,
+      "ty": 22,
+      "deaths": 1,
+      "causes": {
+        "bolt": 1
+      }
+    },
+    {
+      "tx": 30,
+      "ty": 19,
+      "deaths": 1,
+      "causes": {
+        "bolt": 1
+      }
+    },
+    {
+      "tx": 31,
+      "ty": 23,
+      "deaths": 1,
+      "causes": {
+        "bolt": 1
+      }
+    },
+    {
+      "tx": 39,
+      "ty": 27,
+      "deaths": 1,
+      "causes": {
+        "spike": 1
+      }
+    },
+    {
+      "tx": 40,
+      "ty": 27,
+      "deaths": 1,
+      "causes": {
+        "spike": 1
+      }
+    },
+    {
+      "tx": 51,
+      "ty": 23,
+      "deaths": 1,
+      "causes": {
+        "bolt": 1
+      }
+    },
+    {
+      "tx": 73,
+      "ty": 10,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 71,
+      "x1": 73,
+      "ty": 10,
+      "deaths": 6827,
+      "share": 0.9185952637244349,
+      "cause": "foe"
+    },
+    {
+      "x0": 22,
+      "x1": 25,
+      "ty": 25,
+      "deaths": 322,
+      "share": 0.04332615715823466,
+      "cause": "foe"
+    },
+    {
+      "x0": 47,
+      "x1": 53,
+      "ty": 25,
+      "deaths": 240,
+      "share": 0.03229278794402583,
+      "cause": "saw"
+    },
+    {
+      "x0": 37,
+      "x1": 40,
+      "ty": 27,
+      "deaths": 31,
+      "share": 0.004171151776103337,
+      "cause": "spike"
+    },
+    {
+      "x0": 30,
+      "x1": 31,
+      "ty": 25,
+      "deaths": 8,
+      "share": 0.001076426264800861,
+      "cause": "bolt"
+    },
+    {
+      "x0": 18,
+      "x1": 18,
+      "ty": 24,
+      "deaths": 2,
+      "share": 0.00026910656620021526,
+      "cause": "foe"
+    }
+  ]
+}

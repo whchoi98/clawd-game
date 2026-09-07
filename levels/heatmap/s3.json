@@ -1,0 +1,436 @@
+{
+  "levelId": "s3",
+  "name": "폭풍의 눈",
+  "sim": 3,
+  "rev": 1,
+  "seed": 79,
+  "par": 90,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 0,
+  "clearRate": 0,
+  "gaveUp": 300,
+  "deaths": 7500,
+  "deathsPerEpisode": 25,
+  "medianClearSec": null,
+  "causes": {
+    "bolt": 57,
+    "saw": 1269,
+    "foe": 6174
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 13,
+      "ty": 19,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 1,
+      "tx": 29,
+      "ty": 19,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 2,
+      "tx": 56,
+      "ty": 19,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 3,
+      "tx": 64,
+      "ty": 19,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 4,
+      "tx": 82,
+      "ty": 19,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 5,
+      "tx": 101,
+      "ty": 19,
+      "reached": 0,
+      "rate": 0
+    }
+  ],
+  "cells": [
+    {
+      "tx": 68,
+      "ty": 19,
+      "deaths": 4175,
+      "causes": {
+        "foe": 4175
+      }
+    },
+    {
+      "tx": 68,
+      "ty": 18,
+      "deaths": 1871,
+      "causes": {
+        "foe": 1871
+      }
+    },
+    {
+      "tx": 59,
+      "ty": 19,
+      "deaths": 419,
+      "causes": {
+        "saw": 419
+      }
+    },
+    {
+      "tx": 36,
+      "ty": 19,
+      "deaths": 144,
+      "causes": {
+        "saw": 144
+      }
+    },
+    {
+      "tx": 51,
+      "ty": 19,
+      "deaths": 125,
+      "causes": {
+        "saw": 125
+      }
+    },
+    {
+      "tx": 35,
+      "ty": 18,
+      "deaths": 76,
+      "causes": {
+        "saw": 76
+      }
+    },
+    {
+      "tx": 39,
+      "ty": 19,
+      "deaths": 74,
+      "causes": {
+        "saw": 74
+      }
+    },
+    {
+      "tx": 20,
+      "ty": 19,
+      "deaths": 63,
+      "causes": {
+        "foe": 63
+      }
+    },
+    {
+      "tx": 34,
+      "ty": 19,
+      "deaths": 57,
+      "causes": {
+        "saw": 57
+      }
+    },
+    {
+      "tx": 49,
+      "ty": 19,
+      "deaths": 57,
+      "causes": {
+        "saw": 57
+      }
+    },
+    {
+      "tx": 39,
+      "ty": 18,
+      "deaths": 54,
+      "causes": {
+        "saw": 54
+      }
+    },
+    {
+      "tx": 60,
+      "ty": 19,
+      "deaths": 51,
+      "causes": {
+        "saw": 51
+      }
+    },
+    {
+      "tx": 50,
+      "ty": 19,
+      "deaths": 50,
+      "causes": {
+        "saw": 50
+      }
+    },
+    {
+      "tx": 30,
+      "ty": 19,
+      "deaths": 47,
+      "causes": {
+        "bolt": 47
+      }
+    },
+    {
+      "tx": 37,
+      "ty": 19,
+      "deaths": 45,
+      "causes": {
+        "saw": 45
+      }
+    },
+    {
+      "tx": 34,
+      "ty": 18,
+      "deaths": 41,
+      "causes": {
+        "saw": 41
+      }
+    },
+    {
+      "tx": 35,
+      "ty": 19,
+      "deaths": 37,
+      "causes": {
+        "saw": 37
+      }
+    },
+    {
+      "tx": 22,
+      "ty": 18,
+      "deaths": 25,
+      "causes": {
+        "foe": 25
+      }
+    },
+    {
+      "tx": 23,
+      "ty": 18,
+      "deaths": 19,
+      "causes": {
+        "foe": 19
+      }
+    },
+    {
+      "tx": 20,
+      "ty": 18,
+      "deaths": 18,
+      "causes": {
+        "foe": 18
+      }
+    },
+    {
+      "tx": 48,
+      "ty": 19,
+      "deaths": 10,
+      "causes": {
+        "saw": 10
+      }
+    },
+    {
+      "tx": 43,
+      "ty": 18,
+      "deaths": 6,
+      "causes": {
+        "saw": 6
+      }
+    },
+    {
+      "tx": 19,
+      "ty": 17,
+      "deaths": 4,
+      "causes": {
+        "bolt": 4
+      }
+    },
+    {
+      "tx": 44,
+      "ty": 18,
+      "deaths": 4,
+      "causes": {
+        "saw": 4
+      }
+    },
+    {
+      "tx": 21,
+      "ty": 18,
+      "deaths": 3,
+      "causes": {
+        "foe": 3
+      }
+    },
+    {
+      "tx": 36,
+      "ty": 18,
+      "deaths": 3,
+      "causes": {
+        "saw": 3
+      }
+    },
+    {
+      "tx": 38,
+      "ty": 18,
+      "deaths": 3,
+      "causes": {
+        "saw": 3
+      }
+    },
+    {
+      "tx": 42,
+      "ty": 18,
+      "deaths": 3,
+      "causes": {
+        "saw": 3
+      }
+    },
+    {
+      "tx": 47,
+      "ty": 19,
+      "deaths": 3,
+      "causes": {
+        "saw": 3
+      }
+    },
+    {
+      "tx": 32,
+      "ty": 18,
+      "deaths": 2,
+      "causes": {
+        "saw": 2
+      }
+    },
+    {
+      "tx": 38,
+      "ty": 16,
+      "deaths": 2,
+      "causes": {
+        "bolt": 2
+      }
+    },
+    {
+      "tx": 43,
+      "ty": 19,
+      "deaths": 2,
+      "causes": {
+        "saw": 2
+      }
+    },
+    {
+      "tx": 19,
+      "ty": 18,
+      "deaths": 1,
+      "causes": {
+        "bolt": 1
+      }
+    },
+    {
+      "tx": 33,
+      "ty": 18,
+      "deaths": 1,
+      "causes": {
+        "saw": 1
+      }
+    },
+    {
+      "tx": 38,
+      "ty": 15,
+      "deaths": 1,
+      "causes": {
+        "bolt": 1
+      }
+    },
+    {
+      "tx": 38,
+      "ty": 17,
+      "deaths": 1,
+      "causes": {
+        "bolt": 1
+      }
+    },
+    {
+      "tx": 39,
+      "ty": 16,
+      "deaths": 1,
+      "causes": {
+        "bolt": 1
+      }
+    },
+    {
+      "tx": 41,
+      "ty": 18,
+      "deaths": 1,
+      "causes": {
+        "saw": 1
+      }
+    },
+    {
+      "tx": 46,
+      "ty": 19,
+      "deaths": 1,
+      "causes": {
+        "saw": 1
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 68,
+      "x1": 68,
+      "ty": 19,
+      "deaths": 6046,
+      "share": 0.8061333333333334,
+      "cause": "foe"
+    },
+    {
+      "x0": 32,
+      "x1": 39,
+      "ty": 19,
+      "deaths": 542,
+      "share": 0.07226666666666667,
+      "cause": "saw"
+    },
+    {
+      "x0": 59,
+      "x1": 60,
+      "ty": 19,
+      "deaths": 470,
+      "share": 0.06266666666666666,
+      "cause": "saw"
+    },
+    {
+      "x0": 46,
+      "x1": 51,
+      "ty": 19,
+      "deaths": 246,
+      "share": 0.0328,
+      "cause": "saw"
+    },
+    {
+      "x0": 19,
+      "x1": 23,
+      "ty": 19,
+      "deaths": 133,
+      "share": 0.017733333333333334,
+      "cause": "foe"
+    },
+    {
+      "x0": 30,
+      "x1": 30,
+      "ty": 19,
+      "deaths": 47,
+      "share": 0.006266666666666667,
+      "cause": "bolt"
+    }
+  ]
+}

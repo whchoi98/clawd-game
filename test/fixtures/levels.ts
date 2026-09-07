@@ -196,7 +196,8 @@ export function checkpointRoom(): LevelDef {
 
 /**
  * Flat floor that turns into a spike bed from column 12 to the far wall, no
- * goal: holding RIGHT dies by spikes (three contacts), never by a pit.
+ * goal: holding RIGHT dies by spikes (one contact outside assist mode, three
+ * in it), never by a pit.
  */
 export function spikeRoom(): LevelDef {
   const r = new Room(60, 14);
@@ -204,4 +205,67 @@ export function spikeRoom(): LevelDef {
   r.hline(12, 59, 11, '^');
   r.set(2, 11, 'P');
   return r.def('spikes');
+}
+
+/**
+ * A floor saw sweeping the standing row over the spawn: no rock to its left
+ * until the map edge, a pillar at column 9 to its right, so it patrols
+ * columns 0..8 and passes through a player who stands still at column 2.
+ */
+export function sawRoom(): LevelDef {
+  const r = new Room(30, 14);
+  r.rect(0, 12, 29, 13);
+  r.vline(9, 10, 11);
+  r.set(2, 11, 'P');
+  r.set(6, 11, 's');
+  return r.def('saw');
+}
+
+/** A turret eight tiles from the spawn (awake: inside FOE_WAKE_GAP, and inside TURRET_RANGE): standing still gets shot. */
+export function turretRoom(): LevelDef {
+  const r = new Room(30, 14);
+  r.rect(0, 12, 29, 13);
+  r.set(2, 11, 'P');
+  r.set(10, 11, 't');
+  return r.def('turret');
+}
+
+/** A walker six tiles to the right of the spawn, facing it: it walks into a player who stands still. */
+export function walkerRoom(): LevelDef {
+  const r = new Room(30, 14);
+  r.rect(0, 12, 29, 13);
+  r.set(2, 11, 'P');
+  r.set(8, 11, 'w');
+  return r.def('walker');
+}
+
+/**
+ * A toggle at column 10 with '&' blocks (passable at the start) filling
+ * columns 8..9 of the standing row and the two rows above it. Dashing through
+ * the toggle flips the switch while the player's body is still inside column
+ * 9; the block turns solid, the one-tile nudge cannot free the player, and the
+ * switch closes on them (cause 'switch').
+ */
+export function crushRoom(): LevelDef {
+  const r = new Room(40, 14);
+  r.rect(0, 12, 39, 13);
+  r.set(2, 11, 'P');
+  r.set(10, 11, 'k');
+  r.rect(8, 9, 9, 11, '&');
+  return r.def('crush');
+}
+
+/**
+ * A toggle at column 6, a checkpoint at column 12 and a 6-tile pit at 16..21
+ * on a flat floor, with a '%' and a '&' pillar past the pit to read the
+ * polarity from: dash through the toggle, take the checkpoint in the flipped
+ * polarity, fall into the pit — the respawn must come back flipped.
+ */
+export function polarityRoom(): LevelDef {
+  const r = new Room(40, 14);
+  r.rect(0, 12, 39, 13);
+  for (let x = 16; x <= 21; x++) { r.set(x, 12, '.'); r.set(x, 13, '.'); }
+  r.set(2, 11, 'P').set(6, 11, 'k').set(12, 11, 'C').set(37, 11, 'G');
+  r.vline(30, 8, 11, '%').vline(34, 8, 11, '&');
+  return r.def('polarity');
 }

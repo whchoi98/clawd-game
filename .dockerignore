@@ -23,6 +23,7 @@ tools/stats.*
 tools/admin.*
 tools/solve.ts
 tools/hash-corpus.ts
+tools/novice.ts
 infra
 cdk.json
 cdk.context.json

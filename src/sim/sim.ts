@@ -70,6 +70,12 @@ export class Sim implements SimHost {
   private playTicks = 0;
   private comboT = 0;
   private boltSeq = 1;
+  /**
+   * Switch polarity at the moment the current checkpoint was taken; a respawn
+   * restores it, so a checkpoint behind a toggle never strands the player in
+   * the polarity they arrived with reversed (SIM_VERSION 3).
+   */
+  private respawnSwitchA = true;
   /** World y the tide height is measured from (tide modes). */
   private readonly baseYpx: number;
 
@@ -161,6 +167,7 @@ export class Sim implements SimHost {
 
   onCheckpoint(x: number, y: number): void {
     this.state.respawn = { x, y };
+    this.respawnSwitchA = this.level.switchA;
     this.emit({ type: 'checkpoint', x, y });
   }
 
@@ -179,6 +186,7 @@ export class Sim implements SimHost {
     for (const t of this.toggles) t.sync(L.switchA);
     this.emit({ type: 'toggle', x, y, switchA: L.switchA });
     // a player standing inside a block that just became solid is nudged up by at most one tile, else hurt
+    // (cause 'switch' — a death outside assist mode)
     const p = this.player.s;
     if (this.player.overlapsSolid()) {
       const y0 = p.y;
@@ -345,8 +353,9 @@ export class Sim implements SimHost {
   private respawn(): void {
     const st = this.state;
     this.level.resetRunState();
-    st.switchA = true;
-    for (const t of this.toggles) t.sync(true);
+    this.level.switchA = this.respawnSwitchA;
+    st.switchA = this.respawnSwitchA;
+    for (const t of this.toggles) t.sync(this.respawnSwitchA);
     for (const f of this.foeList) f.reset();
     st.foes = this.foeList.map((f) => f.s);
     st.bolts = [];

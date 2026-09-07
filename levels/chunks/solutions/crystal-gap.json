@@ -1,6 +1,6 @@
 {
   "levelId": "crystal-gap",
-  "sim": 2,
+  "sim": 3,
   "rev": 0,
   "seed": 4045730751,
   "masks": "EQUBGxIKAgoSCgIEIgMCCxIKAgQiAwIfAQsiAwECAhgSEgIEJgMCHxAcAAQSHAIEEhwCBCYDAi0BEAIBJAMCVA==",
@@ -8,5 +8,5 @@
   "time": 3.492,
   "shards": 0,
   "deaths": 0,
-  "recordedAt": "2026-09-06T18:20:54.987Z"
+  "recordedAt": "2026-09-06T23:54:52.824Z"
 }

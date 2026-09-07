@@ -1,6 +1,6 @@
 {
   "levelId": "crystal-chain",
-  "sim": 2,
+  "sim": 3,
   "rev": 0,
   "seed": 1481128102,
   "masks": "EQUBGxIKAgoSCgIEIgMCCxIKAgQiAwIfAAgmAwAGEB4AESYDAh0SHAIEEhwCBBIcAggSETQDEggAEAIKEgoCFSoDAgcSCgIB",
@@ -8,5 +8,5 @@
   "time": 3.142,
   "shards": 0,
   "deaths": 0,
-  "recordedAt": "2026-09-06T18:20:48.934Z"
+  "recordedAt": "2026-09-06T23:54:41.699Z"
 }

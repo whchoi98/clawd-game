@@ -474,6 +474,67 @@ function validateGeometry(def: LevelDef, id: string): string[] {
   return errs;
 }
 
+// ------------------------------------------------------------------ zone pacing rules (P2-8)
+
+/** Seconds of par per checkpoint: a zone needs at least ceil(par / CHECKPOINT_PAR_SEC) checkpoints. */
+export const CHECKPOINT_PAR_SEC = 20;
+/** Neighbouring P / C / G markers (sorted by column) may be at most this many tiles apart horizontally. */
+export const CHECKPOINT_MAX_GAP = 32;
+/** Shards per story zone: few enough that each one is a detour worth taking. */
+export const SHARD_MIN = 8;
+export const SHARD_MAX = 12;
+
+/** The checkpoint count a zone of this par needs. */
+export function checkpointsFor(par: number): number {
+  return Math.ceil(par / CHECKPOINT_PAR_SEC);
+}
+
+/**
+ * Pacing rules a shipped story zone must keep on top of the geometry rules
+ * (chunk solo rooms and test rooms are not zones and skip them):
+ *
+ *  - checkpoints ≥ ceil(par / 20): one respawn point per twenty seconds of par
+ *  - P, every C and G, read left to right, are never more than 32 columns
+ *    apart — a death costs at most half a minute of replay, wherever it happens
+ *  - 8–12 shards: each is a side route (a dash, a wall jump, a double jump
+ *    off the line), so the second star is a real challenge, not a sweep
+ */
+export function zoneRules(def: LevelDef): string[] {
+  const id = def.id || '?';
+  const errs: string[] = [];
+  const rows = def.rows;
+  if (!rows?.length) return errs;
+  const markers: { ch: string; x: number; y: number }[] = [];
+  let shards = 0;
+  for (let y = 0; y < rows.length; y++) {
+    for (let x = 0; x < rows[y].length; x++) {
+      const ch = rows[y][x];
+      if (ch === 'P' || ch === 'C' || ch === 'G') markers.push({ ch, x, y });
+      else if (ch === 'o') shards++;
+    }
+  }
+  const checkpoints = markers.filter((m) => m.ch === 'C').length;
+  const need = checkpointsFor(def.par);
+  if (checkpoints < need) errs.push(`${id}: ${checkpoints} checkpoint(s) for par ${def.par}s — needs at least ${need} (one per ${CHECKPOINT_PAR_SEC}s)`);
+  markers.sort((a, b) => a.x - b.x || a.y - b.y);
+  for (let i = 1; i < markers.length; i++) {
+    const a = markers[i - 1], b = markers[i];
+    const gap = b.x - a.x;
+    if (gap > CHECKPOINT_MAX_GAP) {
+      errs.push(`${id}: ${a.ch} at (${a.x},${a.y}) and ${b.ch} at (${b.x},${b.y}) are ${gap} columns apart (max ${CHECKPOINT_MAX_GAP})\n${dumpAt(rows, b.x, b.y)}`);
+    }
+  }
+  if (shards < SHARD_MIN || shards > SHARD_MAX) errs.push(`${id}: ${shards} shards — a zone carries ${SHARD_MIN}..${SHARD_MAX}`);
+  return errs;
+}
+
+/** validate() plus the zone pacing rules — what every shipped story zone must pass. */
+export function validateZone(def: LevelDef): string[] {
+  const errs = validate(def);
+  if (errs.length) return errs;
+  return zoneRules(def);
+}
+
 /** Throw with every problem listed when a level fails validation. */
 export function assertValid(def: LevelDef): LevelDef {
   const errs = validate(def);

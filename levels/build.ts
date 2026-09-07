@@ -1,5 +1,6 @@
 /**
- * Level builder. Validates every hand-authored zone and writes
+ * Level builder. Validates every hand-authored zone (geometry rules plus the
+ * zone pacing rules: checkpoint density and spacing, 8–12 shards) and writes
  * src/sim/levels.generated.ts — a dependency-free data module the sim, the
  * client and the server all import. Output is a pure function of the zone
  * sources, so rebuilding without changes yields a byte-identical file.
@@ -31,7 +32,7 @@ import { decodeMasks, verifyReplay } from '../src/sim/replay.js';
 import { BIOMES, BIOME_ORDER } from '../src/shared/biomes.js';
 import { chunkRoom, validateChunk } from '../src/sim/gen/chunks.js';
 import type { ChunkDef } from '../src/sim/gen/chunks.js';
-import { census, validate } from './dsl.js';
+import { census, validate, validateZone } from './dsl.js';
 import { readSolutions, staleReason } from './solutions.js';
 import type { Solution } from './solutions.js';
 import { CHUNK_SOURCES } from './chunks/index.js';
@@ -80,7 +81,7 @@ export function render(zones: readonly LevelDef[]): string {
   for (const z of zones) {
     if (ids.has(z.id)) problems.push(`${z.id}: duplicate id`);
     ids.add(z.id);
-    problems.push(...validate(z));
+    problems.push(...validateZone(z));
   }
   if (problems.length) throw new Error(`level validation failed:\n  ${problems.join('\n  ')}`);
 

@@ -1,0 +1,76 @@
+{
+  "levelId": "s2",
+  "name": "번개 회로",
+  "sim": 3,
+  "rev": 1,
+  "seed": 59,
+  "par": 75,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 40,
+  "clearRate": 0.13333333333333333,
+  "gaveUp": 260,
+  "deaths": 1,
+  "deathsPerEpisode": 0.0033333333333333335,
+  "medianClearSec": 13.18,
+  "causes": {
+    "foe": 1
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 28,
+      "ty": 19,
+      "reached": 150,
+      "rate": 0.5
+    },
+    {
+      "index": 1,
+      "tx": 42,
+      "ty": 19,
+      "reached": 157,
+      "rate": 0.5233333333333333
+    },
+    {
+      "index": 2,
+      "tx": 60,
+      "ty": 19,
+      "reached": 157,
+      "rate": 0.5233333333333333
+    },
+    {
+      "index": 3,
+      "tx": 77,
+      "ty": 19,
+      "reached": 115,
+      "rate": 0.38333333333333336
+    }
+  ],
+  "cells": [
+    {
+      "tx": 79,
+      "ty": 19,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 79,
+      "x1": 79,
+      "ty": 19,
+      "deaths": 1,
+      "share": 1,
+      "cause": "foe"
+    }
+  ]
+}
