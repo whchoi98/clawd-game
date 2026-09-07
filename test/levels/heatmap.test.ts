@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { ZONES } from '../../levels/build.js';
-import { census } from '../../levels/dsl.js';
+import { census, isVerticalZone } from '../../levels/dsl.js';
 import { decodeMasks, verifyReplay } from '../../src/sim/replay.js';
 import { Sim } from '../../src/sim/sim.js';
 import { SIM_VERSION, TILE } from '../../src/sim/types.js';
@@ -61,15 +61,39 @@ describe('levels/heatmap — one novice heat map per zone, current and self-cons
     });
   }
 
-  it('the checkpoints of every zone stand right before its hot spots: the heaviest cluster of each zone is never more than 32 columns past a P or C', () => {
+  it('the checkpoints of every zone stand right before its hot spots: the heaviest cluster of each zone is never more than 32 tiles past a P or C along the route', () => {
     for (const def of ZONES) {
       const h = JSON.parse(readFileSync(heatmapPath(def.id), 'utf8')) as ZoneHeat;
       if (!h.hotspots.length) continue;
-      const anchors = [...h.checkpoints.map((c) => c.tx), new Sim(def).level.spawns.find((s) => s.ch === 'P')!.tx];
+      const P = new Sim(def).level.spawns.find((s) => s.ch === 'P')!;
       const top = h.hotspots[0];
-      const before = anchors.filter((x) => x <= top.x1);
-      expect(before.length, `${def.id}: nothing before the hot spot at x ${top.x0}..${top.x1}`).toBeGreaterThan(0);
-      expect(top.x1 - Math.max(...before), `${def.id}: hot spot x ${top.x0}..${top.x1}`).toBeLessThanOrEqual(32);
+      if (isVerticalZone(def)) {
+        // a tower is climbed bottom to top: the anchor is a P or C at or below the cluster's row, within 32 rows
+        const anchors = [...h.checkpoints.map((c) => c.ty), P.ty];
+        const below = anchors.filter((y) => y >= top.ty);
+        expect(below.length, `${def.id}: nothing below the hot spot at row ${top.ty}`).toBeGreaterThan(0);
+        expect(Math.min(...below) - top.ty, `${def.id}: hot spot row ${top.ty}`).toBeLessThanOrEqual(32);
+      } else {
+        const anchors = [...h.checkpoints.map((c) => c.tx), P.tx];
+        const before = anchors.filter((x) => x <= top.x1);
+        expect(before.length, `${def.id}: nothing before the hot spot at x ${top.x0}..${top.x1}`).toBeGreaterThan(0);
+        expect(top.x1 - Math.max(...before), `${def.id}: hot spot x ${top.x0}..${top.x1}`).toBeLessThanOrEqual(32);
+      }
+    }
+  });
+
+  it('the vertical zones (P2-10) carry a heat map too, and it is honest: the right-holding novice policy never climbs a tower, so it records no clear and no death rather than an invented one', () => {
+    for (const id of ['t4', 's4', 'v4']) {
+      const def = byId[id];
+      expect(isVerticalZone(def)).toBe(true);
+      const h = JSON.parse(readFileSync(heatmapPath(id), 'utf8')) as ZoneHeat;
+      expect(h.episodes).toBe(300);
+      expect(h.clears).toBe(0);
+      expect(h.deaths).toBe(0);
+      expect(h.hotspots).toEqual([]);
+      // every checkpoint is still listed, at its real cell, with a reach rate the bot earned (none)
+      expect(h.checkpoints).toHaveLength(census(def).checkpoints);
+      for (const c of h.checkpoints) expect(def.rows[c.ty][c.tx]).toBe('C');
     }
   });
 

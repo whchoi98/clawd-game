@@ -73,6 +73,20 @@ export interface ShaftOpts {
   /** Top row of the left / right wall; default y0 for both. The lower wall top is the exit. */
   leftTop?: number;
   rightTop?: number;
+  /**
+   * Rows of rock under the floor row y1 (default: down to the bottom of the
+   * room). A vertical zone stacks shafts over open air, so its shafts stand on
+   * a shelf of a few rows rather than on a column that would seal everything
+   * beneath.
+   */
+  floorDepth?: number;
+}
+
+export interface TowerOpts {
+  /** Thickness of the side walls in tiles (default 2, like the daily tower). */
+  wall?: number;
+  /** Rows of the base floor at the bottom of the room (default 4). */
+  base?: number;
 }
 
 const lo = (a: number, b: number) => Math.min(a, b);
@@ -182,11 +196,29 @@ export class Room {
     const lt = opts.leftTop ?? y0, rt = opts.rightTop ?? y0;
     const wallBottom = y1 - 3;
     if (wallBottom - Math.max(lt, rt) < SHAFT_MIN_TALL - 1) throw new Error(`shaft at x=${x}: walls too short`);
+    const depth = opts.floorDepth ?? Infinity;
+    if (depth !== Infinity && (!Number.isInteger(depth) || depth < 1)) throw new Error(`shaft at x=${x}: bad floorDepth ${depth}`);
     const xl = x - thick, xr = x + SHAFT_WIDTH_TILES;
-    this.fill(xl, xr + thick - 1, y1, this.h - 1, ROCK);
+    this.fill(xl, xr + thick - 1, y1, Math.min(this.h - 1, y1 + depth - 1), ROCK);
     this.fill(xl, x - 1, lt, wallBottom, ROCK);
     this.fill(xr, xr + thick - 1, rt, wallBottom, ROCK);
     this.fill(x, xr - 1, Math.min(lt, rt), y1 - 1, EMPTY);
+    return this;
+  }
+
+  /**
+   * Tower frame, as the daily tower draws it: rock side walls the whole height
+   * of the room and a solid base floor. The vertical zones (44 wide, taller
+   * than they are wide) start from this; a wall-jump shaft against a side wall
+   * needs only one pillar.
+   */
+  tower(opts: TowerOpts = {}): this {
+    const wall = opts.wall ?? 2, base = opts.base ?? 4;
+    if (!Number.isInteger(wall) || wall < 1 || wall * 2 >= this.w) throw new Error(`tower: bad wall thickness ${wall} for a ${this.w}-wide room`);
+    if (!Number.isInteger(base) || base < 1 || base >= this.h) throw new Error(`tower: bad base ${base} for a ${this.h}-tall room`);
+    this.fill(0, wall - 1, 0, this.h - 1, ROCK);
+    this.fill(this.w - wall, this.w - 1, 0, this.h - 1, ROCK);
+    this.fill(0, this.w - 1, this.h - base, this.h - 1, ROCK);
     return this;
   }
 
@@ -490,12 +522,84 @@ export function checkpointsFor(par: number): number {
 }
 
 /**
+ * The two zone shapes and their size envelopes (inclusive, in tiles). A
+ * horizontal zone is a side-scrolling room; a vertical zone (P2-10) is a tower
+ * climbed bottom to top, 44 wide like the daily tower.
+ */
+export const ZONE_SHAPES = {
+  horizontal: { cols: [60, 120], rows: [16, 30] },
+  vertical: { cols: [36, 48], rows: [60, 100] },
+} as const;
+export type ZoneShape = keyof typeof ZONE_SHAPES;
+
+/** 'vertical' when the grid is taller than it is wide, else 'horizontal' — the envelope a zone is judged against. */
+export function zoneShape(def: Pick<LevelDef, 'rows'>): ZoneShape {
+  const h = def.rows.length, w = def.rows[0]?.length ?? 0;
+  return h > w ? 'vertical' : 'horizontal';
+}
+
+/** True for a zone climbed bottom to top (rows > cols). */
+export function isVerticalZone(def: Pick<LevelDef, 'rows'>): boolean {
+  return zoneShape(def) === 'vertical';
+}
+
+/** Why the grid fits neither envelope, or null when its shape's size rule holds. */
+export function zoneSizeProblem(def: LevelDef): string | null {
+  const id = def.id || '?';
+  const h = def.rows.length, w = def.rows[0]?.length ?? 0;
+  const shape = zoneShape(def);
+  const env = ZONE_SHAPES[shape];
+  if (w >= env.cols[0] && w <= env.cols[1] && h >= env.rows[0] && h <= env.rows[1]) return null;
+  const H = ZONE_SHAPES.horizontal, V = ZONE_SHAPES.vertical;
+  return `${id}: ${w}x${h} is neither a horizontal zone (${H.cols[0]}–${H.cols[1]} x ${H.rows[0]}–${H.rows[1]}) nor a vertical one (${V.cols[0]}–${V.cols[1]} x ${V.rows[0]}–${V.rows[1]}) — read as ${shape}`;
+}
+
+interface Marker { ch: string; x: number; y: number }
+
+/**
+ * The order a vertical zone's P / C / G markers are climbed: bottom row first;
+ * markers sharing a row (a checkpoint on each bank of a pool, say) follow the
+ * nearest-neighbour from the marker before them, so a shelf walked left to
+ * right is measured left to right whichever end the climb reached first.
+ */
+export function climbOrder<T extends Marker>(markers: readonly T[]): T[] {
+  const rows = new Map<number, T[]>();
+  for (const m of markers) {
+    const list = rows.get(m.y);
+    if (list) list.push(m); else rows.set(m.y, [m]);
+  }
+  const out: T[] = [];
+  let last: T | null = null;
+  for (const y of [...rows.keys()].sort((a, b) => b - a)) {
+    const group = [...rows.get(y)!].sort((a, b) => a.x - b.x);
+    while (group.length) {
+      let pick = 0;
+      if (last) {
+        let best = Infinity;
+        for (let i = 0; i < group.length; i++) {
+          const d = Math.abs(group[i].x - last.x) + Math.abs(group[i].y - last.y);
+          if (d < best) { best = d; pick = i; }
+        }
+      }
+      last = group.splice(pick, 1)[0];
+      out.push(last);
+    }
+  }
+  return out;
+}
+
+/**
  * Pacing rules a shipped story zone must keep on top of the geometry rules
  * (chunk solo rooms and test rooms are not zones and skip them):
  *
+ *  - the grid fits one of the two envelopes: horizontal 60–120 x 16–30, or
+ *    vertical 36–48 x 60–100 (taller than wide)
  *  - checkpoints ≥ ceil(par / 20): one respawn point per twenty seconds of par
- *  - P, every C and G, read left to right, are never more than 32 columns
- *    apart — a death costs at most half a minute of replay, wherever it happens
+ *  - P, every C and G, read along the route, are never more than 32 tiles
+ *    apart — a death costs at most half a minute of replay, wherever it happens.
+ *    A horizontal zone reads its markers left to right and measures columns; a
+ *    vertical zone reads them bottom to top (descending row, then column) and
+ *    measures the Manhattan distance, since the climb zig-zags between the walls
  *  - 8–12 shards: each is a side route (a dash, a wall jump, a double jump
  *    off the line), so the second star is a real challenge, not a sweep
  */
@@ -504,6 +608,9 @@ export function zoneRules(def: LevelDef): string[] {
   const errs: string[] = [];
   const rows = def.rows;
   if (!rows?.length) return errs;
+  const size = zoneSizeProblem(def);
+  if (size) errs.push(size);
+  const vertical = isVerticalZone(def);
   const markers: { ch: string; x: number; y: number }[] = [];
   let shards = 0;
   for (let y = 0; y < rows.length; y++) {
@@ -516,12 +623,13 @@ export function zoneRules(def: LevelDef): string[] {
   const checkpoints = markers.filter((m) => m.ch === 'C').length;
   const need = checkpointsFor(def.par);
   if (checkpoints < need) errs.push(`${id}: ${checkpoints} checkpoint(s) for par ${def.par}s — needs at least ${need} (one per ${CHECKPOINT_PAR_SEC}s)`);
-  markers.sort((a, b) => a.x - b.x || a.y - b.y);
-  for (let i = 1; i < markers.length; i++) {
-    const a = markers[i - 1], b = markers[i];
-    const gap = b.x - a.x;
+  const route = vertical ? climbOrder(markers) : markers.sort((a, b) => a.x - b.x || a.y - b.y);
+  for (let i = 1; i < route.length; i++) {
+    const a = route[i - 1], b = route[i];
+    const gap = vertical ? Math.abs(b.x - a.x) + Math.abs(b.y - a.y) : b.x - a.x;
     if (gap > CHECKPOINT_MAX_GAP) {
-      errs.push(`${id}: ${a.ch} at (${a.x},${a.y}) and ${b.ch} at (${b.x},${b.y}) are ${gap} columns apart (max ${CHECKPOINT_MAX_GAP})\n${dumpAt(rows, b.x, b.y)}`);
+      const unit = vertical ? 'tiles apart along the climb' : 'columns apart';
+      errs.push(`${id}: ${a.ch} at (${a.x},${a.y}) and ${b.ch} at (${b.x},${b.y}) are ${gap} ${unit} (max ${CHECKPOINT_MAX_GAP})\n${dumpAt(rows, b.x, b.y)}`);
     }
   }
   if (shards < SHARD_MIN || shards > SHARD_MAX) errs.push(`${id}: ${shards} shards — a zone carries ${SHARD_MIN}..${SHARD_MAX}`);

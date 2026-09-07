@@ -1,0 +1,70 @@
+{
+  "levelId": "t4",
+  "name": "소금 굴뚝",
+  "sim": 3,
+  "rev": 0,
+  "seed": 37,
+  "par": 90,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 0,
+  "clearRate": 0,
+  "gaveUp": 300,
+  "deaths": 0,
+  "deathsPerEpisode": 0,
+  "medianClearSec": null,
+  "causes": {},
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 2,
+      "ty": 12,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 1,
+      "tx": 4,
+      "ty": 48,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 2,
+      "tx": 10,
+      "ty": 25,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 3,
+      "tx": 29,
+      "ty": 43,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 4,
+      "tx": 31,
+      "ty": 25,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 5,
+      "tx": 39,
+      "ty": 30,
+      "reached": 0,
+      "rate": 0
+    }
+  ],
+  "cells": [],
+  "hotspots": []
+}

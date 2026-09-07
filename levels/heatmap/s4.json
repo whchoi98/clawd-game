@@ -1,0 +1,70 @@
+{
+  "levelId": "s4",
+  "name": "천둥 승강기",
+  "sim": 3,
+  "rev": 0,
+  "seed": 89,
+  "par": 110,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 0,
+  "clearRate": 0,
+  "gaveUp": 300,
+  "deaths": 0,
+  "deathsPerEpisode": 0,
+  "medianClearSec": null,
+  "causes": {},
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 14,
+      "ty": 51,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 1,
+      "tx": 16,
+      "ty": 59,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 2,
+      "tx": 26,
+      "ty": 21,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 3,
+      "tx": 27,
+      "ty": 33,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 4,
+      "tx": 29,
+      "ty": 42,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 5,
+      "tx": 30,
+      "ty": 9,
+      "reached": 0,
+      "rate": 0
+    }
+  ],
+  "cells": [],
+  "hotspots": []
+}

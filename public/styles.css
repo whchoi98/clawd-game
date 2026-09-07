@@ -827,3 +827,11 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
   .tier-card__line,.tier-card__next,.ending__kicker,.ending__title,.ending__lines p,.ending__totals{opacity:1;animation:none}
   .title__hook,.medal{animation:none}
 }
+
+/* ============================================================
+   P2-10 — four zones per tier (t4 · s4 · v4): the tower cards go 3 → 4 columns
+   ============================================================ */
+.tier__cards{grid-template-columns:repeat(4,minmax(0,1fr));max-width:72rem}
+@media (max-width:820px){
+  .tier__cards{grid-template-columns:repeat(4,minmax(0,1fr));gap:.4rem}
+}

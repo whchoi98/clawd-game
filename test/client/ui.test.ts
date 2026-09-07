@@ -461,7 +461,7 @@ describe('hint templates (hints.ts)', () => {
   const DEVICES = ['keyboard', 'gamepad', 'touch'] as const;
 
   it('hintFor renders every shipped zone for every device; touch never names a key', () => {
-    expect(REAL_LEVELS).toHaveLength(9);
+    expect(REAL_LEVELS).toHaveLength(12);
     for (const def of REAL_LEVELS) {
       expect(def.hint, def.id).toBeTruthy();
       expect(hasRawKeyName(def.hint!), `${def.id} hint carries a raw key name`).toBe(false);

@@ -43,6 +43,19 @@
       "hash": "db84bd58"
     },
     {
+      "key": "t4",
+      "levelId": "t4",
+      "seed": 37,
+      "tick": 11183,
+      "ticks": 11130,
+      "cleared": true,
+      "shards": 4,
+      "deaths": 0,
+      "x": 308643,
+      "y": 112990,
+      "hash": "7f7dc99c"
+    },
+    {
       "key": "s1",
       "levelId": "s1",
       "seed": 41,
@@ -82,6 +95,19 @@
       "hash": "37e08efb"
     },
     {
+      "key": "s4",
+      "levelId": "s4",
+      "seed": 89,
+      "tick": 13641,
+      "ticks": 13588,
+      "cleared": true,
+      "shards": 6,
+      "deaths": 0,
+      "x": 143814,
+      "y": 92676,
+      "hash": "02223d09"
+    },
+    {
       "key": "v1",
       "levelId": "v1",
       "seed": 101,
@@ -119,6 +145,19 @@
       "x": 1829834,
       "y": 192990,
       "hash": "4b703ad5"
+    },
+    {
+      "key": "v4",
+      "levelId": "v4",
+      "seed": 197,
+      "tick": 14811,
+      "ticks": 14758,
+      "cleared": true,
+      "shards": 6,
+      "deaths": 0,
+      "x": 596551,
+      "y": 80990,
+      "hash": "b225e327"
     },
     {
       "key": "daily:1",
