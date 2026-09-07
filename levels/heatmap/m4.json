@@ -2,7 +2,7 @@
   "levelId": "m4",
   "name": "정점 승강",
   "sim": 4,
-  "rev": 0,
+  "rev": 1,
   "seed": 271,
   "par": 130,
   "episodes": 300,
