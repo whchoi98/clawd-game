@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { LeaderboardResponse } from '../../src/shared/protocol.js';
 import { COMPRESS_THRESHOLD } from '../../src/server/app.js';
+import { LEADERBOARD_CACHE_CONTROL } from '../../src/server/routes/leaderboard.js';
 import { makeApp, postRun, submitBody, uniqueMasks } from './fixtures.js';
 
 vi.mock('../../src/server/levels.js', async () => ({ resolveLevel: (await import('./levelfix.js')).fakeResolveLevel }));
@@ -27,7 +28,8 @@ describe('API compression', () => {
     const res = await ctx.app.inject({ method: 'GET', url: BIG, headers: { 'accept-encoding': 'gzip' } });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-encoding']).toBe('gzip');
-    expect(res.headers['cache-control']).toBe('no-store');
+    // compression must not disturb the route's own edge-cache policy (P3-12)
+    expect(res.headers['cache-control']).toBe(LEADERBOARD_CACHE_CONTROL);
     expect(res.rawPayload.length).toBeLessThan(plain.rawPayload.length);
     const body = LeaderboardResponse.parse(JSON.parse(gunzipSync(res.rawPayload).toString('utf8')));
     expect(body).toEqual(plain.json());

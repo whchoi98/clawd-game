@@ -4,9 +4,14 @@ import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { BACKUP_RETENTION_DAYS } from '../../infra/lib/constructs/data.js';
+import { LEADERBOARD_EDGE_MAX_TTL_SECONDS, LEADERBOARD_PATH_PATTERN } from '../../infra/lib/constructs/edge.js';
 import {
   ACCESS_LOG_RETENTION_DAYS, ALARM_THRESHOLDS, METRIC_NAMESPACE, ROLLUP_METRICS,
 } from '../../infra/lib/constructs/observability.js';
+import {
+  DEFAULT_MAX_TASKS, DEFAULT_TASK_CPU, DEFAULT_TASK_MEMORY_MIB, FARGATE_MEMORY_BY_CPU, LATENCY_STEP_SCALING, MIN_TASKS, SCALING_TARGETS,
+  validateTaskSizing,
+} from '../../infra/lib/constructs/service.js';
 import { ClawdEchoTowerStack, type ClawdEchoTowerStackProps } from '../../infra/lib/stack.js';
 
 // Feature flags from the real cdk.json so tests synthesize what `cdk synth` does.
@@ -21,8 +26,8 @@ const ENV = { account: '123456789012', region: 'ap-northeast-2' };
 const PREFIX_LIST = 'pl-22a6434b';
 const VPC_ID = 'vpc-0dfa5610180dfa628';
 
-function synth(over: Partial<ClawdEchoTowerStackProps> = {}): Template {
-  const app = new cdk.App({ context: FLAGS });
+function synth(over: Partial<ClawdEchoTowerStackProps> = {}, context: Record<string, unknown> = {}): Template {
+  const app = new cdk.App({ context: { ...FLAGS, ...context } });
   const stack = new ClawdEchoTowerStack(app, 'ClawdEchoTowerStackTest', {
     env: ENV,
     vpcId: VPC_ID,
@@ -220,13 +225,52 @@ describe('CloudFront', () => {
     );
     expect(cfg.DefaultCacheBehavior.OriginRequestPolicyId).toBe('b689b0a8-53d0-40ab-baf2-68738e2966ac');
 
-    const [cacheId, cache] = only(t, 'AWS::CloudFront::CachePolicy');
-    expect(references(cfg.DefaultCacheBehavior.CachePolicyId, cacheId)).toBe(true);
-    expect(cache.Properties.CachePolicyConfig).toMatchObject({
+    // Two custom cache policies: the HTML one on the default behaviour, the leaderboard one on /api/leaderboard*.
+    const policies = t.findResources('AWS::CloudFront::CachePolicy') as Record<string, Resource>;
+    expect(Object.keys(policies)).toHaveLength(2);
+    const htmlId = Object.keys(policies).find((id) => references(cfg.DefaultCacheBehavior.CachePolicyId, id));
+    expect(htmlId).toBeDefined();
+    expect(policies[htmlId!].Properties.CachePolicyConfig).toMatchObject({
       MinTTL: 0,
       DefaultTTL: 0,
       MaxTTL: 86400,
       ParametersInCacheKeyAndForwardedToOrigin: {
+        QueryStringsConfig: { QueryStringBehavior: 'all' },
+        HeadersConfig: { HeaderBehavior: 'none' },
+        CookiesConfig: { CookieBehavior: 'none' },
+      },
+    });
+  });
+
+  it(`gives ${LEADERBOARD_PATH_PATTERN} its own cacheable behaviour ahead of /api/*: TTL 0/0/${LEADERBOARD_EDGE_MAX_TTL_SECONDS}, query string key, gzip+br, GET/HEAD (P3-12)`, () => {
+    expect(LEADERBOARD_PATH_PATTERN).toBe('/api/leaderboard*');
+    expect(LEADERBOARD_EDGE_MAX_TTL_SECONDS).toBe(60);
+    const [, dist] = only(t, 'AWS::CloudFront::Distribution');
+    const cfg = dist.Properties.DistributionConfig;
+    const patterns = cfg.CacheBehaviors.map((b: any) => b.PathPattern as string);
+    expect(patterns).toContain(LEADERBOARD_PATH_PATTERN);
+    // CloudFront matches behaviours in order: the specific pattern must precede the catch-all
+    expect(patterns.indexOf(LEADERBOARD_PATH_PATTERN)).toBeLessThan(patterns.indexOf('/api/*'));
+    const byPath = Object.fromEntries(cfg.CacheBehaviors.map((b: any) => [b.PathPattern, b]));
+    const lb = byPath[LEADERBOARD_PATH_PATTERN];
+    expect(lb.AllowedMethods.sort()).toEqual(['GET', 'HEAD']);
+    expect(lb.Compress).toBe(true);
+    expect(lb.ViewerProtocolPolicy).toBe('redirect-to-https');
+    expect(lb.OriginRequestPolicyId).toBe('33f36d7e-f396-46d9-90e0-52428a34d9dc'); // same viewer forwarding as /api/*
+    const [policyId] = only(t, 'AWS::CloudFront::ResponseHeadersPolicy');
+    expect(references(lb.ResponseHeadersPolicyId, policyId)).toBe(true);
+
+    const policies = t.findResources('AWS::CloudFront::CachePolicy') as Record<string, Resource>;
+    const lbId = Object.keys(policies).find((id) => references(lb.CachePolicyId, id));
+    expect(lbId).toBeDefined();
+    expect(references(cfg.DefaultCacheBehavior.CachePolicyId, lbId!)).toBe(false); // not shared with HTML
+    expect(policies[lbId!].Properties.CachePolicyConfig).toMatchObject({
+      MinTTL: 0,
+      DefaultTTL: 0,
+      MaxTTL: LEADERBOARD_EDGE_MAX_TTL_SECONDS,
+      ParametersInCacheKeyAndForwardedToOrigin: {
+        EnableAcceptEncodingGzip: true,
+        EnableAcceptEncodingBrotli: true,
         QueryStringsConfig: { QueryStringBehavior: 'all' },
         HeadersConfig: { HeaderBehavior: 'none' },
         CookiesConfig: { CookieBehavior: 'none' },
@@ -289,6 +333,7 @@ describe('CloudFront', () => {
     const byPath = Object.fromEntries(cfg.CacheBehaviors.map((b: any) => [b.PathPattern, b]));
     expect(cfg.DefaultCacheBehavior.Compress).toBe(true);
     expect(byPath['/assets/*'].Compress).toBe(true);
+    expect(byPath[LEADERBOARD_PATH_PATTERN].Compress).toBe(true); // its cache policy carries gzip/br in the key
     expect(byPath['/api/*'].Compress).not.toBe(true);
   });
 
@@ -305,14 +350,38 @@ describe('CloudFront', () => {
 });
 
 describe('ECS service', () => {
-  it('runs a Graviton (ARM64) Fargate task at 256 CPU / 512 MiB', () => {
+  it('runs a Graviton (ARM64) Fargate task at 512 CPU / 1024 MiB by default (P3-12 sizing)', () => {
+    expect(DEFAULT_TASK_CPU).toBe(512);
+    expect(DEFAULT_TASK_MEMORY_MIB).toBe(1024);
     t.hasResourceProperties('AWS::ECS::TaskDefinition', {
-      Cpu: '256',
-      Memory: '512',
+      Cpu: '512',
+      Memory: '1024',
       NetworkMode: 'awsvpc',
       RequiresCompatibilities: ['FARGATE'],
       RuntimePlatform: { CpuArchitecture: 'ARM64', OperatingSystemFamily: 'LINUX' },
     });
+  });
+
+  it('takes taskCpu / taskMemory / maxTasks from CDK context (cdk.json or -c), the same defaults cdk.json ships', () => {
+    expect(cdkJson.context).toMatchObject({ taskCpu: 512, taskMemory: 1024, maxTasks: 10 });
+    const bigger = synth({}, { taskCpu: '1024', taskMemory: 2048, maxTasks: 20 });
+    bigger.hasResourceProperties('AWS::ECS::TaskDefinition', { Cpu: '1024', Memory: '2048' });
+    bigger.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', { MinCapacity: MIN_TASKS, MaxCapacity: 20 });
+  });
+
+  it('refuses a task size Fargate does not run, a ceiling under the floor, or a desiredCount above the ceiling', () => {
+    expect(() => synth({}, { taskCpu: 512, taskMemory: 512 })).toThrow(/taskMemory 512 MiB is not valid for 512 CPU units/);
+    expect(() => synth({}, { taskCpu: 300 })).toThrow(/not a Fargate CPU size/);
+    expect(() => synth({}, { maxTasks: 1 })).toThrow(/maxTasks must be an integer >= 2/);
+    expect(() => synth({ desiredCount: 4 }, { maxTasks: 3 })).toThrow(/desiredCount 4 exceeds maxTasks 3/);
+    expect(() => synth({}, { taskCpu: 'lots' })).toThrow(/context "taskCpu" must be a non-negative number/);
+    // the table is the documented Fargate matrix
+    expect(FARGATE_MEMORY_BY_CPU[256]).toEqual([512, 1024, 2048]);
+    expect(FARGATE_MEMORY_BY_CPU[512]).toEqual([1024, 2048, 3072, 4096]);
+    expect(FARGATE_MEMORY_BY_CPU[1024][0]).toBe(2048);
+    expect(FARGATE_MEMORY_BY_CPU[1024].at(-1)).toBe(8192);
+    expect(FARGATE_MEMORY_BY_CPU[4096].at(-1)).toBe(30720);
+    expect(validateTaskSizing({ cpu: 2048, memoryMiB: 4096, maxTasks: 2 })).toEqual({ cpu: 2048, memoryMiB: 4096, maxTasks: 2 });
   });
 
   it('configures the container: port 8080, env, DAILY_SECRET and TAG_SECRET from Secrets Manager, awslogs', () => {
@@ -397,28 +466,60 @@ describe('ECS service', () => {
     });
   });
 
-  it('autoscales 2–6 on CPU 60% and 400 requests per target', () => {
+  it(`autoscales ${MIN_TASKS}–${DEFAULT_MAX_TASKS} on CPU 60% and 400 requests per target`, () => {
+    expect(MIN_TASKS).toBe(2);
+    expect(DEFAULT_MAX_TASKS).toBe(10);
     t.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', {
       MinCapacity: 2,
-      MaxCapacity: 6,
+      MaxCapacity: 10,
       ServiceNamespace: 'ecs',
       ScalableDimension: 'ecs:service:DesiredCount',
     });
-    t.resourceCountIs('AWS::ApplicationAutoScaling::ScalingPolicy', 2);
+    t.resourceCountIs('AWS::ApplicationAutoScaling::ScalingPolicy', 3);
     t.hasResourceProperties('AWS::ApplicationAutoScaling::ScalingPolicy', {
       PolicyType: 'TargetTrackingScaling',
       TargetTrackingScalingPolicyConfiguration: Match.objectLike({
         PredefinedMetricSpecification: { PredefinedMetricType: 'ECSServiceAverageCPUUtilization' },
-        TargetValue: 60,
+        TargetValue: SCALING_TARGETS.cpuPercent,
       }),
     });
     t.hasResourceProperties('AWS::ApplicationAutoScaling::ScalingPolicy', {
       PolicyType: 'TargetTrackingScaling',
       TargetTrackingScalingPolicyConfiguration: Match.objectLike({
         PredefinedMetricSpecification: Match.objectLike({ PredefinedMetricType: 'ALBRequestCountPerTarget' }),
-        TargetValue: 400,
+        TargetValue: SCALING_TARGETS.requestsPerTarget,
       }),
     });
+  });
+
+  it('adds a step scaling policy on ALB TargetResponseTime p95: two 1-minute datapoints > 0.8 s add two tasks (P3-12)', () => {
+    expect(LATENCY_STEP_SCALING).toEqual({ thresholdSeconds: 0.8, periodMinutes: 1, evaluationPeriods: 2, addTasks: 2, cooldownSeconds: 60 });
+    const policies = t.findResources('AWS::ApplicationAutoScaling::ScalingPolicy') as Record<string, Resource>;
+    const steps = Object.entries(policies).filter(([, p]) => p.Properties.PolicyType === 'StepScaling');
+    expect(steps).toHaveLength(1);
+    const [stepId, step] = steps[0];
+    expect(step.Properties.StepScalingPolicyConfiguration).toMatchObject({
+      AdjustmentType: 'ChangeInCapacity',
+      Cooldown: 60,
+      StepAdjustments: [{ MetricIntervalLowerBound: 0, ScalingAdjustment: 2 }],
+    });
+    // The alarm that pulls the trigger: the target group's p95 (ExtendedStatistic), 60 s periods, 2 of them.
+    const alarms = Object.values(t.findResources('AWS::CloudWatch::Alarm') as Record<string, Resource>);
+    const trigger = alarms.filter((a) => references(a.Properties.AlarmActions, stepId));
+    expect(trigger).toHaveLength(1);
+    expect(trigger[0].Properties).toMatchObject({
+      MetricName: 'TargetResponseTime',
+      Namespace: 'AWS/ApplicationELB',
+      ExtendedStatistic: 'p95',
+      Period: 60,
+      EvaluationPeriods: 2,
+      Threshold: 0.8,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+    });
+    const [tgId] = only(t, 'AWS::ElasticLoadBalancingV2::TargetGroup');
+    expect(references(trigger[0].Properties.Dimensions, tgId)).toBe(true);
+    // no scale-in step: the target-tracking policies handle that side
+    expect(alarms.filter((a) => references(a.Properties.AlarmActions, stepId) && a.Properties.ComparisonOperator === 'LessThanOrEqualToThreshold')).toHaveLength(0);
   });
 
   it('grants the task role read/write on the table and nothing with a * resource', () => {
@@ -573,7 +674,10 @@ describe('data', () => {
 
 describe('observability', () => {
   type Alarm = Resource & { Properties: Record<string, any> };
-  const alarms = (): Alarm[] => Object.values(t.findResources('AWS::CloudWatch::Alarm') as Record<string, Alarm>);
+  /** The ops alarms (named `<stack>-<slug>`); autoscaling's own trigger alarms are unnamed and notify a scaling policy instead. */
+  const opsAlarmEntries = (): Array<[string, Alarm]> =>
+    Object.entries(t.findResources('AWS::CloudWatch::Alarm') as Record<string, Alarm>).filter(([, a]) => typeof a.Properties.AlarmName === 'string');
+  const alarms = (): Alarm[] => opsAlarmEntries().map(([, a]) => a);
   const alarmNamed = (slug: string): Alarm => {
     const found = alarms().filter((a) => String(a.Properties.AlarmName).endsWith(`-${slug}`));
     expect(found, `alarm ${slug}`).toHaveLength(1);
@@ -590,10 +694,12 @@ describe('observability', () => {
   };
   const expressionOf = (a: Alarm): string => (a.Properties.Metrics as any[]).find((m) => m.Expression)?.Expression ?? '';
 
-  it('has one SNS topic and at least ten alarms that all notify it on ALARM and OK', () => {
+  it('has one SNS topic and at least ten ops alarms that all notify it on ALARM and OK', () => {
     const [topicId] = only(t, 'AWS::SNS::Topic');
     const all = alarms();
     expect(all.length).toBeGreaterThanOrEqual(10);
+    // exactly one other alarm exists: the p95 step-scaling trigger, which pages nobody
+    expect(Object.keys(t.findResources('AWS::CloudWatch::Alarm'))).toHaveLength(all.length + 1);
     for (const a of all) {
       expect(a.Properties.AlarmActions, a.Properties.AlarmName).toHaveLength(1);
       expect(references(a.Properties.AlarmActions, topicId)).toBe(true);
@@ -728,8 +834,8 @@ describe('observability', () => {
       METRIC_NAMESPACE, 'VerifyMs', 'SubmitAccepted', 'SubmitRejected', 'JsErrorCount',
       '\\"type\\":\\"alarm\\"',
     ]) expect(body, needle).toContain(needle);
-    // Every alarm is on the status widget.
-    for (const id of Object.keys(t.findResources('AWS::CloudWatch::Alarm'))) expect(body).toContain(`"${id}"`);
+    // Every ops alarm is on the status widget.
+    for (const [id] of opsAlarmEntries()) expect(body).toContain(`"${id}"`);
   });
 
   it('ships ALB access logs to a private, SSL-only bucket with a 30-day lifecycle that is deleted with the stack', () => {

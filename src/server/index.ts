@@ -9,17 +9,23 @@
  *   STATIC_DIR    built client to serve (dist/public); unset → API only
  *   APP_VERSION   reported by /api/health
  *   SEED_BOARDS   0 → do not seed empty story boards with the goal runs at boot (default: seed)
+ *
+ * Replay verification runs in one worker thread behind a semaphore
+ * (src/server/verifyPool.ts). The worker is this very bundle re-executed by
+ * `worker_threads`, so `main()` only runs on the main thread; in the worker the
+ * pool module's guard starts the verification loop instead.
  */
 import { randomBytes } from 'node:crypto';
+import { isMainThread } from 'node:worker_threads';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { verifyReplayChunked } from '../sim/replay.js';
 import { buildApp } from './app.js';
-import { asyncVerifier } from './runs.js';
 import { configureTagSecret } from './players.js';
 import { MemoryRepo } from './repo/memory.js';
 import { DynamoRepo } from './repo/dynamo.js';
 import type { Repo } from './repo/types.js';
+import { createVerifyPool } from './verifyPool.js';
+import type { LogRecord } from './metrics.js';
 
 async function main(): Promise<void> {
   const port = Number.parseInt(process.env.PORT ?? '8080', 10);
@@ -53,16 +59,23 @@ async function main(): Promise<void> {
     warnings.push('TAG_SECRET is not set: player tags and transfer codes fall back to DAILY_SECRET');
   }
 
+  // The pool logs through the app once it exists; a line before that is dropped.
+  const poolLines: Array<[LogRecord, string]> = [];
+  let poolLog = (record: LogRecord, msg: string): void => { poolLines.push([record, msg]); };
+  const pool = createVerifyPool({ warm: true, log: (record, msg) => poolLog(record, msg) });
+
   const app = await buildApp({
     repo,
     now: () => new Date(),
     dailySecret,
-    // Cooperative verifier: yields to the event loop every 2400 ticks so a long replay cannot stall /healthz.
-    verify: asyncVerifier(verifyReplayChunked),
+    // Off-thread verifier with backpressure: at most 4 replays in flight, 16 waiting, then 503 busy.
+    verify: pool.verify,
     staticDir: process.env.STATIC_DIR || undefined,
     version: process.env.APP_VERSION ?? 'dev',
     logger: true,
   });
+  poolLog = (record, msg) => { app.log.warn(record, msg); };
+  for (const [record, msg] of poolLines) app.log.warn(record, msg);
   for (const w of warnings) app.log.warn(w);
 
   let closing = false;
@@ -75,7 +88,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }, 10_000);
     timer.unref();
-    app.close().then(
+    app.close().then(() => pool.close()).then(
       () => process.exit(0),
       (err: unknown) => {
         app.log.error({ err }, 'error during shutdown');
@@ -90,8 +103,11 @@ async function main(): Promise<void> {
   app.log.info({ port, table: tableName ?? '(memory)', staticDir: process.env.STATIC_DIR ?? '(none)', version: process.env.APP_VERSION ?? 'dev' }, 'clawd echo tower server up');
 }
 
-main().catch((err: unknown) => {
-  // The logger belongs to the app, which may not exist yet; stderr is the only channel left.
-  process.stderr.write(`fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
-  process.exit(1);
-});
+// In the verify worker thread this bundle only provides the sim; the server stays on the main thread.
+if (isMainThread) {
+  main().catch((err: unknown) => {
+    // The logger belongs to the app, which may not exist yet; stderr is the only channel left.
+    process.stderr.write(`fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}

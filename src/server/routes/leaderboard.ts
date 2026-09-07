@@ -1,16 +1,33 @@
 /**
- * GET /api/leaderboard?mode&board&limit&playerId — top runs plus the caller's
- * own best and rank. Ranks are competition ranks (1 + strictly better scores;
- * ties share). Players appear as `playerTag` (HMAC of the id under the tag
- * secret) and `you`; the raw player id is a credential and never appears in a
- * response.
+ * GET /api/leaderboard?mode&board&limit — the public top-N of a board.
+ *
+ * Since P3-12 this response is the same for every viewer and is cached at the
+ * edge (`Cache-Control: public, s-maxage=5, stale-while-revalidate=30`, with a
+ * dedicated CloudFront behaviour for /api/leaderboard*), so it carries nothing
+ * personal: `yours` is gone and `you` is always false. The caller's own row
+ * lives at GET /api/me (routes/me.ts, no-store). A `playerId` in the query is
+ * still accepted for old clients and ignored — it would only fragment the cache.
+ *
+ * Ranks are competition ranks (1 + strictly better scores; ties share).
+ * Players appear as `playerTag` (HMAC of the id under the tag secret); the raw
+ * player id is a credential and never appears in a response. The total comes
+ * from the BOARD counter when the repo keeps one (one GetItem), so a page
+ * costs two reads: the top-N query and the counter.
  */
 import type { FastifyInstance } from 'fastify';
 import { LeaderboardQuery, type LeaderboardEntry, type LeaderboardResponse } from '../../shared/protocol.js';
 import { playerTag, tagSecretFor } from '../players.js';
+import { boardTotal } from '../repo/extras.js';
 import type { StoredRun } from '../repo/types.js';
 import type { AppDeps } from '../types.js';
 import { badRequest } from './parse.js';
+
+/** Seconds a CloudFront edge may serve one leaderboard page before revalidating. */
+export const LEADERBOARD_S_MAXAGE = 5;
+/** Seconds a stale page may still be served while the edge refreshes it in the background. */
+export const LEADERBOARD_STALE_WHILE_REVALIDATE = 30;
+export const LEADERBOARD_CACHE_CONTROL =
+  `public, s-maxage=${LEADERBOARD_S_MAXAGE}, stale-while-revalidate=${LEADERBOARD_STALE_WHILE_REVALIDATE}`;
 
 /**
  * Competition ranks for a board prefix sorted ascending by score: an entry's
@@ -46,26 +63,17 @@ export function leaderboardRoute(app: FastifyInstance, deps: AppDeps): void {
   app.get('/leaderboard', async (req, reply) => {
     const parsed = LeaderboardQuery.safeParse(req.query);
     if (!parsed.success) return badRequest(reply, parsed.error.issues);
-    const { mode, board, limit, playerId } = parsed.data;
+    const { mode, board, limit } = parsed.data;
     const secret = tagSecretFor(deps.dailySecret);
 
     const top = await deps.repo.topRuns(mode, board, limit);
     const ranks = competitionRanks(top);
-    const entries = top.map((run, i) => toEntry(run, ranks[i], secret, playerId));
+    // No viewer: `you` is false for everyone, and the page is identical for every caller.
+    const entries = top.map((run, i) => toEntry(run, ranks[i], secret));
+    const total = await boardTotal(deps.repo, mode, board);
 
-    let yours: LeaderboardEntry | undefined;
-    let total: number;
-    const best = playerId ? await deps.repo.getPlayerBest(playerId, mode, board) : null;
-    if (best) {
-      const rank = await deps.repo.rankOf(mode, board, best.score);
-      yours = toEntry(best, rank.better + 1, secret, playerId);
-      total = rank.total;
-    } else {
-      total = (await deps.repo.rankOf(mode, board, 0)).total;
-    }
-
+    reply.header('cache-control', LEADERBOARD_CACHE_CONTROL);
     const body: LeaderboardResponse = { mode, board, total, entries };
-    if (yours) body.yours = yours;
     return body;
   });
 }

@@ -8,6 +8,8 @@
  *   Replay hash        HASH#<mode>#<board>#<hash> META      (runId, playerId — one copy of a replay per board)
  *   Transfer snapshot  PLAYER#<playerId>          SNAPSHOT  (code, blob, ttl 7 days)
  *   Transfer code      CODE#<code>                META      (playerId, ttl)
+ *   Board total        BOARD#<mode>#<board>       META      (n — entries on the board; daily: ttl of the newest run)
+ *   Submit counter     RL#<ip>#<minute>           META      (n — POST /runs this minute, fleet-wide; ttl 120 s)
  *
  * where <board> is `boardKey(mode, board)`: the date for daily boards and
  * `<levelId>#s<SIM_VERSION>r<rev>` for story boards (e.g. LB#story#t1#s2r0).
@@ -43,13 +45,25 @@
  * ReturnValues ALL_OLD): whichever request deletes it wins, so a code works
  * once. DynamoDB TTL deletes lazily, so ttl is also checked against the clock.
  *
+ * The BOARD counter (P3-12) rides in the same transaction as a *new* board
+ * entry (`saveBest` without `previousRunId`, `putIfBoardEmpty`): `ADD n :one`,
+ * creating the item at 1 when it does not exist yet. A replacement changes
+ * nothing; `delistRun` decrements afterwards (best effort, never below zero).
+ * `boardTotal` reads it with one GetItem and, for a board that predates the
+ * counter, falls back to a COUNT and backfills the item guarded by
+ * `attribute_not_exists(pk)` so the next read is cheap. `rankBounded` is the
+ * strictly-better COUNT with `Limit: cap`: a `LastEvaluatedKey` means the rank
+ * is beyond the cap. `hitRateCounter` is `RL#<ip>#<minute>` UpdateItem ADD
+ * with `ReturnValues: UPDATED_NEW`, setting the ttl only when the item is new.
+ *
  * The client is injected so tests can pass a recorder; only the `send` method
  * of DynamoDBDocumentClient is used.
  */
-import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { Mode } from '../../shared/protocol.js';
 import { boardKey } from '../boards.js';
 import { DuplicateReplayError, cancelledIndices, isConditionalCheckFailed, isSaveConflict } from './errors.js';
+import type { BoardTotals, BoundedRank, RankBounded, RateCounters } from './extras.js';
 import { replacedRunTtl } from './ttl.js';
 import type { Repo, StoredRun } from './types.js';
 
@@ -89,7 +103,16 @@ export const KEY = {
   SNAPSHOT_SK: 'SNAPSHOT',
   codePk: (code: string) => `CODE#${code}`,
   CODE_SK: 'META',
+  boardPk: (mode: Mode, board: string) => `BOARD#${mode}#${boardKey(mode, board)}`,
+  BOARD_SK: 'META',
+  ratePk: (ip: string, minute: number) => `RL#${ip}#${minute}`,
+  RATE_SK: 'META',
 } as const;
+
+/** Attribute holding a counter's value (BOARD total, RL hits). */
+export const COUNTER_ATTR = 'n';
+/** A backfilled daily-board counter outlives the newest possible entry on it (30-day runs) by a day. */
+const BACKFILL_DAILY_COUNTER_TTL_SECONDS = 31 * 86_400;
 
 /** Structural subset of DynamoDBDocumentClient so tests can inject a fake. */
 export interface DocumentClientLike {
@@ -139,11 +162,36 @@ function hashItem(run: StoredRun, hash: string): Item {
   return item;
 }
 
-export class DynamoRepo implements Repo {
+export class DynamoRepo implements Repo, BoardTotals, RankBounded, RateCounters {
   private readonly now: () => number;
 
   constructor(private readonly client: DocumentClientLike, private readonly table: string, opts: DynamoRepoOptions = {}) {
     this.now = opts.now ?? (() => Date.now());
+  }
+
+  /**
+   * The BOARD counter step for a new entry (`+1`) or a removed one (`-1`): a
+   * transaction Update that creates the item when absent. Daily boards carry
+   * the run's ttl so the counter leaves with the last entry.
+   */
+  private boardCounterUpdate(run: Pick<StoredRun, 'mode' | 'board' | 'ttl'>, delta: number): Item {
+    const names: Record<string, string> = { '#n': COUNTER_ATTR };
+    const values: Item = { ':d': delta };
+    let expr = 'ADD #n :d';
+    if (run.ttl !== undefined) {
+      names['#ttl'] = 'ttl';
+      values[':ttl'] = run.ttl;
+      expr = `SET #ttl = :ttl ${expr}`;
+    }
+    return {
+      Update: {
+        TableName: this.table,
+        Key: { pk: KEY.boardPk(run.mode, run.board), sk: KEY.BOARD_SK },
+        UpdateExpression: expr,
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+      },
+    };
   }
 
   async getPlayerBest(playerId: string, mode: Mode, board: string): Promise<StoredRun | null> {
@@ -186,6 +234,9 @@ export class DynamoRepo implements Repo {
           });
         }
       }
+    } else if (!previousRunId) {
+      // A player's first entry on this board: the board grew by one.
+      items.push(this.boardCounterUpdate(run, 1));
     }
     try {
       await this.client.send(new TransactWriteCommand({ TransactItems: items }));
@@ -256,6 +307,7 @@ export class DynamoRepo implements Repo {
       },
     ];
     if (run.hash) items.push({ Put: { TableName: this.table, Item: hashItem(run, run.hash), ConditionExpression: 'attribute_not_exists(pk)' } });
+    items.push(this.boardCounterUpdate(run, 1));
     try {
       await this.client.send(new TransactWriteCommand({ TransactItems: items }));
       return true;
@@ -263,6 +315,54 @@ export class DynamoRepo implements Repo {
       if (isSaveConflict(err)) return false;
       throw err;
     }
+  }
+
+  // ---------------------------------------------------------------- board totals / bounded rank (P3-12)
+  /**
+   * Entries on the board from the BOARD counter (one GetItem). A board that
+   * predates the counter is COUNTed once and the result written back guarded
+   * by attribute_not_exists(pk); a concurrent first entry wins that race and
+   * its ADD stands, which is the same outcome as not backfilling at all.
+   */
+  async boardTotal(mode: Mode, board: string): Promise<number> {
+    const key = { pk: KEY.boardPk(mode, board), sk: KEY.BOARD_SK };
+    const res = await this.client.send(new GetCommand({ TableName: this.table, Key: key }));
+    const n = (res?.Item as Item | undefined)?.[COUNTER_ATTR];
+    if (typeof n === 'number') return Math.max(0, Math.floor(n));
+    const total = await this.count('pk = :pk AND sk < :end', { ':pk': KEY.lbPk(mode, board), ':end': SEED_SK });
+    const item: Item = { ...key, [COUNTER_ATTR]: total };
+    if (mode === 'daily') item.ttl = Math.floor(this.now() / 1000) + BACKFILL_DAILY_COUNTER_TTL_SECONDS;
+    await this.client.send(new PutCommand({ TableName: this.table, Item: item, ConditionExpression: 'attribute_not_exists(pk)' }))
+      .catch((err: unknown) => { if (!isConditionalCheckFailed(err)) throw err; });
+    return total;
+  }
+
+  /** Strictly better entries, counting at most `cap` (one page; LB items are far smaller than the 1 MB page). */
+  async rankBounded(mode: Mode, board: string, score: number, cap: number): Promise<BoundedRank> {
+    const res = await this.client.send(new QueryCommand({
+      TableName: this.table,
+      KeyConditionExpression: 'pk = :pk AND sk < :sk',
+      ExpressionAttributeValues: { ':pk': KEY.lbPk(mode, board), ':sk': padScore(score) },
+      Select: 'COUNT',
+      Limit: Math.max(1, cap),
+    }));
+    const better = Math.min(cap, Number(res?.Count ?? 0));
+    return { better, capped: res?.LastEvaluatedKey !== undefined };
+  }
+
+  // ---------------------------------------------------------------- fleet-shared submit counter (P3-12)
+  /** `RL#<ip>#<minute>` += 1, ttl set on creation only; returns the new count. */
+  async hitRateCounter(ip: string, minute: number, ttl: number): Promise<number> {
+    const res = await this.client.send(new UpdateCommand({
+      TableName: this.table,
+      Key: { pk: KEY.ratePk(ip, minute), sk: KEY.RATE_SK },
+      UpdateExpression: 'SET #ttl = if_not_exists(#ttl, :ttl) ADD #n :one',
+      ExpressionAttributeNames: { '#n': COUNTER_ATTR, '#ttl': 'ttl' },
+      ExpressionAttributeValues: { ':one': 1, ':ttl': ttl },
+      ReturnValues: 'UPDATED_NEW',
+    }));
+    const n = (res?.Attributes as Item | undefined)?.[COUNTER_ATTR];
+    return typeof n === 'number' ? n : 1;
   }
 
   // ---------------------------------------------------------------- transfer snapshots
@@ -349,6 +449,18 @@ export class DynamoRepo implements Repo {
       });
     }
     await this.client.send(new TransactWriteCommand({ TransactItems: items }));
+    // The board lost an entry: step the counter down, but never create it or drive it negative
+    // (a board that predates the counter is left to boardTotal's COUNT fallback).
+    if (best?.runId === runId) {
+      await this.client.send(new UpdateCommand({
+        TableName: this.table,
+        Key: { pk: KEY.boardPk(run.mode, run.board), sk: KEY.BOARD_SK },
+        UpdateExpression: 'ADD #n :d',
+        ConditionExpression: 'attribute_exists(pk) AND #n > :zero',
+        ExpressionAttributeNames: { '#n': COUNTER_ATTR },
+        ExpressionAttributeValues: { ':d': -1, ':zero': 0 },
+      })).catch((err: unknown) => { if (!isConditionalCheckFailed(err)) throw err; });
+    }
     return true;
   }
 

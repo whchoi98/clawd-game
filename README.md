@@ -122,6 +122,7 @@ DynamoDB 단일 테이블(`pk`/`sk`): `LB#<mode>#<board>` / `<score 12자리>#<9
 - **햅틱** — 착지·대시·월점프·사망·체크포인트·골에 Vibration API와 게임패드 럼블(초당 80 ms 예산, 설정 '진동').
 - **적응 화질 v2** — 2초 창 프레임 시간 p95와 표시 주사율 추정(60~240 Hz)으로 티어를 조정하고(히스테리시스·60초 잠금) 정착 티어를 저장해 다음 세션 첫 프레임부터 적용합니다.
 - **운영 위생** — CloudWatch 알람 10종(ALB 5xx·p95·비정상 호스트, ECS CPU·메모리, DynamoDB 스로틀, CloudFront 5xx, `VerifyMs` p95, 거절 비율)과 대시보드, SNS(컨텍스트 `alarmEmail`), ALB 액세스 로그(30일), 테이블 RETAIN·삭제 보호·AWS Backup(일간 35일), `TAG_SECRET` 분리, 엣지 `s-maxage=60` 캐시(릴리스 스크립트가 무효화). 런북: `docs/runbooks/secrets.md`.
+- **스케일 절벽 제거** (P3-12) — 리플레이 검증은 `worker_threads` 워커 1개(서버 번들 자체를 워커 스크립트로 재실행)에서 세마포어 뒤에 돕니다: 동시 4 · 대기 16, 넘치면 즉시 `503 { error: 'busy' }` + `Retry-After: 3`이라 제출 폭주가 지연 절벽 대신 재시도로 풀립니다. `POST /api/runs`의 IP당 12/분 예산은 DynamoDB 카운터(`RL#<ip>#<minute>`, TTL 120 s)로 플릿 전체가 공유하고, `GET /api/leaderboard`는 공개 top-N만 돌려 `Cache-Control: public, s-maxage=5, stale-while-revalidate=30`과 CloudFront `/api/leaderboard*` 전용 behaviour(최대 60 s, gzip/br)로 엣지에 캐시되며, 개인 행은 새 `GET /api/me?mode&board&playerId`(no-store, 순위는 1,000 밖이면 `rankCapped`)가 줍니다. 보드 총원은 `BOARD#<mode>#<board>` 카운터(GetItem 1회)로, 리더보드 페이지가 읽기 2회, `/api/me`가 3회입니다. 태스크는 512 CPU / 1024 MiB, 2~10개(`cdk.json` 컨텍스트 `taskCpu` · `taskMemory` · `maxTasks`), ALB p95 > 0.8 s가 2분 이어지면 +2 태스크 스텝 스케일링. `npx tsx tools/load/submit.mjs --n 200`이 유효 제출 N개를 동시에 쏘며 `/healthz` p99와 503 외 5xx를 잽니다. 런북: `docs/runbooks/scale.md`.
 
 ## Phase 3 B: 메아리 링크 경주·터치 커스터마이즈
 
