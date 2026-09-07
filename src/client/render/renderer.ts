@@ -11,15 +11,27 @@
  * world transform → terrain (with the biome face decor) → hazards → entities →
  * foes → bolts → echoes → player → particles → tide → screen-space fog band →
  * composite (bloom, vignette, grain, flash, fade, letterbox).
+ *
+ * Band crossfade (P5-4b): on a tide level (daily / endless, `def.tide`) the
+ * band under the player's feet decides the biome — `bandBiome(def, row)`, the
+ * same call the HUD label uses — and a change starts a BAND_FADE_S crossfade:
+ * a second Sky (same seed and box, so the silhouettes coincide) and a cached
+ * Terrain of the new band draw underneath while the old pair fades out over
+ * them; the fog band and the goal beacon blend their colours; the actors
+ * switch palette at once. Hysteresis needs the feet one tile past the boundary
+ * in the direction of travel; a respawn or a teleport (a feet-row jump of
+ * BAND_SNAP_ROWS or more in one frame) and the `low` tier hard-cut instead.
+ * Story zones never run any of it. All of it is visual: the sim is only read.
  */
 import { TILE } from '../../sim/types.js';
-import type { BiomeId, PlayerState, SimEvent, SimState } from '../../sim/types.js';
+import type { BiomeId, LevelDef, PlayerState, SimEvent, SimState } from '../../sim/types.js';
 import type { Level } from '../../sim/level.js';
 import { makeRng } from '../../sim/rng.js';
+import { bandBiome } from '../../sim/gen/daily.js';
 import { BIOMES, C, type Biome } from '../../shared/biomes.js';
 import type { FxState, GhostView, RendererPort, Settings, WorldView } from '../contracts.js';
 import {
-  Stage, UI_FONT, TAU, alpha, clamp01, defaultCreateCanvas, fbm, lerp,
+  Stage, UI_FONT, TAU, alpha, clamp01, defaultCreateCanvas, fbm, lerp, mixHex,
   type FpsStats, type QualityTier, type StageOptions,
 } from './stage.js';
 import { Sky } from './sky.js';
@@ -47,11 +59,37 @@ const GOAL_EDGE_MARGIN = 10;
 const BEACON_INSET = 20;
 /** World units the player travels between two dash after-images (P3-9). */
 export const AFTER_IMAGE_SPACING = 10;
+/** Seconds a tide level's band crossfade takes (P5-4b). */
+export const BAND_FADE_S = 1.2;
+/**
+ * A feet-row jump of this many tiles between two draws is a teleport or a
+ * respawn, never movement (PHYS.maxFall 340 and springVel 430 stay under
+ * 3 tiles even over the 0.1 s frame clamp): the band then hard-cuts.
+ */
+export const BAND_SNAP_ROWS = 4;
 
 /** Monotonic milliseconds for the render-cost sample; -1 when the platform has no clock (the scaler then ignores cost). */
 function nowMs(): number {
   const p = (globalThis as { performance?: { now?: () => number } }).performance;
   return p && typeof p.now === 'function' ? p.now() : -1;
+}
+
+/** The tile row under the player's feet — exactly the HUD's band row (scenes.hudState). */
+function feetRowOf(p: PlayerState): number {
+  return Math.floor((p.y + p.h - 1) / TILE);
+}
+
+/**
+ * Every band biome a tide level shows, bottom band first: sampled every 8 rows
+ * (bands are 50 or 90 rows) plus the top row, so a partial band capping the
+ * tower (the 160-row daily ends 10 rows into its fourth) is never missed.
+ */
+function bandBiomesOf(def: LevelDef): BiomeId[] {
+  const out: BiomeId[] = [];
+  const add = (ty: number): void => { const id = bandBiome(def, ty); if (!out.includes(id)) out.push(id); };
+  for (let ty = def.rows.length - 1; ty >= 0; ty -= 8) add(ty);
+  add(0);
+  return out;
 }
 
 export class Renderer implements RendererPort {
@@ -64,15 +102,30 @@ export class Renderer implements RendererPort {
   /** Render cost (ms) of the previous drawTitle(): the pre-play capability probe (Stage.noteFrame). */
   private lastTitleWorkMs: number | undefined = undefined;
   readonly stage: Stage;
-  readonly sky: Sky;
   readonly particles: Particles;
   readonly actors: Actors;
   readonly skins: Record<string, { name: string; kr: string }>;
 
   private readonly createCanvas: () => HTMLCanvasElement;
+  /** Two backdrops: the current band's, and one to fade out during a band change (P5-4b). */
+  private readonly skies: readonly [Sky, Sky];
+  private skyCur: Sky;
+  private skyPrev: Sky | null = null;
   private terrain: Terrain | null = null;
+  private terrainPrev: Terrain | null = null;
+  /** One Terrain per band biome of the current level (a story zone has one). */
+  private readonly terrains = new Map<BiomeId, Terrain>();
   private level: Level | null = null;
   private biome: Biome | null = null;
+  /** The band fading out; null outside a crossfade. */
+  private prevBiome: Biome | null = null;
+  /** Seconds left of the band crossfade; 0 when none runs. */
+  private bandFade = 0;
+  /** The feet row of the last draw, and the sign of its last change (hysteresis works against it). */
+  private feetRow = 0;
+  private bandDir = 0;
+  /** Set by a respawn / intro event: the next band change hard-cuts. */
+  private snapBand = false;
   /** Who last configured the sky: the level or the title vista. */
   private skyOwner: 'level' | 'title' | null = null;
   private t = 0;
@@ -98,7 +151,8 @@ export class Renderer implements RendererPort {
   constructor(canvas: HTMLCanvasElement, opts: RendererOptions = {}) {
     this.createCanvas = opts.createCanvas ?? defaultCreateCanvas;
     this.stage = new Stage(canvas, opts);
-    this.sky = new Sky(this.stage);
+    this.skies = [new Sky(this.stage), new Sky(this.stage)];
+    this.skyCur = this.skies[0];
     this.particles = new Particles(this.stage);
     this.actors = new Actors(this.stage, BIOMES.tidepool, this.particles);
     const skins: Record<string, { name: string; kr: string }> = {};
@@ -111,16 +165,35 @@ export class Renderer implements RendererPort {
   get viewH(): number { return this.stage.viewH; }
   get fps(): number { return this.stage.fps; }
   get qualityTier(): QualityTier { return this.stage.quality; }
+  /** The backdrop of the current band (the title vista's while a menu is up). */
+  get sky(): Sky { return this.skyCur; }
+  /** Band state (tide levels): the current band, the band fading out (null when none) and the seconds left. */
+  get band(): { biome: BiomeId | null; prev: BiomeId | null; fade: number } {
+    return { biome: this.biome?.id ?? null, prev: this.prevBiome?.id ?? null, fade: this.bandFade };
+  }
 
   // ------------------------------------------------------------ port: lifecycle
   setLevel(sim: SimView, biome: Biome): void {
+    const def = sim.level.def;
     this.level = sim.level;
-    this.biome = biome;
+    this.terrains.clear();
+    this.skyPrev = null;
+    this.terrainPrev = null;
+    this.prevBiome = null;
+    this.bandFade = 0;
+    this.snapBand = false;
+    this.bandDir = 0;
+    this.feetRow = feetRowOf(sim.state.player);
+    // a tide level starts on the band under the player's feet (the shell passes the bottom band's biome)
+    const b = def.tide ? BIOMES[bandBiome(def, this.feetRow)] : biome;
+    this.biome = b;
     // the level box tells the sky whether this is a vertical zone (cloud deck) or a horizontal one (time-of-day drift)
-    this.sky.setBiome(biome, sim.level.def.seed, { pxW: sim.level.pxW, pxH: sim.level.pxH });
+    this.skyCur.setBiome(b, def.seed, { pxW: sim.level.pxW, pxH: sim.level.pxH });
     this.skyOwner = 'level';
-    this.terrain = new Terrain(this.stage, sim.level, biome, this.createCanvas);
-    this.actors.setLevel(biome);
+    this.terrain = this.terrainFor(b);
+    // bake every band's rock texture now, behind the level's fade-in, so a band change costs no frame later
+    if (def.tide) for (const id of bandBiomesOf(def)) this.terrainFor(BIOMES[id]);
+    this.actors.setLevel(b);
     this.playerVis.reset(sim.state.player);
     this.ghostVis.length = 0;
     this.particles.clear();
@@ -159,8 +232,85 @@ export class Renderer implements RendererPort {
 
   applySettings(s: Settings): void {
     this.stage.setSettings({ bloom: s.bloom, grain: s.grain, flashes: s.flashes, quality: s.quality });
-    this.sky.flashesAllowed = s.flashes;
+    for (const sky of this.skies) sky.flashesAllowed = s.flashes;
     this.skinId = SKINS[s.skin] ? s.skin : 'clawd';
+  }
+
+  // ------------------------------------------------------------ band crossfade (P5-4b)
+  /** The Terrain of a biome over the current level, built once per level. */
+  private terrainFor(b: Biome): Terrain {
+    let t = this.terrains.get(b.id);
+    if (!t) {
+      t = new Terrain(this.stage, this.level!, b, this.createCanvas);
+      this.terrains.set(b.id, t);
+    }
+    return t;
+  }
+
+  /**
+   * Per frame on a tide level: follow the band under the player's feet, with
+   * hysteresis, and advance a running crossfade. Frozen while the player is
+   * dead — the death tumble crosses no band; the respawn snaps.
+   */
+  private trackBand(sim: SimView, dt: number): void {
+    const def = sim.level.def, p = sim.state.player;
+    const low = this.stage.quality === 'low';
+    if (!p.dead) {
+      const row = feetRowOf(p);
+      const from = this.feetRow;
+      if (row !== from) this.bandDir = Math.sign(row - from);
+      const jump = this.snapBand || Math.abs(row - from) >= BAND_SNAP_ROWS;
+      this.feetRow = row;
+      this.snapBand = false;
+      const want = bandBiome(def, row);
+      // hysteresis: the row one tile back toward where the feet came from must already lie in the new band
+      if (want !== this.biome!.id && (jump || bandBiome(def, row - this.bandDir) === want)) {
+        this.switchBand(BIOMES[want], jump || low);
+      }
+    }
+    if (this.bandFade > 0) {
+      this.bandFade = Math.max(0, this.bandFade - dt);
+      if (this.bandFade === 0 || low) this.endFade();
+    }
+  }
+
+  /** Make `next` the current band: at once, or by starting (or reversing) a crossfade from the current one. */
+  private switchBand(next: Biome, instant: boolean): void {
+    const level = this.level!, cur = this.biome!;
+    const box = { pxW: level.pxW, pxH: level.pxH };
+    const nextTerrain = this.terrainFor(next);
+    if (instant) {
+      this.skyCur.setBiome(next, level.def.seed, box);
+      this.terrain = nextTerrain;
+      this.endFade();
+    } else {
+      const spare = this.skyCur === this.skies[0] ? this.skies[1] : this.skies[0];
+      // a hop back across the boundary mid-fade: the spare still shows the band we return to — keep its motes, mirror the progress
+      const reversing = this.skyPrev === spare && spare.biome?.id === next.id;
+      if (!reversing) spare.setBiome(next, level.def.seed, box);
+      this.skyPrev = this.skyCur;
+      this.skyCur = spare;
+      this.terrainPrev = this.terrain;
+      this.terrain = nextTerrain;
+      this.prevBiome = cur;
+      this.bandFade = reversing ? BAND_FADE_S - this.bandFade : BAND_FADE_S;
+    }
+    this.biome = next;
+    this.actors.setBiome(next);
+  }
+
+  private endFade(): void {
+    this.skyPrev = null;
+    this.terrainPrev = null;
+    this.prevBiome = null;
+    this.bandFade = 0;
+  }
+
+  /** Crossfade progress 0 → 1 (smoothstep); 1 outside a fade. */
+  private fadeK(): number {
+    if (this.bandFade <= 0 || !this.prevBiome) return 1;
+    const u = clamp01(1 - this.bandFade / BAND_FADE_S);
+    return u * u * (3 - 2 * u);
   }
 
   clearParticles(): void { this.particles.clear(); }
@@ -179,7 +329,7 @@ export class Renderer implements RendererPort {
     if (!this.terrain || this.level !== sim.level || this.skyOwner !== 'level' || !this.biome) {
       this.setLevel(sim, this.biome && this.level === sim.level ? this.biome : BIOMES[sim.level.def.biome]);
     }
-    const st = this.stage, level = sim.level, state = sim.state, biome = this.biome!;
+    const st = this.stage, level = sim.level, state = sim.state;
     const dt = Math.min(Math.max(0, dtFrame), 0.1);
     this.t += dt;
     const t0 = nowMs();
@@ -187,8 +337,15 @@ export class Renderer implements RendererPort {
     // is drawn, so a tier change (a canvas resize) never blanks the frame it was decided on.
     st.sampleFps(dtFrame, this.lastWorkMs);
 
+    // ---- the band under the feet (tide levels only; story zones keep def.biome) ----
+    if (level.def.tide) this.trackBand(sim, dt);
+    const biome = this.biome!, prev = this.prevBiome;
+    const k = this.fadeK();
+    const fading = k < 1 && prev !== null;
+
     // ---- advance visual-only state ----
-    this.sky.update(dt, view.camX, view.camY);
+    this.skyCur.update(dt, view.camX, view.camY);
+    if (fading && this.skyPrev) this.skyPrev.update(dt, view.camX, view.camY);
     this.particles.update(dt, (x, y) => level.solid(Math.floor(x / TILE), Math.floor(y / TILE)));
     this.playerVis.update(dt, state.player);
     this.dashAfterImages(state.player, this.skin());
@@ -199,11 +356,26 @@ export class Renderer implements RendererPort {
 
     // ---- frame ----
     st.begin();
-    this.sky.draw(view.camX, view.camY);
+    // the new band's sky, then the old one fading out over it (their silhouettes coincide: same seed and box)
+    this.skyCur.draw(view.camX, view.camY);
+    if (fading && this.skyPrev) {
+      this.skyPrev.opacity = 1 - k;
+      this.skyPrev.draw(view.camX, view.camY);
+      this.skyPrev.opacity = 1;
+    }
     st.world(view.camX, view.camY, fx.shakeX, fx.shakeY, view.zoom * (fx.zoom || 1), fx.shakeRot);
 
     this.terrain!.draw(this.t, this.switchFlash);
     this.terrain!.drawHazards(this.t);
+    if (fading && this.terrainPrev) {
+      // the old palette over the new on the same tiles; the bloom hints fade with it
+      st.ctx.globalAlpha = 1 - k;
+      st.gctx.globalAlpha = 1 - k;
+      this.terrainPrev.draw(this.t, this.switchFlash);
+      this.terrainPrev.drawHazards(this.t);
+      st.ctx.globalAlpha = 1;
+      st.gctx.globalAlpha = 1;
+    }
 
     this.actors.drawEntities(state);
     this.actors.drawFoes(state, this.t);
@@ -220,19 +392,21 @@ export class Renderer implements RendererPort {
 
     if (state.tide) this.actors.drawTide(state.tide, this.t);
 
-    // foreground haze band adds depth separation from the terrain
+    // foreground haze band adds depth separation from the terrain (its colour blends across a band change)
     st.screen();
     const ctx = st.ctx;
+    const fog = fading && prev ? mixHex(prev.fog, biome.fog, k) : biome.fog;
+    const ambient = fading && prev ? lerp(prev.ambient, biome.ambient, k) : biome.ambient;
     const fg = ctx.createLinearGradient(0, st.viewH * 0.72, 0, st.viewH);
-    fg.addColorStop(0, alpha(biome.fog, 0));
-    fg.addColorStop(1, alpha(biome.fog, 0.14 + biome.ambient * 0.3));
+    fg.addColorStop(0, alpha(fog, 0));
+    fg.addColorStop(1, alpha(fog, 0.14 + ambient * 0.3));
     ctx.fillStyle = fg;
     ctx.fillRect(0, st.viewH * 0.72, st.viewW, st.viewH * 0.28);
 
     st.composite(fx);
 
     // HUD-like, so after the film pass: never bloomed, vignetted or grained
-    this.goalBeacon(state, fx, biome);
+    this.goalBeacon(state, fx, fading && prev ? mixHex(prev.accent, biome.accent, k) : biome.accent);
 
     if (this.showFps) this.fpsOverlay();
     this.lastWorkMs = t0 >= 0 ? Math.max(0, nowMs() - t0) : undefined;
@@ -260,9 +434,10 @@ export class Renderer implements RendererPort {
   /**
    * Project the goal orb to the canvas (CSS px) into `goalScreen` and, when it
    * lies outside the view, draw a pulsing edge beacon toward it in the biome
-   * accent. Mirrors the transform `Stage.world` pushed for this frame.
+   * accent (blended across a band change). Mirrors the transform `Stage.world`
+   * pushed for this frame.
    */
-  private goalBeacon(state: SimState, fx: FxState, biome: Biome): void {
+  private goalBeacon(state: SimState, fx: FxState, accent: string): void {
     const goal = state.entities.find((e) => e.kind === 'goal');
     if (!goal) { this.goalScreen = null; return; }
     const st = this.stage;
@@ -297,19 +472,19 @@ export class Renderer implements RendererPort {
     ctx.translate(bx, by);
     const haloR = 15 + pulse * 5;
     const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, haloR);
-    halo.addColorStop(0, alpha(biome.accent, 0.38));
-    halo.addColorStop(1, alpha(biome.accent, 0));
+    halo.addColorStop(0, alpha(accent, 0.38));
+    halo.addColorStop(1, alpha(accent, 0));
     ctx.fillStyle = halo;
     ctx.beginPath(); ctx.arc(0, 0, haloR, 0, TAU); ctx.fill();
     // dark backing so the chevron reads over a bright sky
     ctx.fillStyle = alpha('#07060B', 0.5);
     ctx.beginPath(); ctx.arc(0, 0, 9.5, 0, TAU); ctx.fill();
-    ctx.strokeStyle = alpha(biome.accent, 0.3 + 0.4 * pulse);
+    ctx.strokeStyle = alpha(accent, 0.3 + 0.4 * pulse);
     ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.arc(0, 0, 11 + pulse * 2.5, 0, TAU); ctx.stroke();
     // chevron pointing at the goal, opaque in the accent
     ctx.rotate(ang);
-    ctx.fillStyle = biome.accent;
+    ctx.fillStyle = accent;
     ctx.beginPath();
     ctx.moveTo(8, 0); ctx.lineTo(-4.5, -6.5); ctx.lineTo(-1.5, 0); ctx.lineTo(-4.5, 6.5);
     ctx.closePath(); ctx.fill();
@@ -326,7 +501,7 @@ export class Renderer implements RendererPort {
     const p = sim.state.player;
     switch (ev.type) {
       case 'phase':
-        if (ev.phase === 'intro') { this.playerVis.reset(p); P.clear(); this.actors.resetStreaks(); }
+        if (ev.phase === 'intro') { this.playerVis.reset(p); P.clear(); this.actors.resetStreaks(); this.snapBand = true; }
         break;
       case 'jump':
         this.playerVis.jump();
@@ -419,6 +594,7 @@ export class Renderer implements RendererPort {
         this.playerVis.reset(p);
         P.clear();
         this.actors.resetStreaks();
+        this.snapBand = true;   // a checkpoint in another band: hard-cut, no fade
         P.ring(ev.x, ev.y - 8, 2, 34, 0.4, skin.glow, 2, 1.2);
         // the respawn pop: a tall stretch that settles, and glowing motes flung out of the arrival point
         this.playerVis.squash = -0.5;
@@ -465,7 +641,8 @@ export class Renderer implements RendererPort {
     const st = this.stage;
     const dt = Math.min(Math.max(0, dtFrame), 0.1);
     if (this.skyOwner !== 'title' || this.titleBiome !== biome.id) {
-      this.sky.setBiome(biome, TITLE_SEEDS[biome.id] ?? 3);
+      this.endFade();
+      this.skyCur.setBiome(biome, TITLE_SEEDS[biome.id] ?? 3);
       this.skyOwner = 'title';
       this.titleBiome = biome.id;
       this.titleProfile = this.profile(7 + (TITLE_SEEDS[biome.id] ?? 3) * 13);
@@ -476,7 +653,7 @@ export class Renderer implements RendererPort {
     const t0 = nowMs();
     st.noteFrame(dtFrame, this.lastTitleWorkMs);
     this.titleCamX += dt * 12;
-    this.sky.update(dt, this.titleCamX, 0);
+    this.skyCur.update(dt, this.titleCamX, 0);
     this.particles.update(dt, null);
     this.titleBlinkT -= dt;
     if (this.titleBlinkT <= 0) { this.titleBlinkT = 2.4 + Math.random() * 4; this.titleBlink = 1; }
@@ -484,7 +661,7 @@ export class Renderer implements RendererPort {
     this.titleAnim += dt * 0.3;
 
     st.begin();
-    this.sky.draw(this.titleCamX, 0);
+    this.skyCur.draw(this.titleCamX, 0);
     const ctx = st.ctx;
     st.screen();
     const W = st.viewW, H = st.viewH;

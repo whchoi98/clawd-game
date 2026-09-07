@@ -10,6 +10,7 @@
 ### Added (Phase 5 B)
 - P5-4 데일리·끝없는 등반의 밴드 순환에 4층 정점을 추가(`src/sim/gen/daily.ts BAND_ORDER` 4개): 바닥 밴드는 여전히 기존 3층 중에서 뽑고 지형·스폰은 `buildTower(seed)`만이 정하므로 **GEN_VERSION 2 유지**, 코퍼스 다이제스트 18개 불변. 현재 밴드는 HUD 구역 이름(`hudState` → `bandBiome`)에 반영된다 — 예: 공허의 초에서 시작한 탑은 50~99 높이가 오로라 정점. 배경·지형 팔레트가 밴드를 따라 바뀌는 크로스페이드는 P5-4b(렌더러)에서 잇는다.
 - 파편·유물 획득 이벤트가 렌더러에서 직접 캐릭터 미소(`PlayerVisual.smile`)를 켠다(P5-2의 엔티티 전이 감지 경로와 병존).
+- P5-4b 데일리·끝없는 등반의 **밴드 크로스페이드**(`src/client/render/{renderer,sky,actors}.ts`, 렌더 전용 — sim·리플레이 무관): 조류 레벨(`def.tide`)에서 렌더러가 매 프레임 플레이어 발 밑 행의 밴드(`bandBiome(def, row)`, HUD 라벨과 같은 호출)를 따라가고, 밴드가 바뀌면 `BAND_FADE_S` 1.2 s 동안 새 밴드의 스카이·지형 팔레트 위로 이전 밴드가 사라진다 — 스카이 인스턴스 2개(같은 seed·박스라 능선·절벽·구름·별 실루엣이 일치, `Sky.opacity`로 블렌드), 레벨당 밴드 바이옴별 `Terrain` 캐시(setLevel에서 미리 베이킹해 전환 프레임 히치 없음), 안개 밴드·골 비콘 색 `mixHex` 보간, 액터 팔레트·바람은 `Actors.setBiome`(엔티티 시각 메모리 유지)으로 즉시 전환. 히스테리시스: 진행 방향으로 경계 1타일을 지나야 전환(경계에서 깡충거려도 깜빡임 없음); 리스폰·인트로 이벤트와 한 프레임에 `BAND_SNAP_ROWS`(4행) 이상 점프하는 텔레포트(`?shot=daily&at=` 하네스)는 페이드 없이 하드컷, `low` 티어는 항상 하드컷(스카이 1개). 스토리 구역은 `def.biome` 고정·밴드 계산 없음, 타이틀 비스타·공유 카드 무관. `Sky.setBiome`이 바이옴 무관 레이아웃(rng 순서가 어떤 바이옴 분기에도 안 밀림)과 바이옴 틴트로 나뉘어 절차적 배경 배치가 이전 빌드와 조금 달라진다(시각 전용). 테스트: 새 `test/client/band-fade.test.ts`(밴드 추적·히스테리시스·역전·텔레포트·리스폰·스토리·low·endless 90행), `render.test`(4밴드 조류 레벨 draw·페이드 중 fill 예산 2배 이내), `sky.test`(같은 seed 실루엣 일치·opacity 스케일), `tiles.test`(Terrain이 외부 globalAlpha를 건드리지 않음); `qa:smoke`에 `shot:daily-band` 단계.
 
 ## [0.4.0] - 2026-09-07
 

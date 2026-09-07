@@ -260,3 +260,125 @@ describe('biome palettes · readability maths (tools/qa/readability.ts threshold
     expect(rgbDistance(b.accent, b.sky[3])).toBeGreaterThan(ACCENT_TOLERANCE * 2);
   });
 });
+
+// ------------------------------------------------------------------ band crossfade support (P5-4b)
+describe('Sky · band crossfade support (P5-4b)', () => {
+  /** The layout and tint the renderer relies on (TypeScript-private; plain properties at runtime). */
+  interface Inner {
+    layers: { pts: Float32Array; col: string }[]; wall: Float32Array; fissures: unknown[];
+    cloudBase: { x: number; y: number }[]; clouds: unknown[]; structures: { kind: string; x: number }[];
+    props: { kind: string; x: number }[]; starBase: { x: number; y: number }[]; stars: unknown[];
+    birds: unknown[]; ribbons: unknown[]; puffs: unknown[];
+  }
+  const inner = (s: Sky): Inner => s as unknown as Inner;
+  const nClouds = (id: BiomeId): number => (id === 'voidreef' ? 4 : id === 'stormspire' ? 12 : 9);
+  const nStars = (id: BiomeId): number => (id === 'voidreef' ? 150 : id === 'stormspire' ? 90 : id === 'summit' ? 120 : 0);
+
+  it.each([['tidepool', 'summit'], ['voidreef', 'stormspire'], ['stormspire', 'summit'], ['tidepool', 'voidreef']] as [BiomeId, BiomeId][])(
+    '%s and %s from one seed and box share every silhouette and position; only colours, counts and kinds differ', (a, b) => {
+      const A = makeSky().sky, B = makeSky().sky;
+      A.setBiome(BIOMES[a], 21, VERTICAL);
+      B.setBiome(BIOMES[b], 21, VERTICAL);
+      const ia = inner(A), ib = inner(B);
+      for (let i = 0; i < 3; i++) {
+        expect(ib.layers[i].pts).toEqual(ia.layers[i].pts);
+        expect(ia.layers[i].col).toBe(BIOMES[a].ridge[i]);
+        expect(ib.layers[i].col).toBe(BIOMES[b].ridge[i]);
+      }
+      expect(ib.wall).toEqual(ia.wall);
+      expect(ib.fissures).toEqual(ia.fissures);
+      expect(ib.cloudBase.map((c) => [c.x, c.y])).toEqual(ia.cloudBase.map((c) => [c.x, c.y]));
+      expect(ib.structures.map((s) => s.x)).toEqual(ia.structures.map((s) => s.x));
+      expect(ib.props.map((p) => p.x)).toEqual(ia.props.map((p) => p.x));
+      expect(ib.starBase.map((s) => [s.x, s.y])).toEqual(ia.starBase.map((s) => [s.x, s.y]));
+      expect(ib.birds).toEqual(ia.birds);
+      expect(ib.ribbons).toEqual(ia.ribbons);
+      expect(ib.puffs).toEqual(ia.puffs);
+      // the tint follows the biome
+      expect(ia.props.every((p) => p.kind === BIOMES[a].props[0])).toBe(true);
+      expect(ib.props.every((p) => p.kind === BIOMES[b].props[0])).toBe(true);
+      expect(ia.structures.map((s) => s.kind)).not.toEqual(ib.structures.map((s) => s.kind));
+      expect(ia.clouds.length).toBe(nClouds(a));
+      expect(ib.clouds.length).toBe(nClouds(b));
+      expect(ia.stars.length).toBe(nStars(a) + 90);        // + the deck stars of a vertical box
+      expect(ib.stars.length).toBe(nStars(b) + 90);
+    });
+
+  it('a different seed moves the silhouettes; without a box there are no deck stars; the same biome twice is identical', () => {
+    const A = makeSky().sky, B = makeSky().sky, C = makeSky().sky;
+    A.setBiome(BIOMES.summit, 21, HORIZONTAL);
+    B.setBiome(BIOMES.summit, 22, HORIZONTAL);
+    C.setBiome(BIOMES.summit, 21, HORIZONTAL);
+    expect(inner(B).wall).not.toEqual(inner(A).wall);
+    expect(inner(B).layers[0].pts).not.toEqual(inner(A).layers[0].pts);
+    expect(inner(C).wall).toEqual(inner(A).wall);
+    expect(inner(C).structures).toEqual(inner(A).structures);
+    expect(inner(A).stars.length).toBe(nStars('summit'));
+  });
+
+  it('the aurora ribbons exist in every layout but draw on aurora biomes only', () => {
+    const { sky } = makeSky('high');
+    sky.setBiome(BIOMES.tidepool, 5, HORIZONTAL);
+    runFrames(sky, 5, 0, 0);
+    expect(inner(sky).ribbons.length).toBe(AURORA_RIBBONS);
+    expect(sky.counters.aurora).toBe(0);
+    sky.setBiome(BIOMES.summit, 5, HORIZONTAL);
+    runFrames(sky, 5, 0, 0);
+    expect(sky.counters.aurora).toBe(5 * AURORA_RIBBONS);
+  });
+
+  it('opacity scales every alpha the backdrop sets — wall strata and deck puffs included — and the draw leaves 1 behind', () => {
+    // a stub that records globalAlpha assignments on every context (main and glow)
+    const alphas: number[] = [];
+    const alphaCanvas = (): HTMLCanvasElement => {
+      let state: Record<string, unknown> = { globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '#000', strokeStyle: '#000', lineWidth: 1 };
+      const stack: Record<string, unknown>[] = [];
+      const ctx = new Proxy(state, {
+        get(_t, p) {
+          if (typeof p !== 'string') return undefined;
+          if (p in state) return state[p];
+          return (...args: unknown[]) => {
+            switch (p) {
+              case 'save': stack.push({ ...state }); return undefined;
+              case 'restore': if (stack.length) state = stack.pop()!; return undefined;
+              case 'createLinearGradient': case 'createRadialGradient': return { addColorStop() {} };
+              case 'createPattern': return { setTransform() {} };
+              case 'createImageData': case 'getImageData':
+                return { width: 1, height: 1, data: new Uint8ClampedArray(Math.max(4, Number(args[2] ?? 1) * Number(args[3] ?? 1) * 4)) };
+              default: return undefined;
+            }
+          };
+        },
+        set(_t, p, v) { if (typeof p === 'string') { state[p] = v; if (p === 'globalAlpha') alphas.push(Number(v)); } return true; },
+        has() { return true; },
+      });
+      const cv = { width: 300, height: 150, getContext: () => ctx } as unknown as HTMLCanvasElement;
+      (state as { canvas?: unknown }).canvas = cv;
+      return cv;
+    };
+    const stage = new Stage(alphaCanvas(), { createCanvas: alphaCanvas, viewport: () => ({ w: 960, h: 540, dpr: 1 }), storage: null });
+    stage.setSettings({ bloom: true, grain: true, flashes: true, quality: 'high' });
+    const sky = new Sky(stage);
+    sky.setBiome(BIOMES.stormspire, 9, VERTICAL);
+    const deckY = VERTICAL.pxH * CLOUD_DECK_FRAC;         // the camera at the deck: the puffs are drawn
+    sky.update(1 / 60, 352, deckY);
+    alphas.length = 0;
+    sky.draw(352, deckY);
+    // full opacity: the wall strata (0.07 / 0.13) and the puffs set their own alphas; the draw ends at 1
+    expect(alphas).toContain(0.07);
+    expect(alphas).toContain(0.13);
+    expect(stage.ctx.globalAlpha).toBe(1);
+    sky.opacity = 0.5;
+    alphas.length = 0;
+    sky.update(1 / 60, 352, deckY);
+    sky.draw(352, deckY);
+    const inside = alphas.filter((a) => a !== 1);
+    expect(inside.length).toBeGreaterThan(3);
+    expect(alphas.some((a) => a === 0.5)).toBe(true);       // the whole-backdrop alpha
+    expect(inside.every((a) => a <= 0.5 + 1e-9)).toBe(true); // nothing escapes the scale
+    expect(alphas).toContain(0.07 * 0.5);
+    expect(alphas).toContain(0.13 * 0.5);
+    expect(stage.ctx.globalAlpha).toBe(1);                   // restored for the world pass
+    expect(stage.gctx.globalAlpha).toBe(1);
+  });
+});

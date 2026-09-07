@@ -26,6 +26,14 @@
  * Quality gating (P5-3): `low` draws none of the new layers (structures,
  * flock, aurora, cloud-deck puffs); `balanced` halves the flock. `counters`
  * records how many primitives each new layer drew, for the tests.
+ *
+ * Band crossfade (P5-4b): `setBiome` splits into a biome-independent layout
+ * (every silhouette and position, drawn from the seed and the level box with
+ * a rng sequence no biome branch can shift) and a biome tint (colours, cloud
+ * count, structure kinds, prop kind, star count, aurora). Two skies built
+ * from the same seed and box therefore share their ridges, wall, clouds and
+ * stars exactly, and the renderer can blend them with `opacity` while a tide
+ * level's band changes without any ghosted double silhouette.
  */
 import type { Biome } from '../../shared/biomes.js';
 import type { BiomeId } from '../../sim/types.js';
@@ -76,18 +84,30 @@ const CLOUD_DECK_PUFFS = 14;
 export const TIME_OF_DAY_MAX = 0.15;
 /** The gradient cache quantises the drift to this many steps. */
 const TIME_OF_DAY_STEPS = 48;
+/** Cloud records a layout generates; a biome shows the first `nClouds` of them (4 / 9 / 12). */
+const CLOUD_MAX = 12;
+/** Far-structure slots per repeat span — every biome's STRUCTURES list has this many kinds. */
+const STRUCTURE_SLOTS = 4;
+/** Star records a layout generates; a biome shows the first 0 / 90 / 120 / 150 of them. */
+const STAR_MAX = 150;
+/** Extra stars above the cloud deck of a vertical zone. */
+const DECK_STARS = 90;
 
 interface Layer { pts: Float32Array; par: number; col: string; span: number; yoff: number }
-interface Cloud { x: number; y: number; r: number; sq: number; par: number; a: number; drift: number; seed: number }
+/** `aRaw` is the layout's random part of the alpha; `a` the tinted value (the biome adds its base). */
+interface Cloud { x: number; y: number; r: number; sq: number; par: number; aRaw: number; a: number; drift: number; seed: number }
 interface Prop { x: number; par: number; h: number; w: number; dark: number; seed: number; kind: string; lean: number; arms: number }
 interface Fissure { u: number; len: number; w: number; o: number }
-interface Star { x: number; y: number; r: number; tw: number; sp: number; col: string; deck: boolean }
+/** `mag` marks the one star in five that the void reef tints magenta; other biomes ignore it. */
+interface Star { x: number; y: number; r: number; tw: number; sp: number; col: string; deck: boolean; mag: boolean }
 interface Mote {
   x: number; y: number; vx: number; vy: number; r: number;
   ph: number; sp: number; col: string; glow: number; a: number; len: number;
 }
 interface Pt { x: number; y: number }
 interface Structure { x: number; kind: StructureKind; h: number; w: number; seed: number; lean: number; windows: number }
+/** A far-structure slot before the tint decides its kind: the layout's raw randoms (position, height, width). */
+interface StructureSlot { u: number; hr: number; wr: number; seed: number; lean: number; windows: number }
 interface Bird { off: number; row: number; ph: number; sp: number; size: number; wob: number }
 interface Ribbon { y: number; amp: number; thick: number; speed: number; seed: number; a: number }
 interface Puff { u: number; dy: number; r: number; a: number; sq: number }
@@ -126,16 +146,31 @@ export class Sky {
   flashesAllowed = true;
   /** How many primitives the P5-3 layers drew since setBiome. */
   readonly counters: SkyCounters = { structures: 0, flock: 0, aurora: 0, deck: 0 };
+  /**
+   * Whole-backdrop opacity 0..1 (P5-4b): the renderer draws the band that is
+   * fading out over the new one with this below 1. Applied to every fill of
+   * `draw()`, the bloom hints included; 1 outside a band crossfade.
+   */
+  opacity = 1;
 
   private layers: Layer[] = [];
+  /** Layout: every cloud record; tint: the first `nClouds` of them, alpha tinted. */
+  private cloudBase: Cloud[] = [];
   private clouds: Cloud[] = [];
   private props: Prop[] = [];
+  /** Layout: the raw far-structure slots; tint: the structures with their biome kinds. */
+  private slots: StructureSlot[] = [];
   private structures: Structure[] = [];
   private birds: Bird[] = [];
   private ribbons: Ribbon[] = [];
+  /** Whether the current biome shows the aurora ribbons (the geometry exists for every biome). */
+  private aurora = false;
   private puffs: Puff[] = [];
   private wall: Float32Array = new Float32Array(RIDGE_SEGS + 1);
   private fissures: Fissure[] = [];
+  /** Layout: every star record (base sky, and the deck stars of a vertical box); tint: the drawn selection. */
+  private starBase: Star[] = [];
+  private starDeck: Star[] = [];
   private stars: Star[] = [];
   private readonly weather: Mote[] = [];
   private t = 0;
@@ -165,40 +200,47 @@ export class Sky {
    */
   setBiome(biome: Biome, seed = 1, box: SkyLevelBox | null = null): void {
     this.biome = biome;
+    this.dayK = 0;
+    this.lastDeck = 0;
+    this.counters.structures = this.counters.flock = this.counters.aurora = this.counters.deck = 0;
+    this.layout(seed, box);
+    this.tint(biome);
+    this.weather.length = 0;
+    this.lightning = 0;
+    this.boltCd = 2 + Math.random() * 4;
+    this.grad = null;
+    this.gradKey = '';
+  }
+
+  /**
+   * Everything the seed and the level box decide: silhouettes and positions.
+   * No branch here may read the biome — the rng sequence must be identical for
+   * every biome so that two skies of one tide level line up in a crossfade.
+   */
+  private layout(seed: number, box: SkyLevelBox | null): void {
     this.box = box;
     this.vertical = !!box && box.pxH > box.pxW;
     this.deckY = this.vertical && box ? box.pxH * CLOUD_DECK_FRAC : 0;
     this.deckSpan = this.vertical && box ? Math.max(1, box.pxH * CLOUD_DECK_SPAN) : 1;
-    this.dayK = 0;
-    this.lastDeck = 0;
-    this.counters.structures = this.counters.flock = this.counters.aurora = this.counters.deck = 0;
     const rng = makeRng((seed * 7919 + 13) >>> 0);
     this.layers = [
-      { pts: buildRidge(rng, 150, 220, 0.9), par: 0.08, col: biome.ridge[0], span: RIDGE_SPAN * 1.9, yoff: -30 },
-      { pts: buildRidge(rng, 118, 250, 1.6), par: 0.17, col: biome.ridge[1], span: RIDGE_SPAN * 1.2, yoff: 6 },
-      { pts: buildRidge(rng, 88, 280, 2.7), par: 0.30, col: biome.ridge[2], span: RIDGE_SPAN * 0.82, yoff: 30 },
+      { pts: buildRidge(rng, 150, 220, 0.9), par: 0.08, col: '', span: RIDGE_SPAN * 1.9, yoff: -30 },
+      { pts: buildRidge(rng, 118, 250, 1.6), par: 0.17, col: '', span: RIDGE_SPAN * 1.2, yoff: 6 },
+      { pts: buildRidge(rng, 88, 280, 2.7), par: 0.30, col: '', span: RIDGE_SPAN * 0.82, yoff: 30 },
     ];
-    this.clouds = [];
-    const nC = biome.id === 'voidreef' ? 4 : biome.id === 'stormspire' ? 12 : 9;
-    for (let i = 0; i < nC; i++) {
-      this.clouds.push({
+    this.cloudBase = [];
+    for (let i = 0; i < CLOUD_MAX; i++) {
+      this.cloudBase.push({
         x: rng() * 2400, y: 30 + rng() * 150,
         r: 26 + rng() * 74, sq: 0.28 + rng() * 0.3,
-        par: 0.05 + rng() * 0.09, a: (biome.id === 'stormspire' ? 0.1 : 0.06) + rng() * 0.14,
+        par: 0.05 + rng() * 0.09, aRaw: rng() * 0.14, a: 0,
         drift: 2 + rng() * 6, seed: rng() * 100,
       });
     }
-    // Far structures stand between the far and the middle ridge, one set per repeat span.
-    this.structures = [];
-    const kinds = STRUCTURES[biome.id] ?? STRUCTURES.tidepool;
-    for (let i = 0; i < kinds.length; i++) {
-      const kind = kinds[i];
-      const tall = kind === 'lighthouse' || kind === 'tower' || kind === 'peak';
-      this.structures.push({
-        x: (i + 0.15 + rng() * 0.7) * (STRUCTURE_SPAN / kinds.length), kind,
-        h: (tall ? 64 : 34) + rng() * (tall ? 40 : 18), w: (kind === 'peak' ? 90 : kind === 'arch' ? 44 : 16) + rng() * (kind === 'peak' ? 60 : 14),
-        seed: rng() * 1000, lean: (rng() - 0.5) * 0.3, windows: 3 + Math.floor(rng() * 4),
-      });
+    // Far structures stand between the far and the middle ridge, one set per repeat span; the tint picks their kinds.
+    this.slots = [];
+    for (let i = 0; i < STRUCTURE_SLOTS; i++) {
+      this.slots.push({ u: rng(), hr: rng(), wr: rng(), seed: rng() * 1000, lean: (rng() - 0.5) * 0.3, windows: 3 + Math.floor(rng() * 4) });
     }
     // Mid-ground props fill the dead band between the horizon and the playfield.
     this.props = [];
@@ -208,7 +250,7 @@ export class Sky {
         this.props.push({
           x: rng() * 3000, par,
           h: (52 + rng() * 66) * scale, w: (11 + rng() * 15) * scale,
-          dark, seed: rng() * 1000, kind: biome.props[0],
+          dark, seed: rng() * 1000, kind: '',
           lean: (rng() - 0.5) * 0.18, arms: 3 + Math.floor(rng() * 3),
         });
       }
@@ -224,16 +266,14 @@ export class Sky {
         ph: rng() * TAU, sp: 6 + rng() * 3, size: 0.75 + rng() * 0.5, wob: rng() * TAU,
       });
     }
-    // Aurora ribbons (summit): stacked, each with its own drift speed.
+    // Aurora ribbons: stacked, each with its own drift speed (generated for every biome, shown on aurora biomes).
     this.ribbons = [];
-    if (AURORA_BIOMES.has(biome.id)) {
-      for (let i = 0; i < AURORA_RIBBONS; i++) {
-        // stacked in the open sky above the far ridge crests (the ridges start near 0.3 H)
-        this.ribbons.push({
-          y: 0.03 + i * 0.065 + rng() * 0.02, amp: 0.03 + rng() * 0.02, thick: 0.1 + rng() * 0.06,
-          speed: 0.02 + rng() * 0.02, seed: rng() * 100, a: 0.5 + rng() * 0.15,
-        });
-      }
+    for (let i = 0; i < AURORA_RIBBONS; i++) {
+      // stacked in the open sky above the far ridge crests (the ridges start near 0.3 H)
+      this.ribbons.push({
+        y: 0.03 + i * 0.065 + rng() * 0.02, amp: 0.03 + rng() * 0.02, thick: 0.1 + rng() * 0.06,
+        speed: 0.02 + rng() * 0.02, seed: rng() * 100, a: 0.5 + rng() * 0.15,
+      });
     }
     // Cloud-deck puffs (vertical zones only; generated regardless, drawn only there).
     this.puffs = [];
@@ -246,27 +286,45 @@ export class Sky {
     this.fissures = [];
     for (let i = 0; i < 11; i++) this.fissures.push({ u: rng(), len: 0.25 + rng() * 0.5, w: 0.5 + rng() * 1.6, o: rng() });
 
-    this.stars = [];
-    const nStars = biome.id === 'voidreef' ? 150 : biome.id === 'stormspire' ? 90 : biome.id === 'summit' ? 120 : 0;
-    for (let i = 0; i < nStars; i++) {
-      const magenta = biome.id === 'voidreef' && rng() < 0.2;
-      this.stars.push({
-        x: rng(), y: rng() * 0.62, r: rng() * 0.9 + 0.25, tw: rng() * TAU, sp: 1 + rng() * 3,
-        col: magenta ? '#FFB5E8' : biome.id === 'voidreef' ? '#CFFBFF' : biome.id === 'summit' ? '#F4FDFF' : '#EAE4FF',
-        deck: false,
-      });
+    this.starBase = [];
+    for (let i = 0; i < STAR_MAX; i++) {
+      const mag = rng() < 0.2;
+      this.starBase.push({ mag, x: rng(), y: rng() * 0.62, r: rng() * 0.9 + 0.25, tw: rng() * TAU, sp: 1 + rng() * 3, col: '', deck: false });
     }
     // Above the cloud deck of a vertical zone the sky deepens: extra stars that fade in with the deck factor.
+    this.starDeck = [];
     if (this.vertical) {
-      for (let i = 0; i < 90; i++) {
-        this.stars.push({ x: rng(), y: rng() * 0.7, r: rng() * 0.8 + 0.3, tw: rng() * TAU, sp: 1 + rng() * 2.5, col: biome.skyLight, deck: true });
+      for (let i = 0; i < DECK_STARS; i++) {
+        this.starDeck.push({ x: rng(), y: rng() * 0.7, r: rng() * 0.8 + 0.3, tw: rng() * TAU, sp: 1 + rng() * 2.5, col: '', deck: true, mag: false });
       }
     }
-    this.weather.length = 0;
-    this.lightning = 0;
-    this.boltCd = 2 + Math.random() * 4;
-    this.grad = null;
-    this.gradKey = '';
+  }
+
+  /** Everything the biome decides on top of the layout: colours, counts, kinds. */
+  private tint(b: Biome): void {
+    for (let i = 0; i < this.layers.length; i++) this.layers[i].col = b.ridge[i];
+    const nClouds = b.id === 'voidreef' ? 4 : b.id === 'stormspire' ? 12 : 9;
+    const cloudA = b.id === 'stormspire' ? 0.1 : 0.06;
+    this.clouds = this.cloudBase.slice(0, nClouds);
+    for (const c of this.clouds) c.a = cloudA + c.aRaw;
+    const kinds = STRUCTURES[b.id] ?? STRUCTURES.tidepool;
+    this.structures = this.slots.map((s, i) => {
+      const kind = kinds[i % kinds.length];
+      const tall = kind === 'lighthouse' || kind === 'tower' || kind === 'peak';
+      return {
+        x: (i + 0.15 + s.u * 0.7) * (STRUCTURE_SPAN / STRUCTURE_SLOTS), kind,
+        h: (tall ? 64 : 34) + s.hr * (tall ? 40 : 18), w: (kind === 'peak' ? 90 : kind === 'arch' ? 44 : 16) + s.wr * (kind === 'peak' ? 60 : 14),
+        seed: s.seed, lean: s.lean, windows: s.windows,
+      };
+    });
+    for (const p of this.props) p.kind = b.props[0];
+    this.aurora = AURORA_BIOMES.has(b.id);
+    const nStars = b.id === 'voidreef' ? 150 : b.id === 'stormspire' ? 90 : b.id === 'summit' ? 120 : 0;
+    const starCol = b.id === 'voidreef' ? '#CFFBFF' : b.id === 'summit' ? '#F4FDFF' : '#EAE4FF';
+    this.stars = this.starBase.slice(0, nStars);
+    for (const s of this.stars) s.col = s.mag && b.id === 'voidreef' ? '#FFB5E8' : starCol;
+    for (const s of this.starDeck) s.col = b.skyLight;
+    this.stars.push(...this.starDeck);
   }
 
   /** Snow / rain / spray / spore motes currently alive (tests). */
@@ -434,6 +492,9 @@ export class Sky {
     const low = st.quality === 'low';
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // a band crossfade draws the outgoing sky over the incoming one at `opacity`; every save/restore below returns to it
+    ctx.globalAlpha = this.opacity;
+    gctx.globalAlpha = this.opacity;
     ctx.fillStyle = this.gradient(ctx);
     ctx.fillRect(0, 0, W, H);
 
@@ -466,7 +527,7 @@ export class Sky {
     }
 
     // ---------- aurora (summit) ----------
-    if (!low && this.ribbons.length) this.drawAurora(W, H);
+    if (!low && this.aurora && this.ribbons.length) this.drawAurora(W, H);
 
     // ---------- lightning (behind the ridges: a distant strike) ----------
     if (this.lightning > 0.01) this.drawLightning(W, H, S);
@@ -580,6 +641,8 @@ export class Sky {
 
     // ---------- weather ----------
     this.drawWeather(W, H, S);
+    ctx.globalAlpha = 1;
+    gctx.globalAlpha = 1;
   }
 
   /**
@@ -1051,7 +1114,7 @@ export class Sky {
       const py = dy + p.dy * S * 0.5;
       const r = p.r * S * 0.55;
       ctx.save();
-      ctx.globalAlpha = p.a * (0.8 + 0.2 * Math.sin(this.t * 0.3 + p.u * 9));
+      ctx.globalAlpha = p.a * (0.8 + 0.2 * Math.sin(this.t * 0.3 + p.u * 9)) * this.opacity;
       ctx.translate(px, py);
       ctx.scale(r, r * p.sq);
       ctx.fillStyle = g;
@@ -1100,7 +1163,7 @@ export class Sky {
     ctx.fill();
 
     ctx.clip();
-    ctx.globalAlpha = 0.07;
+    ctx.globalAlpha = 0.07 * this.opacity;
     ctx.strokeStyle = mixHex(b.rockHi, b.fog, 0.3);
     ctx.lineWidth = Math.max(1, 1.6 * S * 0.4);
     for (let k = 0; k < 7; k++) {
@@ -1114,7 +1177,7 @@ export class Sky {
       }
       ctx.stroke();
     }
-    ctx.globalAlpha = 0.13;
+    ctx.globalAlpha = 0.13 * this.opacity;
     ctx.strokeStyle = mixHex(b.rockDeep, '#000000', 0.5);
     for (const f of this.fissures) {
       const x = ((f.u * spanPx + off) % spanPx) - spanPx * 0.5 + W * 0.5;

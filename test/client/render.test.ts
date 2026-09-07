@@ -16,10 +16,11 @@ import type { EntityState, FoeState, LevelDef, PlayerState, SimEvent, SimState }
 import { BIOMES, BIOME_ORDER, C } from '../../src/shared/biomes.js';
 import type { FxState, GhostView, Settings, WorldView } from '../../src/client/contracts.js';
 import {
-  AFTER_IMAGE_SPACING, AUTOTIER_KEY, FRAME_WINDOW_S, FrameHistogram, GOAL_LOOK_TILES, MENU_BUCKET_MS, MENU_COST_RATIO, MENU_FRAME_MS,
+  AFTER_IMAGE_SPACING, AUTOTIER_KEY, BAND_FADE_S, FRAME_WINDOW_S, FrameHistogram, GOAL_LOOK_TILES, MENU_BUCKET_MS, MENU_COST_RATIO, MENU_FRAME_MS,
   MENU_SLOW_RATIO, MIN_MENU_SAMPLES, MIN_WINDOW_SAMPLES, Renderer, SKINS, STEP_DOWN_LOCK_S, STEP_UP_AFTER_S, Stage, drawClawd, lookTarget,
   readStoredTier, setLookTarget, skinById, snapRefreshRate,
 } from '../../src/client/render/index.js';
+import { bandBiome } from '../../src/sim/gen/daily.js';
 import { TILE } from '../../src/sim/types.js';
 import { MENU_FRAME_DT } from '../../src/client/scenes.js';
 import type { SimView, TierStorage } from '../../src/client/render/index.js';
@@ -1181,5 +1182,72 @@ describe('character pass · foe anticipation through the renderer (P5-2)', () =>
     expect(hopperCrouch(0.25)).toBeLessThan(hopperCrouch(0.1));
     expect(hopperCrouch(0.1)).toBeLessThan(hopperCrouch(0.02));
     expect(hopperCrouch(0.5)).toBe(0);
+  });
+});
+
+// ------------------------------------------------------------------ band crossfade (P5-4b)
+describe('band crossfade (P5-4b) · tide levels through the renderer', () => {
+  /** A 44×210 tower on the fixture legend: four daily bands of 50 rows above baseY = 206, hazards on every seventh row. */
+  const TIDE_ROWS = (() => {
+    const w = 44, rows: string[] = [];
+    for (let y = 0; y < 210; y++) {
+      if (y >= 206) rows.push('#'.repeat(w));
+      else if (y === 205) rows.push('##' + '....P' + '.'.repeat(w - 9) + '##');
+      else if (y === 3) rows.push('##' + '.'.repeat(20) + 'G' + '.'.repeat(w - 25) + '##');
+      else if (y % 7 === 0) rows.push('##' + '####^^..' + '.'.repeat(w - 20) + '..==~~##' + '##');
+      else rows.push('##' + '.'.repeat(w - 4) + '##');
+    }
+    return rows;
+  })();
+  const tideDef = (bottom: BiomeId): LevelDef => fixtureDef(bottom, TIDE_ROWS, { id: 'daily', tide: true, baseY: 206, seed: 3 });
+  const feet = (sim: SimView, row: number): void => { const p = sim.state.player; p.y = row * TILE + TILE - p.h; p.x = 22 * TILE; };
+
+  it.each(ALL_BIOMES)('draw does not throw on a tide level with a %s bottom band at rows in all four bands, and the band follows the feet', (bottom) => {
+    const { r, ctx } = makeRenderer();
+    const sim = fakeSim(tideDef(bottom), { tide: true });
+    r.applySettings(SETTINGS);
+    r.setLevel(sim, BIOMES[bottom]);
+    expect(r.band).toEqual({ biome: bottom, prev: null, fade: 0 });
+    const seen = new Set<BiomeId>();
+    for (const row of [200, 130, 80, 30]) {
+      feet(sim, row);                                                    // a teleport between bands: hard cut
+      for (let i = 0; i < 4; i++) r.draw(sim, { camX: 352, camY: sim.state.player.y, zoom: 1 }, i % 2 ? FX_BUSY : FX, [], 1 / 60);
+      expect(r.band.biome).toBe(bandBiome(sim.level.def, row));
+      expect(r.band.fade).toBe(0);
+      expect(r.sky.biome?.id).toBe(r.band.biome);
+      seen.add(r.band.biome!);
+    }
+    expect(seen.size).toBe(4);
+    expect(ctx.__calls.length).toBeGreaterThan(50);
+  });
+
+  it('walking across a boundary draws two terrains for BAND_FADE_S (fills within twice the budget), then one again', () => {
+    const { r, ctx } = makeRenderer(1280, 800, 1);
+    const sim = fakeSim(tideDef('tidepool'), { tide: true });
+    r.setLevel(sim, BIOMES.tidepool);
+    const pathFills = () => ctx.__calls.filter((c) => c.name === 'fill' && c.args[0] instanceof StubPath2D).length;
+    const edge = 206 - 1 - 50;                                           // first row of the second band
+    const view = () => ({ camX: 352, camY: sim.state.player.y, zoom: 1 });
+    for (let row = 200; row >= edge + 1; row--) { feet(sim, row); r.draw(sim, view(), FX, [], 1 / 60); }
+    ctx.__calls.length = 0;
+    r.draw(sim, view(), FX, [], 1 / 60);
+    const steady = pathFills();
+    expect(steady).toBeGreaterThan(0);
+    expect(steady).toBeLessThanOrEqual(TERRAIN_MAX_PATH_FILLS);
+    feet(sim, edge); r.draw(sim, view(), FX, [], 1 / 60);               // boundary row: hysteresis holds
+    expect(r.band.prev).toBeNull();
+    feet(sim, edge - 1);
+    ctx.__calls.length = 0;
+    r.draw(sim, view(), FX, [], 1 / 60);                                 // one tile inside: both palettes this frame
+    expect(r.band.prev).toBe('tidepool');
+    expect(r.band.biome).toBe('stormspire');
+    const fading = pathFills();
+    expect(fading).toBeGreaterThan(steady);
+    expect(fading).toBeLessThanOrEqual(2 * TERRAIN_MAX_PATH_FILLS);
+    for (let i = 0; i < Math.ceil(BAND_FADE_S * 60) + 1; i++) r.draw(sim, view(), FX, [], 1 / 60);
+    expect(r.band).toEqual({ biome: 'stormspire', prev: null, fade: 0 });
+    ctx.__calls.length = 0;
+    r.draw(sim, view(), FX, [], 1 / 60);
+    expect(pathFills()).toBeLessThanOrEqual(TERRAIN_MAX_PATH_FILLS);
   });
 });

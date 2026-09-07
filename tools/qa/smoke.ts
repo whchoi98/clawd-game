@@ -358,6 +358,17 @@ async function run(browser: Browser): Promise<number> {
         return describeShot(raw);
       });
     }
+    // Daily band crossfade (P5-4b): the player dropped in the summit band of the default seed's tower — the
+    // teleport hard-cuts the band, so the single captured frame must already wear that band's palette.
+    await step('shot:daily-band', async () => {
+      await page.goto(`${BASE_URL}/?shot=daily&frames=60&at=352,1290`, { waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => document.documentElement.dataset.shot !== undefined);
+      const raw = await page.evaluate(() => document.documentElement.dataset.shot ?? '');
+      const sample = await page.evaluate(sampleCanvas);
+      assertPainted(sample);
+      await page.screenshot({ path: join(OUT_DIR, 'shot-daily-band.png') });
+      return describeShot(raw);
+    });
   }
 
   await context.close();
