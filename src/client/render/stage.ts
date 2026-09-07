@@ -284,6 +284,31 @@ export function mixHex(a: string, b: string, t: number): string {
   return '#' + ((r << 16) | (g << 8) | c).toString(16).padStart(6, '0');
 }
 
+/** Rec. 709 luma of a hex colour, 0..255 — what the readability probes compare backdrop columns with. */
+export function lumaHex(hex: string): number {
+  const [r, g, b] = hexToRgb(hex);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** WCAG 2.x relative luminance (0..1) of a hex colour. */
+export function relLuminance(hex: string): number {
+  const lin = (v: number): number => { const u = v / 255; return u <= 0.03928 ? u / 12.92 : Math.pow((u + 0.055) / 1.055, 2.4); };
+  const [r, g, b] = hexToRgb(hex);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/** WCAG 2.x contrast ratio between two relative luminances (>= 1). */
+export function contrastRatio(l1: number, l2: number): number {
+  const [hi, lo] = l1 >= l2 ? [l1, l2] : [l2, l1];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** Euclidean RGB distance between two hex colours (the accent-pixel tolerance of the QA probes is in these units). */
+export function rgbDistance(a: string, b: string): number {
+  const x = hexToRgb(a), y = hexToRgb(b);
+  return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]);
+}
+
 export function defaultCreateCanvas(): HTMLCanvasElement {
   if (typeof document === 'undefined') throw new Error('render: no document to create a canvas');
   return document.createElement('canvas');

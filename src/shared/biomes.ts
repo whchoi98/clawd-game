@@ -59,15 +59,18 @@ export const BIOMES: Record<BiomeId, Biome> = {
     weather: 'spores', lightning: false, ambient: 0.16,
     spike: { hi: '#E0FFFF', mid: '#66B8C8', lo: '#123A48' }, props: ['polyp', 'glowvine'],
   },
-  // Phase 5 (P5-1): the fourth tier above the clouds — aurora night, glacier rock, snow. Palette
-  // is provisional until the background pass tunes it against tools/qa/readability.ts.
+  // Phase 5: the fourth tier above the clouds — aurora night, glacier rock, snow. Tuned by the
+  // background pass (P5-3) against tools/qa/readability.ts: the icy crust (#5FA3D6, L 0.35) keeps
+  // the spike outline above 3:1 with margin, the steel fog (#4F86A8) keeps the haze band from
+  // washing the updraft column, and the mint accent sits >48 RGB from every sky/crust/ice colour
+  // so the goal beacon and the aurora ribbons (accent ↔ skyLight) never read as terrain.
   summit: {
     id: 'summit', name: 'AURORA SUMMIT', kr: '오로라 정점', track: 'summit',
     sky: ['#03040F', '#0B1B3A', '#1E4A6E', '#7FD8E8'], skyLight: '#E8FBFF',
     sun: { x: 0.22, y: 0.18, r: 30, color: '#FFFFFF', glow: '#A8E8FF', kind: 'disc' },
-    fog: '#6FA8C8', ridge: ['#0A1630', '#15305A', '#2A5A86'],
+    fog: '#4F86A8', ridge: ['#0A1630', '#15305A', '#2A5A86'],
     rock: '#3A4E6A', rockHi: '#7C9AB8', rockDeep: '#1A2638',
-    crust: '#3F7FB8', crustHi: '#CFEFFF', accent: '#9CF5C8',
+    crust: '#5FA3D6', crustHi: '#D8F4FF', accent: '#9CF5C8',
     weather: 'snow', lightning: false, ambient: 0.12,
     spike: { hi: '#FFFFFF', mid: '#BFDDF0', lo: '#3F6484' }, props: ['pine', 'shrine'],
   },

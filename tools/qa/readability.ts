@@ -16,11 +16,27 @@
  *            blade's tip down) the darkest pixel has a WCAG contrast >= 3:1 with
  *            the biome crust colour — a bright tip can never reach 3:1 against a
  *            crust of luminance 0.62, so the readable edge is the dark outline —
- *            and the brightest pixel is a real highlight (L >= 0.4). On voidreef
- *            the upper part of the tile also holds a pixel of the magenta rim.
+ *            and the brightest pixel is a real highlight (L >= 0.4). On the rim
+ *            biomes (SPIKE_RIM_BIOMES: voidreef, summit) the upper part of the
+ *            tile also holds a pixel of the accent rim.
  *   beacon   shot=v2 from the start, the goal ~1200 units to the right:
  *            renderer.goalScreen is off screen and a pixel in the biome accent
  *            sits inside the 48 px edge band of the canvas.
+ *
+ * The P5-3 background pass adds:
+ *
+ *   backdrop:<zone>  (t1, s1, v1) the sky alone is repainted into the world
+ *            canvas (`renderer.sky.draw`, everything it draws sits behind the
+ *            playfield) and, in the playfield band — the rows from the highest
+ *            crust surface in view down to the bottom of the rendered box — no
+ *            pixel column's mean luma may exceed the biome crust's luma. A
+ *            backdrop brighter than the ledges would invert the depth cue and
+ *            drown the terrain edge.
+ *   tier4-*  the updraft / spike / beacon probes once more on the summit zones.
+ *            Until the P5-1 zones (m1..m4) merge, SUMMIT_* point at existing
+ *            zones so the steps run; the integrator switches them to m1 (spike
+ *            bed in view from the start) and m3 (an updraft column, parking
+ *            Clawd with `at=`) and drops the "provisional" note.
  *
  * Geometry is read from the live page (`window.__clawd`: entities, level grid,
  * the renderer's stage transform), never re-derived from level sources, so a
@@ -33,7 +49,8 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { TILE } from '../../src/sim/types.js';
 import { BIOMES } from '../../src/shared/biomes.js';
-import { SPIKE_TIP_INSET } from '../../src/client/render/tiles.js';
+import { SPIKE_RIM_BIOMES, SPIKE_TIP_INSET } from '../../src/client/render/tiles.js';
+import { contrastRatio, lumaHex, relLuminance } from '../../src/client/render/stage.js';
 
 const BASE_URL = (process.env.BASE_URL ?? 'http://127.0.0.1:8099').replace(/\/+$/, '');
 const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), 'out');
@@ -53,6 +70,22 @@ const RIM_TOLERANCE = 60;
 /** The beacon must sit within this many CSS px of a canvas edge. */
 const BEACON_EDGE_BAND_PX = 48;
 
+/** The shots of the three base steps (v2 parks Clawd on the start yard's edge: tile 15.5, feet on row 24). */
+const UPDRAFT_SHOT = 'shot=v2&frames=60&at=248,384';
+const SPIKE_SHOT = 'shot=v1&frames=60';
+const BEACON_SHOT = 'shot=v2&frames=60';
+/** Zones whose backdrop the backdrop-band step probes: the first zone of every shipped tier. */
+const BACKDROP_ZONES = ['t1', 's1', 'v1'];
+/**
+ * Tier-4 (summit) shots — PROVISIONAL: the summit zones m1..m4 land with P5-1,
+ * so these point at existing zones until the integrator flips them, e.g. to
+ * 'shot=m1&frames=60' (spikes), 'shot=m3&frames=60&at=<x>,<y>' (an updraft
+ * column in view, nobody inside it) and 'shot=m1&frames=60' (goal off right).
+ */
+const SUMMIT_SPIKE_SHOT = SPIKE_SHOT;
+const SUMMIT_UPDRAFT_SHOT = UPDRAFT_SHOT;
+const SUMMIT_BEACON_SHOT = BEACON_SHOT;
+
 interface Row { step: string; ok: boolean; ms: number; note: string }
 interface Issue { step: string; kind: 'console' | 'pageerror' | 'http' | 'assert'; text: string }
 
@@ -62,8 +95,8 @@ interface DebugEntity { kind: string; x: number; y: number; w: number; h: number
 interface DebugStage { camX: number; camY: number; zoom: number; scale: number; w: number; h: number; ox: number; oy: number; rw: number; rh: number }
 interface DebugHandle {
   run: { sim: { state: { entities: DebugEntity[] }; level: { w: number; h: number; at(tx: number, ty: number): string } } } | null;
-  /** `Scenes.renderer` is TypeScript-private; at runtime it is a plain property. */
-  renderer: { stage: DebugStage; goalScreen: { x: number; y: number; onScreen: boolean } | null };
+  /** `Scenes.renderer` is TypeScript-private; at runtime it is a plain property (the concrete Renderer). */
+  renderer: { stage: DebugStage; goalScreen: { x: number; y: number; onScreen: boolean } | null; sky: { draw(camX: number, camY: number): void } };
 }
 interface Rgb { r: number; g: number; b: number }
 
@@ -76,6 +109,9 @@ type SpikeProbe =
 type BeaconProbe =
   | { error: string }
   | { goalScreen: { x: number; y: number; onScreen: boolean } | null; canvas: [number, number]; css: [number, number]; hit: { x: number; y: number; rgb: Rgb } | null; scanned: number };
+type BackdropProbe =
+  | { error: string }
+  | { band: [number, number]; surfaceRow: number; columns: number; maxMean: number; maxX: number; meanOfMeans: number };
 
 // ---------------------------------------------------------------- page-side probes
 // Each runs inside the page via page.evaluate: self-contained, args only. They
@@ -128,7 +164,7 @@ function probeUpdraft(args: { tile: number; bgTiles: number }): UpdraftProbe {
   return { column: { x: best.x, y: best.y, w: best.w, h: best.h }, devX, devY0, devY1, centre, left, right };
 }
 
-/** Spike tip zone: darkest / brightest pixel (WCAG relative luminance) plus a magenta-rim hit. */
+/** Spike tip zone: darkest / brightest pixel (WCAG relative luminance) plus an accent-rim hit. */
 function probeSpike(args: { tile: number; tipInset: number; rim: Rgb | null; rimTol: number }): SpikeProbe {
   const clawd = (window as unknown as { __clawd?: DebugHandle }).__clawd;
   const run = clawd?.run;
@@ -222,21 +258,59 @@ function probeBeacon(args: { accent: Rgb; tol: number; bandPx: number }): Beacon
   return { goalScreen: clawd.renderer.goalScreen, canvas: [W, H], css: [rect.width, rect.height], hit, scanned };
 }
 
+/**
+ * Backdrop band (P5-3): repaint the sky alone into the world canvas, then take
+ * the mean luma of every pixel column over the playfield band — from the
+ * highest crust surface ('#' with an open tile above) in view to the bottom
+ * of the rendered box — and report the brightest column.
+ */
+function probeBackdrop(args: { tile: number }): BackdropProbe {
+  const clawd = (window as unknown as { __clawd?: DebugHandle }).__clawd;
+  const run = clawd?.run;
+  if (!clawd || !run) return { error: 'window.__clawd.run is not set (shot harness did not start a level)' };
+  const r = clawd.renderer;
+  const st = r.stage;
+  if (!r.sky || typeof r.sky.draw !== 'function') return { error: 'renderer.sky.draw is not exposed' };
+  const canvas = document.querySelector<HTMLCanvasElement>('canvas#world');
+  const ctx = canvas?.getContext('2d');
+  if (!canvas || !ctx) return { error: 'canvas#world has no 2d context' };
+  const s = st.scale * st.zoom;
+  const L = run.sim.level, T = args.tile;
+  const tx0 = Math.max(0, Math.floor((st.camX - st.w / (2 * s)) / T)), tx1 = Math.min(L.w - 1, Math.ceil((st.camX + st.w / (2 * s)) / T));
+  const ty0 = Math.max(0, Math.floor((st.camY - st.h / (2 * s)) / T)), ty1 = Math.min(L.h - 1, Math.ceil((st.camY + st.h / (2 * s)) / T));
+  let surfaceRow = -1;
+  for (let ty = ty0; ty <= ty1 && surfaceRow < 0; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
+      if (L.at(tx, ty) === '#' && L.at(tx, ty - 1) !== '#') { surfaceRow = ty; break; }
+    }
+  }
+  if (surfaceRow < 0) return { error: 'no crust surface tile inside the view' };
+  // the backdrop alone: everything Sky.draw paints sits behind the world transform
+  r.sky.draw(st.camX, st.camY);
+  const yTop = (surfaceRow * T - st.camY) * s + st.h / 2;
+  const y0 = Math.max(st.oy, Math.floor(yTop)), y1 = Math.min(st.oy + st.rh, canvas.height);
+  if (y1 - y0 < 4) return { error: `playfield band too thin (${y0}..${y1})` };
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data, W = canvas.width;
+  let maxMean = -Infinity, maxX = -1, total = 0, columns = 0;
+  for (let x = Math.max(0, st.ox); x < Math.min(W, st.ox + st.rw); x++) {
+    let sum = 0;
+    for (let y = y0; y < y1; y++) {
+      const i = (y * W + x) * 4;
+      sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+    }
+    const mean = sum / (y1 - y0);
+    total += mean;
+    columns++;
+    if (mean > maxMean) { maxMean = mean; maxX = x; }
+  }
+  return { band: [y0, y1], surfaceRow, columns, maxMean, maxX, meanOfMeans: columns ? total / columns : 0 };
+}
+
 // ---------------------------------------------------------------- node side
 function hexToRgb(hex: string): Rgb {
   const n = parseInt(hex.slice(1), 16);
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
-}
-
-function relLuminance(c: Rgb): number {
-  const lin = (v: number): number => { const u = v / 255; return u <= 0.03928 ? u / 12.92 : Math.pow((u + 0.055) / 1.055, 2.4); };
-  return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
-}
-
-/** WCAG 2.x contrast ratio between two relative luminances. */
-function contrast(l1: number, l2: number): number {
-  const [hi, lo] = l1 >= l2 ? [l1, l2] : [l2, l1];
-  return (hi + 0.05) / (lo + 0.05);
 }
 
 function check(cond: boolean, msg: string): void {
@@ -281,6 +355,68 @@ async function openShot(page: Page, query: string): Promise<Record<string, unkno
   const o = (typeof parsed === 'object' && parsed !== null ? parsed : {}) as Record<string, unknown>;
   if (typeof o.error === 'string') throw new Error(`harness reported: ${o.error.split('\n')[0]}`);
   return o;
+}
+
+function biomeOf(shot: Record<string, unknown>) {
+  const biomeId = String(shot.biome ?? 'voidreef') as keyof typeof BIOMES;
+  return BIOMES[biomeId] ?? BIOMES.voidreef;
+}
+
+// ---------------------------------------------------------------- step bodies (shared by the base and the tier-4 steps)
+async function updraftStep(page: Page, query: string, shotName: string): Promise<string> {
+  await openShot(page, query);
+  const r = await page.evaluate(probeUpdraft, { tile: TILE, bgTiles: UPDRAFT_BG_OFFSET_TILES });
+  await page.screenshot({ path: join(OUT_DIR, `readability-${shotName}.png`) });
+  if ('error' in r) throw new Error(r.error);
+  const bg = Math.max(r.left, r.right);
+  const gain = r.centre - bg;
+  check(gain >= UPDRAFT_MIN_LUMA_GAIN,
+    `updraft column centre luma ${fmt(r.centre)} is only ${fmt(gain)} above the background (left ${fmt(r.left)}, right ${fmt(r.right)}); need >= ${UPDRAFT_MIN_LUMA_GAIN}`);
+  return `column @(${Math.round(r.column.x)},${Math.round(r.column.y)}) h=${r.column.h}: centre ${fmt(r.centre)} vs bg ${fmt(r.left)}/${fmt(r.right)} (+${fmt(gain)})`;
+}
+
+async function spikeStep(page: Page, query: string, shotName: string): Promise<string> {
+  const shot = await openShot(page, query);
+  const biome = biomeOf(shot);
+  const rim = SPIKE_RIM_BIOMES.has(biome.id) ? hexToRgb(biome.accent) : null;
+  const r = await page.evaluate(probeSpike, { tile: TILE, tipInset: SPIKE_TIP_INSET, rim, rimTol: RIM_TOLERANCE });
+  await page.screenshot({ path: join(OUT_DIR, `readability-${shotName}.png`) });
+  if ('error' in r) throw new Error(r.error);
+  const crustL = relLuminance(biome.crust);
+  const ratio = contrastRatio(r.minL, crustL);
+  check(ratio >= SPIKE_MIN_CONTRAST,
+    `spike tip zone darkest pixel ${rgb(r.minRgb)} contrasts only ${fmt(ratio, 2)}:1 with crust ${biome.crust}; need >= ${SPIKE_MIN_CONTRAST}:1`);
+  check(r.maxL >= SPIKE_MIN_HIGHLIGHT_L,
+    `spike tip zone has no highlight: brightest pixel ${rgb(r.maxRgb)} L=${fmt(r.maxL, 2)} < ${SPIKE_MIN_HIGHLIGHT_L}`);
+  if (rim) check(r.rimHit !== null, `no accent rim pixel (accent ${biome.accent} ±${RIM_TOLERANCE}) in the upper part of spike tile ${r.tile.join(',')}`);
+  return `${biome.id} tile ${r.tile.join(',')}: dark ${rgb(r.minRgb)} ${fmt(ratio, 2)}:1 vs crust, highlight L=${fmt(r.maxL, 2)}${r.rimHit ? `, rim ${rgb(r.rimHit)}` : ''}`;
+}
+
+async function beaconStep(page: Page, query: string, shotName: string): Promise<string> {
+  const shot = await openShot(page, query);
+  const biome = biomeOf(shot);
+  const r = await page.evaluate(probeBeacon, { accent: hexToRgb(biome.accent), tol: ACCENT_TOLERANCE, bandPx: BEACON_EDGE_BAND_PX });
+  await page.screenshot({ path: join(OUT_DIR, `readability-${shotName}.png`) });
+  if ('error' in r) throw new Error(r.error);
+  check(r.goalScreen !== null, 'renderer.goalScreen is null after a level draw');
+  const gs = r.goalScreen!;
+  check(!gs.onScreen, `goalScreen reports the goal on screen at (${fmt(gs.x)},${fmt(gs.y)}) although it lies far right of the view`);
+  check(gs.x > r.css[0], `goalScreen.x ${fmt(gs.x)} should exceed the canvas width ${r.css[0]} for a goal to the right`);
+  check(r.hit !== null, `no beacon pixel in accent ${biome.accent} (±${ACCENT_TOLERANCE}) within ${BEACON_EDGE_BAND_PX} px of the canvas edge (${r.scanned} px scanned)`);
+  return `${biome.id} goal at css (${Math.round(gs.x)},${Math.round(gs.y)}) off screen; beacon pixel ${rgb(r.hit!.rgb)} @(${r.hit!.x},${r.hit!.y}) of ${r.canvas.join('x')}`;
+}
+
+async function backdropStep(page: Page, zone: string): Promise<string> {
+  const shot = await openShot(page, `shot=${zone}&frames=60`);
+  const biome = biomeOf(shot);
+  const r = await page.evaluate(probeBackdrop, { tile: TILE });
+  // the screenshot shows the backdrop alone: the sky pass repainted over the finished frame
+  await page.screenshot({ path: join(OUT_DIR, `readability-backdrop-${zone}.png`) });
+  if ('error' in r) throw new Error(r.error);
+  const crust = lumaHex(biome.crust);
+  check(r.maxMean <= crust,
+    `backdrop column x=${r.maxX} has mean luma ${fmt(r.maxMean)} over the playfield band y ${r.band[0]}..${r.band[1]}, brighter than the ${biome.id} crust ${biome.crust} (luma ${fmt(crust)})`);
+  return `${biome.id} band y ${r.band[0]}..${r.band[1]} (surface row ${r.surfaceRow}, ${r.columns} cols): brightest column ${fmt(r.maxMean)} @x${r.maxX}, mean ${fmt(r.meanOfMeans)}, crust ${fmt(crust)}`;
 }
 
 async function run(browser: Browser): Promise<number> {
@@ -331,52 +467,20 @@ async function run(browser: Browser): Promise<number> {
 
   // v2: park Clawd on the start yard's edge (tile 15.5, feet on row 24) so the first
   // updraft column (tile 17, rows 13..25) stands in view with nobody inside it.
-  await step('updraft', async () => {
-    await openShot(page, 'shot=v2&frames=60&at=248,384');
-    const r = await page.evaluate(probeUpdraft, { tile: TILE, bgTiles: UPDRAFT_BG_OFFSET_TILES });
-    await page.screenshot({ path: join(OUT_DIR, 'readability-updraft.png') });
-    if ('error' in r) throw new Error(r.error);
-    const bg = Math.max(r.left, r.right);
-    const gain = r.centre - bg;
-    check(gain >= UPDRAFT_MIN_LUMA_GAIN,
-      `updraft column centre luma ${fmt(r.centre)} is only ${fmt(gain)} above the background (left ${fmt(r.left)}, right ${fmt(r.right)}); need >= ${UPDRAFT_MIN_LUMA_GAIN}`);
-    return `column @(${Math.round(r.column.x)},${Math.round(r.column.y)}) h=${r.column.h}: centre ${fmt(r.centre)} vs bg ${fmt(r.left)}/${fmt(r.right)} (+${fmt(gain)})`;
-  });
-
+  await step('updraft', () => updraftStep(page, UPDRAFT_SHOT, 'updraft'));
   // v1: the first spike bed (tiles 13..22, row 19) is in view from the start.
-  await step('spike', async () => {
-    const shot = await openShot(page, 'shot=v1&frames=60');
-    const biomeId = String(shot.biome ?? 'voidreef') as keyof typeof BIOMES;
-    const biome = BIOMES[biomeId] ?? BIOMES.voidreef;
-    const rim = biome.id === 'voidreef' ? hexToRgb(biome.accent) : null;
-    const r = await page.evaluate(probeSpike, { tile: TILE, tipInset: SPIKE_TIP_INSET, rim, rimTol: RIM_TOLERANCE });
-    await page.screenshot({ path: join(OUT_DIR, 'readability-spike.png') });
-    if ('error' in r) throw new Error(r.error);
-    const crustL = relLuminance(hexToRgb(biome.crust));
-    const ratio = contrast(r.minL, crustL);
-    check(ratio >= SPIKE_MIN_CONTRAST,
-      `spike tip zone darkest pixel ${rgb(r.minRgb)} contrasts only ${fmt(ratio, 2)}:1 with crust ${biome.crust}; need >= ${SPIKE_MIN_CONTRAST}:1`);
-    check(r.maxL >= SPIKE_MIN_HIGHLIGHT_L,
-      `spike tip zone has no highlight: brightest pixel ${rgb(r.maxRgb)} L=${fmt(r.maxL, 2)} < ${SPIKE_MIN_HIGHLIGHT_L}`);
-    if (rim) check(r.rimHit !== null, `no magenta rim pixel (accent ${biome.accent} ±${RIM_TOLERANCE}) in the upper part of spike tile ${r.tile.join(',')}`);
-    return `tile ${r.tile.join(',')}: dark ${rgb(r.minRgb)} ${fmt(ratio, 2)}:1 vs crust, highlight L=${fmt(r.maxL, 2)}${r.rimHit ? `, rim ${rgb(r.rimHit)}` : ''}`;
-  });
-
+  await step('spike', () => spikeStep(page, SPIKE_SHOT, 'spike'));
   // v2 from the start: the goal is ~1200 units to the right, far off screen.
-  await step('beacon', async () => {
-    const shot = await openShot(page, 'shot=v2&frames=60');
-    const biomeId = String(shot.biome ?? 'voidreef') as keyof typeof BIOMES;
-    const biome = BIOMES[biomeId] ?? BIOMES.voidreef;
-    const r = await page.evaluate(probeBeacon, { accent: hexToRgb(biome.accent), tol: ACCENT_TOLERANCE, bandPx: BEACON_EDGE_BAND_PX });
-    await page.screenshot({ path: join(OUT_DIR, 'readability-beacon.png') });
-    if ('error' in r) throw new Error(r.error);
-    check(r.goalScreen !== null, 'renderer.goalScreen is null after a level draw');
-    const gs = r.goalScreen!;
-    check(!gs.onScreen, `goalScreen reports the goal on screen at (${fmt(gs.x)},${fmt(gs.y)}) although it lies far right of the view`);
-    check(gs.x > r.css[0], `goalScreen.x ${fmt(gs.x)} should exceed the canvas width ${r.css[0]} for a goal to the right`);
-    check(r.hit !== null, `no beacon pixel in accent ${biome.accent} (±${ACCENT_TOLERANCE}) within ${BEACON_EDGE_BAND_PX} px of the canvas edge (${r.scanned} px scanned)`);
-    return `goal at css (${Math.round(gs.x)},${Math.round(gs.y)}) off screen; beacon pixel ${rgb(r.hit!.rgb)} @(${r.hit!.x},${r.hit!.y}) of ${r.canvas.join('x')}`;
-  });
+  await step('beacon', () => beaconStep(page, BEACON_SHOT, 'beacon'));
+
+  // P5-3: the backdrop never outshines the ledges in the playfield band.
+  for (const zone of BACKDROP_ZONES) await step(`backdrop:${zone}`, () => backdropStep(page, zone));
+
+  // Tier 4 (summit) — the same three probes on the SUMMIT_* shots (provisional targets, see the header).
+  const provisional = SUMMIT_SPIKE_SHOT === SPIKE_SHOT ? ' [provisional target]' : '';
+  await step('tier4-updraft', async () => (await updraftStep(page, SUMMIT_UPDRAFT_SHOT, 'tier4-updraft')) + provisional);
+  await step('tier4-spike', async () => (await spikeStep(page, SUMMIT_SPIKE_SHOT, 'tier4-spike')) + provisional);
+  await step('tier4-beacon', async () => (await beaconStep(page, SUMMIT_BEACON_SHOT, 'tier4-beacon')) + provisional);
 
   await context.close();
 
