@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-07
+
+배포: https://clawd-game.whchoi.net/ — 데일리·끝없는 등반이 밴드마다 배경·지형 팔레트를 실제로 바꾸는 Phase 5 2차 파동(정점 밴드 포함). SIM_VERSION 3·GEN_VERSION 2 유지, 다이제스트 18개 불변.
+
 ### Added (Phase 5 B)
 - P5-4 데일리·끝없는 등반의 밴드 순환에 4층 정점을 추가(`src/sim/gen/daily.ts BAND_ORDER` 4개): 바닥 밴드는 여전히 기존 3층 중에서 뽑고 지형·스폰은 `buildTower(seed)`만이 정하므로 **GEN_VERSION 2 유지**, 코퍼스 다이제스트 18개 불변. 현재 밴드는 HUD 구역 이름(`hudState` → `bandBiome`)에 반영된다 — 예: 공허의 초에서 시작한 탑은 50~99 높이가 오로라 정점. 배경·지형 팔레트가 밴드를 따라 바뀌는 크로스페이드는 P5-4b(렌더러)에서 잇는다.
 - 파편·유물 획득 이벤트가 렌더러에서 직접 캐릭터 미소(`PlayerVisual.smile`)를 켠다(P5-2의 엔티티 전이 감지 경로와 병존).
