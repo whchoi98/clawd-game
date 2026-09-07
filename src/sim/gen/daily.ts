@@ -22,8 +22,16 @@ export const DAILY_ROWS = 160;
 export const DAILY_BAND_ROWS = 50;
 export const ENDLESS_BAND_ROWS = 90;
 
-/** Tower tier order, bottom band first (kept local so the sim stays free of shared/). */
-const BAND_ORDER: BiomeId[] = ['tidepool', 'stormspire', 'voidreef'];
+/**
+ * Tower tier order, bottom band first (kept local so the sim stays free of shared/).
+ * Phase 5 (P5-4) appended the summit as the fourth band: purely visual — the
+ * band biome colours the backdrop and terrain, geometry and spawns come from
+ * buildTower(seed) alone — so GEN_VERSION stays 2 and every daily/endless tower
+ * verifies exactly as before. The bottom band is still drawn from the first
+ * three (pick.int(0, 2)), so def.biome is unchanged for every seed; the summit
+ * shows up as the top 10 rows of a 160-row daily and from 270 rows up in Endless.
+ */
+const BAND_ORDER: BiomeId[] = ['tidepool', 'stormspire', 'voidreef', 'summit'];
 
 export function makeDailyLevel(seed: number): LevelDef {
   const def = buildTower(seed, {
@@ -36,7 +44,8 @@ export function makeDailyLevel(seed: number): LevelDef {
     crystals: true,
     chunks: CHUNKS,
   });
-  // the bottom band's biome is drawn from the seed; the other bands follow the tier order
+  // the bottom band's biome is drawn from the seed among the three shipped tiers (never the summit,
+  // which keeps def.biome bit-identical to GEN_VERSION 2); the other bands follow the tier order
   const pick = makeRng((seed >>> 0) ^ 0x9e3779b9);
   def.biome = BAND_ORDER[pick.int(0, 2)];
   return def;

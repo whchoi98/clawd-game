@@ -80,7 +80,11 @@ describe('generators', () => {
     expect(lvl.totalShards).toBeGreaterThan(20);
     expect(def.biome).toBe(bandBiome(def, def.baseY!));
     expect(bandBiome(def, def.baseY! - 51)).not.toBe(def.biome);
-    expect(bandBiome(def, def.baseY! - 151)).toBe(def.biome);
+    // four bands since Phase 5 (the summit joins the cycle): the cycle closes one band later
+    expect(bandBiome(def, def.baseY! - 151)).not.toBe(def.biome);
+    expect(bandBiome(def, def.baseY! - 201)).toBe(def.biome);
+    // the bottom band never starts on the summit, so def.biome is unchanged from GEN_VERSION 2
+    expect(def.biome).not.toBe('summit');
   });
 
   it('same seed → same level, different seed → different level; the sim loads it', () => {

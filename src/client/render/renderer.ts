@@ -372,6 +372,7 @@ export class Renderer implements RendererPort {
         P.dust(ev.x, ev.y, 12, 0, b.crustHi, 120);
         break;
       case 'shard':
+        this.playerVis.smile();
         P.spark(ev.x, ev.y, 10, C.shardHi, 150, null, TAU, 1.1);
         P.ring(ev.x, ev.y, 2, 16, 0.26, C.shardHi, 1.4, 1);
         if (ev.combo > 2) P.text(ev.x, ev.y - 10, `×${ev.combo}`, C.shardHi, 0.8);
@@ -380,6 +381,7 @@ export class Renderer implements RendererPort {
         P.spark(ev.x, ev.y, 26, C.relicHi, 240, null, TAU, 1.3);
         P.ring(ev.x, ev.y, 3, 60, 0.6, C.relic, 3, 1.4);
         this.playerVis.refill();
+        this.playerVis.smile();
         break;
       case 'crystal':
         this.playerVis.refill();
