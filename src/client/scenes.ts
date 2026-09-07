@@ -50,7 +50,7 @@ import {
 import {
   RACE_COLOR, RACE_KR, RUN_ID_RE, buildRaceUrl, defaultShareEnv, isFreshDailyDate, raceBanner, raceLabel, shareRaceLink, type ShareEnv,
 } from './echo/race.js';
-import { REHINT_HAZARD, REHINT_PIT } from './ui/hints.js';
+import { DEATH_LINE_BUBBLE, REHINT_BY_KIND, rehintKind, type RehintKind } from './ui/hints.js';
 import { fmtTime } from './ui/hud.js';
 import { CARD_KR, defaultCardEnv, shareCard, type CardEnv, type ShareCardView } from './share/card.js';
 import type { GoTarget } from './share/go.js';
@@ -247,8 +247,15 @@ export const MENU_FRAME_DT = 1 / 30;
 export const OVER_DELAY = 1.1;
 export const HINT_DELAY = 2.0;
 export const HINT_DURATION = 7.0;
-/** Deaths of one kind (pit · spike/saw) inside one checkpoint segment before the matching hint is shown again. */
+/** Deaths of one kind (pit · spike/saw) inside one checkpoint segment before the matching hint is shown again; the bubble family needs one (REHINT_NEED). */
 export const REHINT_DEATHS = 2;
+/**
+ * Deaths per re-hint family before its hint comes back. Two pit / two hazard
+ * deaths teach themselves — the player saw the spikes. The FIRST bubble death
+ * brings the rule back instead: side contact kills while the top is a
+ * trampoline, and the death alone does not teach that asymmetry.
+ */
+export const REHINT_NEED: Readonly<Record<RehintKind, number>> = { pit: REHINT_DEATHS, hazard: REHINT_DEATHS, bubble: 1 };
 export const TIDE_TOAST_DELAY = 1.7;
 /** The title vista rotates biomes this often. */
 export const TITLE_ROTATE = 14;
@@ -325,7 +332,7 @@ export interface Run {
   /** Seconds until the guide sets off; -1 = none pending. */
   guideTimer: number;
   /** Deaths per kind since the last checkpoint, for the re-hints. */
-  segDeaths: { pit: number; hazard: number };
+  segDeaths: Record<RehintKind, number>;
   /** No story zone had been cleared when this run began: its clear returns to the tower instead of the next zone. */
   firstEver: boolean;
   /** Checkpoints reached so far (the segment index a death is reported under). */
@@ -382,6 +389,7 @@ function deathLine(cause: string): string | null {
     case 'bolt': return '피격';
     case 'foe': return '적에게 당했다';
     case 'switch': return '블록에 끼였다';
+    case 'bubble': return DEATH_LINE_BUBBLE;
     default: return '쓰러졌다';
   }
 }
@@ -950,7 +958,7 @@ export class Scenes {
       race: null, raceEcho: null, raceLocked: false, acceptedRunId: null,
       cpTicks: new Map(), split: null, splitTimer: -1, segStart: 0, session,
       guide: null, guideTimer: guided ? GUIDE_DELAY : -1,
-      segDeaths: { pit: 0, hazard: 0 },
+      segDeaths: { pit: 0, hazard: 0, bubble: 0 },
       firstEver: mode === 'story' && !this.levels.some((l) => this.save.progress.levels[l.id]?.done),
       checkpoints: 0,
       deathAt: -1,
@@ -1484,6 +1492,7 @@ export class Scenes {
         if (ev.x >= guideDropX(run.def) - 1) this.dropGuide(run);
         run.segDeaths.pit = 0;
         run.segDeaths.hazard = 0;
+        run.segDeaths.bubble = 0;
         this.onCheckpoint(run, ev.x, ev.y);
         break;
       case 'death': {
@@ -1593,16 +1602,17 @@ export class Scenes {
   }
 
   /**
-   * Repeated deaths of one kind in a checkpoint segment bring the matching
-   * hint back: two pits → the double jump, two spikes / saws → the dash. Same
-   * delay and lifetime as the zone hint.
+   * Deaths of one kind in a checkpoint segment bring the matching hint back
+   * (REHINT_NEED per family): two pits → the double jump, two spikes / saws →
+   * the dash, one bubble → the bubble rule. Same delay and lifetime as the
+   * zone hint.
    */
   private rehint(run: Run, cause: string): void {
-    const kind = cause === 'pit' ? 'pit' : cause === 'spike' || cause === 'saw' ? 'hazard' : null;
+    const kind = rehintKind(cause);
     if (!kind) return;
     run.segDeaths[kind]++;
-    if (run.segDeaths[kind] !== REHINT_DEATHS) return;
-    run.hintText = kind === 'pit' ? REHINT_PIT : REHINT_HAZARD;
+    if (run.segDeaths[kind] !== REHINT_NEED[kind]) return;
+    run.hintText = REHINT_BY_KIND[kind];
     run.hintTimer = HINT_DELAY;
   }
 

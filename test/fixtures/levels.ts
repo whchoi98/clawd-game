@@ -240,6 +240,19 @@ export function walkerRoom(): LevelDef {
 }
 
 /**
+ * A bubble (P5-5) hanging in the standing row six tiles right of the spawn, no
+ * goal: holding RIGHT walks into its side, which kills outside assist mode.
+ * Mirrors `sideRoom` of test/sim/bubble.test.ts.
+ */
+export function bubbleRoom(): LevelDef {
+  const r = new Room(40, 14);
+  r.rect(0, 12, 39, 13);
+  r.set(2, 11, 'P');
+  r.set(8, 11, 'b');
+  return r.def('bubble');
+}
+
+/**
  * A toggle at column 10 with '&' blocks (passable at the start) filling
  * columns 8..9 of the standing row and the two rows above it. Dashing through
  * the toggle flips the switch while the player's body is still inside column
