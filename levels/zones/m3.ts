@@ -8,7 +8,7 @@
  * corridor: roofed, so its two gates are the only way through — dash a toggle
  * to open the '%' gate, dash the second to open the '&' gate — with a '&' ledge
  * between the toggles that only exists between the flips, and a turret at the
- * exit · Act 3 the drop into the chaser room: the chaser floats eleven rows
+ * exit · Act 3 the drop into the chaser room: the chaser floats twelve rows
  * over the floor and wakes only for whoever climbs to the relic perch · Act 4 a
  * third updraft to the goal shelf.
  *
@@ -17,15 +17,15 @@
  * (or double-jump beside it and hold {stomp}) and the launch passes a shard
  * five rows up; a miss drops you back onto the yard. The other two are a shard
  * stair up the left wall of the chaser room, (81,23) and (83,20): the first
- * rung hangs three rows over the standing row against the wall, right under the
- * corridor exit, so whoever steps off the exit and falls straight down lands on
- * it from above — a pop and a bounce, never a side hit, the drop being nineteen
- * rows; the second rung is two columns right and three rows up. Have {jump}
- * held BEFORE the landing (held, the launch rises ≈ 72 units, released ≈ 55;
- * the second rung's top is 48 above the first's, up to 68 over the bobs — a
- * press after the pop spends the refilled air jump and cuts the launch) and
- * drift over onto the second; its launch passes a shard five rows up, in reach
- * of the held launch only. From the floor the stair starts with a double jump
+ * rung hangs two rows over the standing row against the wall (three over the
+ * floor), right under the corridor exit, so whoever steps off the exit and
+ * falls straight down lands on it from above — a pop and a bounce, never a side
+ * hit, the drop into the room being nineteen rows; the second rung is two
+ * columns right and three rows up. Have {jump} held BEFORE the landing (held,
+ * the launch rises ≈ 72 units, released ≈ 55; the second rung's top is 48 above
+ * the first's, up to 68 over the bobs — a press after the pop spends the
+ * refilled air jump and cuts the launch) and drift over onto the second; its
+ * launch passes a shard five rows up, in reach of the held launch only. From the floor the stair starts with a double jump
  * beside the first rung and {stomp} held over it. A walker on the floor never
  * touches a rung (the lower one's bob envelope ends nine units over a standing
  * head), a runner who jumps off the exit passes far over both, and the whole
