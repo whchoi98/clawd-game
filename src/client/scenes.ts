@@ -41,7 +41,7 @@ import { TRANSFER_KR } from './ui/transfer.js';
 import type { FlushEvent, FlushResult, QueuedRun, SubmitQueue } from './net/queue.js';
 import type { TelemetryData, TelemetryPort } from './net/telemetry.js';
 import { Echo, checkpointKey } from './echo/echo.js';
-import { GUIDE_COLOR, GUIDE_DELAY, GUIDE_LABEL, guideFor } from './echo/guide.js';
+import { GUIDE_COLOR, GUIDE_DELAY, GUIDE_LABEL, guideDropX, guideFor } from './echo/guide.js';
 import { GOAL_LABEL, goalEchoFor } from './echo/goal.js';
 import {
   RIVAL_LABEL, SPLIT_NONE, SPLIT_SECONDS, TOP_LABEL, fmtSplit, pickWorldEcho, worldEchoLabel, type SplitSign, type WorldEchoKind,
@@ -1446,7 +1446,9 @@ export class Scenes {
       case 'relic': this.ui.toast('유물 발견'); break;
       case 'checkpoint':
         this.ui.toast('기록 지점');
-        this.dropGuide(run);
+        // The guide leaves once the player reaches the checkpoint it demonstrates
+        // up to (t1: tile 49, past the first lethal pit) — not at C32 before it.
+        if (ev.x >= guideDropX(run.def) - 1) this.dropGuide(run);
         run.segDeaths.pit = 0;
         run.segDeaths.hazard = 0;
         this.onCheckpoint(run, ev.x, ev.y);

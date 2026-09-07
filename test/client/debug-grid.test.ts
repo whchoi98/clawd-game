@@ -82,13 +82,13 @@ describe('drawDebugGrid', () => {
     expect(coords.some((c) => c.text === '0,4')).toBe(true);      // row 0 is above the view, row 4 is the first major row in it
     expect(coords.some((c) => c.text === '16,16')).toBe(true);
     expect(coords.some((c) => c.text === '0,0')).toBe(false);
-    // spawns inside the view: P at (3,15), the first shards, the walker at (24,15), the first checkpoint is off-screen (x 49)
+    // spawns inside the view: P at (3,15), the first shards, the walker at (24,15) and the rev-1 checkpoint at (32,15); the goal is off-screen
     const spawns = texts.filter((t) => t.fill === SPAWN_COLOR);
     expect(spawns.length).toBe(stats.spawns);
     expect(spawns.map((s) => s.text)).toContain('P');
     expect(spawns.map((s) => s.text)).toContain('o');
     expect(spawns.map((s) => s.text)).toContain('w');
-    expect(spawns.map((s) => s.text)).not.toContain('C');
+    expect(spawns.map((s) => s.text)).toContain('C');
     expect(spawns.map((s) => s.text)).not.toContain('G');
     const p = spawns.find((s) => s.text === 'P')!;
     // P sits at tile (3, 15): centre world (56, 248) → device ((56-256)*2.5+640, (248-200)*2.5+360)
@@ -100,11 +100,13 @@ describe('drawDebugGrid', () => {
     const { ctx, texts } = recorder();
     const stats = drawDebugGrid(stage(ctx), t1);
     expect(stats.segments).toEqual(checkpointSegments(t1.spawns));
-    expect(stats.segments).toHaveLength(2);           // t1 has one checkpoint
-    expect(stats.segments[0]).toMatchObject({ from: 'P(3,15)', to: 'C(49,15)', dx: 46, dy: 0, tiles: 46 });
-    expect(stats.segments[1]).toMatchObject({ from: 'C(49,15)', to: 'G(96,15)', dx: 47, dy: 0, tiles: 47 });
+    expect(stats.segments).toHaveLength(4);           // t1 rev 1 has three checkpoints (32, 49, 70)
+    expect(stats.segments[0]).toMatchObject({ from: 'P(3,15)', to: 'C(32,15)', dx: 29, dy: 0, tiles: 29 });
+    expect(stats.segments[1]).toMatchObject({ from: 'C(32,15)', to: 'C(49,15)', dx: 17, dy: 0, tiles: 17 });
+    expect(stats.segments[2]).toMatchObject({ from: 'C(49,15)', to: 'C(70,15)', dx: 21, dy: 0, tiles: 21 });
+    expect(stats.segments[3]).toMatchObject({ from: 'C(70,15)', to: 'G(96,15)', dx: 26, dy: 0, tiles: 26 });
     const captions = texts.filter((t) => t.text.startsWith('seg '));
-    expect(captions.map((c) => c.text)).toEqual(['seg 1: 46 tiles (→46 ↑0)', 'seg 2: 47 tiles (→47 ↑0)']);
+    expect(captions.map((c) => c.text)).toEqual(['seg 1: 29 tiles (→29 ↑0)', 'seg 2: 17 tiles (→17 ↑0)', 'seg 3: 21 tiles (→21 ↑0)', 'seg 4: 26 tiles (→26 ↑0)']);
     // a vertical zone: t3's checkpoint is up the first shaft
     const t3 = checkpointSegments(new Level(LEVEL_BY_ID.t3).spawns);
     expect(t3[0]).toMatchObject({ from: 'P(3,26)', to: 'C(24,18)', dx: 21, dy: -8, tiles: 29 });

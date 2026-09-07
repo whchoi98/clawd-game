@@ -31,7 +31,7 @@ describe('health routes', () => {
     const body = HealthResponse.parse(res.json());
     expect(body.simVersion).toBe(SIM_VERSION);
     expect(body.genVersion).toBe(GEN_VERSION);
-    expect(body.simVersion).toBe(2);
+    expect(body.simVersion).toBe(3);
   });
 
   it('API responses are marked no-store', async () => {

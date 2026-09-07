@@ -145,8 +145,8 @@ describe('board seeding at boot', () => {
     }
     if (!T1_SOLVED) return;
     const t1 = LEVEL_BY_ID.t1, echo = GOAL_ECHOES.t1;
-    expect(seedRunFor(t1, { ...echo, sim: echo.sim + 1 }, now)).toMatchObject({ reason: /sim v3, this build is v2/ });
-    expect(seedRunFor(t1, { ...echo, rev: 9 }, now)).toMatchObject({ reason: /rev 9, the zone is at rev 0/ });
+    expect(seedRunFor(t1, { ...echo, sim: echo.sim + 1 }, now)).toMatchObject({ reason: /sim v4, this build is v3/ });
+    expect(seedRunFor(t1, { ...echo, rev: 9 }, now)).toMatchObject({ reason: /rev 9, the zone is at rev 1/ });
     expect(seedRunFor(t1, { ...echo, seed: echo.seed + 1 }, now)).toMatchObject({ reason: /seed/ });
     expect(seedRunFor(t1, { ...echo, masks: '!!!' }, now)).toMatchObject({ reason: /do not decode/ });
     expect(seedRunFor(t1, { ...echo, masks: 'AgA=' }, now)).toMatchObject({ reason: /does not verify|not a death-free clear/ });
@@ -183,9 +183,9 @@ describe('board seeding at boot', () => {
     const report = await seedBoards(repo, { levels, echoes, now: () => FIXED_NOW, log: (l) => lines.push(l) });
     expect(report.seeded).toEqual(['t1']);
     expect(report.occupied).toEqual(['t2']);
-    expect(report.skipped).toEqual([{ id: 't3', reason: 'goal echo is for sim v99, this build is v2' }]);
+    expect(report.skipped).toEqual([{ id: 't3', reason: 'goal echo is for sim v99, this build is v3' }]);
     expect(lines.filter((l) => l.includes('←'))).toHaveLength(1);
-    expect(lines[0]).toMatch(/^seed: t1#s2r0 ← 개발자 \d+ ticks/);
+    expect(lines[0]).toMatch(/^seed: t1#s3r1 ← 개발자 \d+ ticks/);
     expect(lines.some((l) => l.includes('t3 skipped'))).toBe(true);
   });
 });

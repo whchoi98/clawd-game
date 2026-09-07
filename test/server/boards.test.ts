@@ -19,7 +19,7 @@ const run = (over: Partial<StoredRun>): StoredRun => ({
 
 describe('boardKey', () => {
   it('suffixes story boards with s<SIM_VERSION>r<rev> and leaves daily boards alone', () => {
-    expect(SIM_VERSION).toBe(2);
+    expect(SIM_VERSION).toBe(3);
     expect(levelRev('t1')).toBe(LEVEL_BY_ID.t1.rev ?? 0);
     expect(storyBoardSuffix('t1')).toBe(`s${SIM_VERSION}r${LEVEL_BY_ID.t1.rev ?? 0}`);
     expect(boardKey('story', 't1')).toBe(`t1#s${SIM_VERSION}r${LEVEL_BY_ID.t1.rev ?? 0}`);

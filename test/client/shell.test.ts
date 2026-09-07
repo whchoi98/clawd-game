@@ -1185,7 +1185,7 @@ describe('Scenes', () => {
     expect(guideFor({ id: 'nope', seed: 1 })).toBeNull();
   });
 
-  it('a first play of t1 gets one 길잡이 echo after GUIDE_DELAY that leaves at the first checkpoint, and never again', () => {
+  it('a first play of t1 gets one 길잡이 echo after GUIDE_DELAY that leaves at the checkpoint it demonstrates (tile 49), and never again', () => {
     const { scenes, ui, input, api, save } = makeScenes(REAL_LEVELS, { echoSelf: true, echoWorld: false });
     scenes.bootSync();
     ui.emit({ type: 'start', levelId: 't1' });
@@ -1204,8 +1204,8 @@ describe('Scenes', () => {
     expect(run.guide!.view()?.label).toBe(GUIDE_LABEL);
     // the guide's inputs are its own: the live mask log stays the player's
     expect(run.masks.bytes().every((m) => m === 0)).toBe(true);
-    // the player reaches the checkpoint (tile 49): the guide is gone
-    scenes.teleport(47 * TILE + 8, 16 * TILE);   // on the far lip of the first pit (tiles 41–46)
+    // the player reaches the checkpoint the guide demonstrates up to (tile 49): the guide is gone
+    scenes.teleport(47 * TILE + 8, 16 * TILE);   // on the far lip of the first pit (tiles 41–45)
     input.heldMask = IN.RIGHT;
     runFrames(scenes, () => run.guide === null, 600);
     expect(run.guide).toBeNull();

@@ -579,7 +579,7 @@ describe('POST /api/runs', () => {
       expect(client.sent.map((c) => c.name)).toEqual(['GetCommand', 'TransactWriteCommand', 'GetCommand', 'QueryCommand', 'QueryCommand']);
       const items = client.sent[1].input.TransactItems as Tx;
       expect(items).toHaveLength(5); // RUN, LB, PLAYER, HASH, BOARD counter (+1: a first entry)
-      expect(items[4].Update.Key).toEqual({ pk: 'BOARD#story#t1#s2r0', sk: 'META' });
+      expect(items[4].Update.Key).toEqual({ pk: 'BOARD#story#t1#s3r1', sk: 'META' });
       expect(items[2].Put.ConditionExpression).toBe('attribute_not_exists(runId)');
       // the replay hash rides in the same transaction, guarded by attribute_not_exists
       expect(items[3].Put.ConditionExpression).toBe('attribute_not_exists(pk)');
