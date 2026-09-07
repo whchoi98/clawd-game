@@ -12,7 +12,7 @@ import { Stage, TAU, alpha, clamp01 } from './stage.js';
 
 const CAP = 1400;
 
-const Kind = { Dot: 0, Square: 1, Spark: 2, Smoke: 3, Ring: 4, Tri: 5, Text: 6, Streak: 7 } as const;
+const Kind = { Dot: 0, Square: 1, Spark: 2, Smoke: 3, Ring: 4, Tri: 5, Text: 6, Streak: 7, Blob: 8 } as const;
 type Kind = (typeof Kind)[keyof typeof Kind];
 
 class P {
@@ -176,6 +176,75 @@ export class Particles {
     p.col = col; p.glow = glow; p.a0 = 0.8; p.wobble = Math.random() * TAU;
   }
 
+  // ------------------------------------------------------------ character juice (P3-9)
+  /**
+   * Landing dust scaled by impact (0..1): a soft touch-down puffs three motes,
+   * a hard one throws a wide sheet and a heavier, slower cloud on top of it.
+   */
+  landDust(x: number, y: number, impact: number, col: string): void {
+    const k = clamp01(impact);
+    this.dust(x, y, 3 + Math.round(k * 13), 0, col, 36 + k * 120);
+    if (k > 0.45) this.smoke(x, y - 2, 2 + Math.round(k * 3), col, 14, 4 + k * 5);
+  }
+
+  /**
+   * Wall-slide friction sparks: a couple of short streaks kicked away from the
+   * wall (`dir` = side the wall is on) and down, no gravity to speak of.
+   */
+  slideSparks(x: number, y: number, dir: number, col: string): void {
+    const away = dir > 0 ? Math.PI - 0.55 : 0.55;   // +y is down: away from the wall and slightly downward
+    this.spark(x, y, 2, col, 70, away, 0.9, 0.9);
+  }
+
+  /**
+   * Goal-touch confetti: tumbling squares in the given colours, thrown up in a
+   * fan, bouncing off the terrain, lasting long enough to fall into view.
+   */
+  confetti(x: number, y: number, n: number, cols: readonly string[]): void {
+    if (!cols.length) return;
+    n = Math.max(1, Math.round(n * this.budget()));
+    for (let i = 0; i < n; i++) {
+      const p = this.take();
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.2;
+      const s = 120 + Math.random() * 190;
+      p.kind = Kind.Square; p.life = p.max = 0.9 + Math.random() * 0.8;
+      p.x = x + (Math.random() - 0.5) * 10; p.y = y;
+      p.vx = Math.cos(a) * s; p.vy = Math.sin(a) * s;
+      p.r = 1.4 + Math.random() * 1.8; p.grav = 420; p.drag = 0.975;
+      p.rot = Math.random() * TAU; p.vrot = (Math.random() - 0.5) * 22;
+      p.col = cols[i % cols.length]; p.glow = 0.35; p.a0 = 1; p.bounce = 0.35;
+    }
+  }
+
+  /**
+   * One dash after-image: a still silhouette of the shell in the skin's colour
+   * (`facing` picks which way the pincers point), fading over a fifth of a second.
+   * The emitter owns the spacing, so the budget is not applied here.
+   */
+  afterImage(x: number, y: number, facing: number, col: string, glow = 0.6): void {
+    const p = this.take();
+    p.kind = Kind.Blob; p.life = p.max = 0.22;
+    p.x = x; p.y = y; p.vx = 0; p.vy = 0;
+    p.r = 7.2; p.grav = 0; p.drag = 1;
+    p.rot = facing >= 0 ? 1 : -1;
+    p.col = col; p.glow = glow; p.a0 = 0.55;
+  }
+
+  /** Respawn pop: a tight ring and a burst of glowing motes flung outward, so the return reads as an arrival. */
+  pop(x: number, y: number, col: string): void {
+    this.ring(x, y, 2, 22, 0.32, col, 1.6, 1);
+    const n = Math.max(3, Math.round(8 * this.budget()));
+    for (let i = 0; i < n; i++) {
+      const p = this.take();
+      const a = (i / n) * TAU + Math.random() * 0.3;
+      const s = 90 + Math.random() * 50;
+      p.kind = Kind.Dot; p.life = p.max = 0.28 + Math.random() * 0.14;
+      p.x = x; p.y = y; p.vx = Math.cos(a) * s; p.vy = Math.sin(a) * s;
+      p.r = 1.2 + Math.random(); p.grav = 0; p.drag = 0.86;
+      p.col = col; p.glow = 1; p.a0 = 1;
+    }
+  }
+
   // ------------------------------------------------------------ update
   update(dt: number, solidAt: SolidAt | null = null): void {
     for (let i = 0; i < CAP; i++) {
@@ -306,6 +375,20 @@ export class Particles {
             g.beginPath();
             g.moveTo(p.x, p.y); g.lineTo(p.x, p.y - p.r);
             g.stroke();
+          }
+          break;
+        }
+        case Kind.Blob: {
+          // a dash after-image: the shell silhouette with a hint of the pincers, stretching thinner as it fades
+          const f = p.rot >= 0 ? 1 : -1;
+          const rx = p.r * (1 + age * 0.25), ry = p.r * 0.86 * (1 - age * 0.3);
+          ctx.fillStyle = alpha(p.col, a);
+          ctx.beginPath(); ctx.ellipse(p.x, p.y - 9, rx, ry, 0, 0, TAU); ctx.fill();
+          ctx.beginPath(); ctx.ellipse(p.x + f * (rx + 3.4), p.y - 9.6, 2.4, 2, 0, 0, TAU); ctx.fill();
+          ctx.beginPath(); ctx.ellipse(p.x - f * (rx - 1.2), p.y - 8.6, 1.8, 1.5, 0, 0, TAU); ctx.fill();
+          if (g) {
+            g.fillStyle = alpha(p.col, a * p.glow);
+            g.beginPath(); g.ellipse(p.x, p.y - 9, rx * 1.4, ry * 1.5, 0, 0, TAU); g.fill();
           }
           break;
         }

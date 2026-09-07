@@ -11,6 +11,8 @@
  *   tidepool    E dorian   96 bpm   bright marimba phrase, shaker, water-drop sparkles
  *   stormspire  E phrygian 128 bpm  driving filtered-saw bass, four-on-the-floor, stabs
  *   voidreef    A aeolian  84 bpm   sparse dark pads, slow glass arpeggio, heartbeat
+ *   ending      F lydian   64 bpm   the title theme's variation for the ending screen (P3-9): glass pads,
+ *                                  the bell motif inverted, a slow glass arpeggio, no drums
  */
 import { midi } from './sfx.js';
 import type { Synth } from './sfx.js';
@@ -253,6 +255,40 @@ const title: Arrangement = (s, bar, k, c, out) => {
   if (k > 0.7 && s % 4 === 0 && s > 0) out.push(N('arp', c.ct(4 + ((s / 4) | 0) % 3), 3, 0.3));
 };
 
+/**
+ * The ending: the title theme slowed and opened up — the same F lydian, the
+ * bell motif inverted (falling where the title's rises), glass pads with a 9th
+ * on odd bars, a slow glass arpeggio that fills in with intensity, no drums.
+ */
+const ending: Arrangement = (s, bar, k, c, out) => {
+  // glass pad chord every bar; the 9th colours odd bars, the 13th joins when the screen is busy
+  if (s === 0) {
+    for (const i of [3, 4, 5]) out.push(N('pad', c.ct(i), 16.5, 0.45));
+    if (bar % 2 === 1) out.push(N('pad', c.sn(c.deg + 8), 16.5, 0.28));
+    if (k > 0.65) out.push(N('pad', c.sn(c.deg + 12), 16.5, 0.2));
+  }
+
+  // soft bass: the root, a fifth pickup as the intensity rises
+  if (s === 0) out.push(N('bass', c.ct(0) - 12, 8, 0.6));
+  if (k > 0.3 && s === 10) out.push(N('bass', c.ct(2) - 12, 4, 0.45));
+
+  // the title's bell motif, inverted: it falls where the title's rose (always plays — the bed of the screen)
+  if (bar % 2 === 0) {
+    if (s === 0) out.push(N('bell', c.ct(8), 7, 0.5));
+    if (s === 8) out.push(N('bell', c.ct(7), 7, 0.4));
+  } else {
+    if (s === 2) out.push(N('bell', c.ct(6), 7, 0.45));
+    if (s === 10) out.push(N('bell', c.ct(7), 6, 0.35));
+  }
+
+  // slow glass arpeggio: quarter notes above 0.3, eighths above 0.65
+  if (k > 0.3 && s % 4 === 2) out.push(N('arp', c.ct(3 + ((s / 4) | 0) % 4), 3.5, 0.32));
+  if (k > 0.65 && s % 4 === 0 && s > 0) out.push(N('arp', c.ct(5 + ((s / 4) | 0) % 3), 3, 0.28));
+
+  // a water-drop sparkle every other bar once the screen has settled
+  if (k > 0.45 && s === 12 && bar % 2 === 1) out.push(N('drop', c.ct(9), 1.5, 0.5));
+};
+
 export const TRACKS: Record<string, TrackDef> = {
   title: {
     key: 'title', name: '메아리 탑', root: 53, scale: 'lydian', bpm: 76, prog: [0, 1, 5, 4],
@@ -278,7 +314,16 @@ export const TRACKS: Record<string, TrackDef> = {
     voice: { pad: 'dark', bass: 'sub', arp: 'glass', lead: 'arp', kick: 'heart' }, padCutoff: 500,
     arrange: voidreef,
   },
+  ending: {
+    key: 'ending', name: '정점의 메아리', root: 53, scale: 'lydian', bpm: 64, prog: [0, 4, 1, 5],
+    mix: { pad: 0.34, bass: 0.18, arp: 0.18, lead: 0, bell: 0.22, drums: 0 },
+    voice: { pad: 'glass', bass: 'soft', arp: 'glass', lead: 'arp', kick: 'punch' }, padCutoff: 1200,
+    arrange: ending,
+  },
 };
+
+/** The ending screen's track key (P3-9): the title theme's variation. */
+export const ENDING_TRACK = 'ending';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 

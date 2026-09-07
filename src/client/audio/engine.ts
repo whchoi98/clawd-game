@@ -21,8 +21,8 @@
  */
 import type { SimEvent, SimState } from '../../sim/types.js';
 import type { AudioPort, Settings, UiSound } from '../contracts.js';
-import { GATE_MS, SFX, UI_SFX, eventParams, eventSfx } from './sfx.js';
-import type { NoiseOpts, SfxName, SfxParams, Synth, ToneOpts } from './sfx.js';
+import { GATE_MS, SFX, STINGERS, UI_SFX, eventParams, eventSfx, stingFor } from './sfx.js';
+import type { NoiseOpts, SfxName, SfxParams, StingerKind, Synth, ToneOpts } from './sfx.js';
 import { LOOKAHEAD, Sequencer, TRACKS } from './music.js';
 import type { TrackDef } from './music.js';
 
@@ -99,6 +99,12 @@ export class AudioEngine implements AudioPort, Synth {
 
   /** Last play time (audio-clock ms) per gated effect. */
   private readonly gates = new Map<string, number>();
+  /**
+   * Checkpoint pillars reached in the current run, by position → index: the
+   * chime rises a step per pillar (P3-9). Reset by every setTrack (a run start
+   * always sets the biome track) and when the run finishes.
+   */
+  private readonly checkpoints = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastTick = -1;
   private userSuspended = false;
@@ -189,16 +195,43 @@ export class AudioEngine implements AudioPort, Synth {
     this.musBus.gain.setTargetAtTime(this.levels.music, t, 0.05);
   }
 
-  /** Map a sim event to a sound. Only reads event fields and, when given, `sim.state.player`. */
+  /**
+   * Map a sim event to a sound. Only reads event fields and, when given,
+   * `sim.state.player`. A goal on a biome track plays that biome's clear sting
+   * (in the track's key) instead of the generic fanfare; a checkpoint chimes a
+   * step higher for every new pillar of the run.
+   */
   onEvent(ev: SimEvent, sim?: SimLike | null): void {
     if (!this.ctx) return;
-    const name = eventSfx(ev);
+    let name = eventSfx(ev);
     if (!name) return;
     const player = sim?.state?.player ?? null;
-    this.play(name, eventParams(ev, player));
+    const p = eventParams(ev, player);
+    if (ev.type === 'checkpoint') p.idx = this.checkpointIndex(ev.x, ev.y);
+    else if (ev.type === 'goal' || ev.type === 'tideOver') {
+      this.checkpoints.clear();
+      if (ev.type === 'goal') name = stingFor(this.trackKey) ?? name;
+    }
+    this.play(name, p);
+  }
+
+  /** The 0-based index of a checkpoint pillar in the current run (a pillar touched again keeps its index). */
+  checkpointIndex(x: number, y: number): number {
+    const key = `${Math.round(x)},${Math.round(y)}`;
+    let idx = this.checkpoints.get(key);
+    if (idx === undefined) { idx = this.checkpoints.size; this.checkpoints.set(key, idx); }
+    return idx;
+  }
+
+  /** A ceremony sound outside the sim event stream (P3-9): the tier fanfare, the ending chord, a star (by index), a medal. */
+  stinger(kind: StingerKind, idx = 0): void {
+    const name = STINGERS[kind];
+    if (name) this.play(name, { vol: 1, pan: 0, idx });
   }
 
   setTrack(key: string | null): void {
+    // Every run start sets its biome track (a restart included): the checkpoint ladder starts over.
+    this.checkpoints.clear();
     if (key !== null && !TRACKS[key]) return;
     if (key === this.trackKey) return;
     this.trackKey = key;

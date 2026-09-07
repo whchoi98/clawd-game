@@ -589,3 +589,45 @@ describe('P3-7 · Settings.touch layout and the mute chip', () => {
     expect('masterBeforeMute' in junk).toBe(false);
   });
 });
+
+describe('repairProgress · ceremony flags (P3-9)', () => {
+  it('keeps unique string tiersBroken and a true endingSeen, drops anything else', () => {
+    const p = repairProgress({ v: 1, tiersBroken: ['tidepool', 'tidepool', 7, '', 'stormspire'], endingSeen: true }, defaultProgress('abcdefghij'));
+    expect(p.tiersBroken).toEqual(['tidepool', 'stormspire']);
+    expect(p.endingSeen).toBe(true);
+    const none = repairProgress({ v: 1, tiersBroken: 'tidepool', endingSeen: 'yes' }, defaultProgress('abcdefghij'));
+    expect('tiersBroken' in none).toBe(false);
+    expect('endingSeen' in none).toBe(false);
+    const empty = repairProgress({ v: 1, tiersBroken: [], endingSeen: false }, defaultProgress('abcdefghij'));
+    expect('tiersBroken' in empty).toBe(false);
+    expect('endingSeen' in empty).toBe(false);
+    // a stored save round-trips them
+    const storage = new MemStorage();
+    storage.setItem(PROGRESS_KEY, JSON.stringify({ v: 1, tiersBroken: ['voidreef'], endingSeen: true }));
+    const save = new Save({ storage, schedule: () => 0, cancel: () => {} });
+    expect(save.progress.tiersBroken).toEqual(['voidreef']);
+    expect(save.progress.endingSeen).toBe(true);
+    save.resetProgress();
+    expect(save.progress.tiersBroken).toBeUndefined();
+    expect(save.progress.endingSeen).toBeUndefined();
+  });
+
+  it('the flags travel in a transfer snapshot and merge as a union, so neither ceremony replays after an import', () => {
+    const local = defaultProgress('abcdefghij');
+    local.tiersBroken = ['tidepool'];
+    const remote: Progress = { ...defaultProgress('other-device-id'), tiersBroken: ['stormspire'], endingSeen: true };
+    const snap = snapshotProgress(remote);
+    expect(snap.tiersBroken).toEqual(['stormspire']);
+    expect(snap.endingSeen).toBe(true);
+    const bare = snapshotProgress(defaultProgress('abcdefghij'));
+    expect('tiersBroken' in bare).toBe(false);
+    expect('endingSeen' in bare).toBe(false);
+    mergeProgress(local, { playerId: 'other-device-id', name: '바다', progress: snap });
+    expect(local.tiersBroken).toEqual(['tidepool', 'stormspire']);
+    expect(local.endingSeen).toBe(true);
+    // a snapshot without the flags leaves the local ones alone
+    mergeProgress(local, { playerId: 'other-device-id', name: '바다', progress: bare });
+    expect(local.tiersBroken).toEqual(['tidepool', 'stormspire']);
+    expect(local.endingSeen).toBe(true);
+  });
+});

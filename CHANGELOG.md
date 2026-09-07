@@ -9,6 +9,8 @@
 
 ### Added
 - P3-12 스케일 절벽 제거: 리플레이 검증을 `worker_threads` 워커 1개 + 세마포어(동시 4 · 대기 16)로 옮기고 초과 시 `503 { error: 'busy' }` + `Retry-After: 3`(`src/server/verifyPool.ts`), `POST /api/runs` IP 예산(12/분)을 DynamoDB `RL#<ip>#<minute>` 카운터(TTL 120 s)로 플릿 공유, `GET /api/leaderboard`는 공개 top-N만 + `Cache-Control: public, s-maxage=5, stale-while-revalidate=30`과 CloudFront `/api/leaderboard*` 전용 캐시 behaviour(최대 60 s), 새 `GET /api/me?mode&board&playerId`(no-store, `rankCapped` 1,000), `BOARD#<mode>#<board>` 총원 카운터(`saveBest`가 유지, 없으면 COUNT 폴백), Fargate 태스크 512 CPU / 1024 MiB · 상한 10(`cdk.json` `taskCpu` · `taskMemory` · `maxTasks`) + ALB p95 > 0.8 s 스텝 스케일링(+2), 부하 스크립트 `tools/load/submit.mjs`, 런북 `docs/runbooks/scale.md`.
+### Added (Phase 4 A)
+- P3-9 오디오 연출 패스·캐릭터 주스·세레머니: 바이옴 조성별 클리어 스팅어 3종(트랙 키로 선택), 층 돌파 팡파르·엔딩 화음·별/메달 UI 사운드(`AudioEngine.stinger`), 체크포인트 순번별 차임 상승, 5음계 콤보 사다리(8+에서 5도 시머), hp 무관 피격음, 엔딩 트랙 `ending`(타이틀 변주); 착지 먼지 임팩트 스케일·스킨 색 대시 잔상·벽 슬라이드 스파크·골 컨페티·리스폰 팝·골 6타일 내 시선 유도(`clawd.ts setLookTarget`); 결과 화면 단계 리빌(등급 → 별 → 메달 행 → 보드, `ui/ceremony.ts Timeline`, reduced-motion·캡처 하네스는 즉시), 층 마지막 존 첫 클리어의 `#scr-tier` 비스타 카드(3초·아무 키 스킵, `Progress.tiersBroken`), 탑 완주 첫 회의 `#scr-ending`(절차적 밤하늘·정상의 클로드·3줄 서사·합계·제출 줄·'다시 오르기', `Progress.endingSeen`), 엔딩 후 타이틀 한 줄 서사. 이전 코드 스냅샷·병합이 두 플래그를 싣고, 진행 기록 삭제가 둘을 지운다.
 
 ## [0.2.0] - 2026-09-06
 

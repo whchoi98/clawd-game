@@ -16,9 +16,11 @@ import type { EntityState, FoeState, LevelDef, PlayerState, SimEvent, SimState }
 import { BIOMES, BIOME_ORDER, C } from '../../src/shared/biomes.js';
 import type { FxState, GhostView, Settings, WorldView } from '../../src/client/contracts.js';
 import {
-  AUTOTIER_KEY, FRAME_WINDOW_S, FrameHistogram, MENU_BUCKET_MS, MENU_COST_RATIO, MENU_FRAME_MS, MENU_SLOW_RATIO, MIN_MENU_SAMPLES,
-  MIN_WINDOW_SAMPLES, Renderer, SKINS, STEP_DOWN_LOCK_S, STEP_UP_AFTER_S, Stage, readStoredTier, snapRefreshRate,
+  AFTER_IMAGE_SPACING, AUTOTIER_KEY, FRAME_WINDOW_S, FrameHistogram, GOAL_LOOK_TILES, MENU_BUCKET_MS, MENU_COST_RATIO, MENU_FRAME_MS,
+  MENU_SLOW_RATIO, MIN_MENU_SAMPLES, MIN_WINDOW_SAMPLES, Renderer, SKINS, STEP_DOWN_LOCK_S, STEP_UP_AFTER_S, Stage, drawClawd, lookTarget,
+  readStoredTier, setLookTarget, skinById, snapRefreshRate,
 } from '../../src/client/render/index.js';
+import { TILE } from '../../src/sim/types.js';
 import { MENU_FRAME_DT } from '../../src/client/scenes.js';
 import type { SimView, TierStorage } from '../../src/client/render/index.js';
 import { DEATH_MARK_COLOR } from '../../src/client/render/actors.js';
@@ -868,5 +870,120 @@ describe('Stage · adaptive quality v2 (P3-13)', () => {
     const s = r.fpsStats();
     expect(s.tier).toBe(r.qualityTier);
     expect(s.hz).toBe(60);
+  });
+});
+
+// ================================================================ character juice (P3-9)
+describe('character juice (P3-9)', () => {
+  const SUMMARY = {
+    levelId: 't1', cleared: true, ticks: 1200, time: 10, shards: 3, totalShards: 20, relics: 0, totalRelics: 1,
+    deaths: 0, par: 45, rank: 'A' as const, height: 0,
+  };
+
+  /** The fixture without its updraft and foes, so only the player's own juice puts particles in the pool. */
+  function quietSim(biome: LevelDef['biome'] = 'tidepool'): SimView {
+    const sim = fakeSim(fixtureDef(biome));
+    sim.state.entities = sim.state.entities.filter((e) => e.kind !== 'updraft');
+    sim.state.foes = [];
+    return sim;
+  }
+
+  it('landing dust scales with impact; slide sparks, confetti, the after-image and the respawn pop all emit', () => {
+    const { r } = makeRenderer();
+    const P = r.particles;
+    expect(r.qualityTier).toBe('high');
+    P.landDust(40, 64, 0.1, '#ffffff');
+    const soft = P.count;
+    P.clear();
+    P.landDust(40, 64, 1, '#ffffff');
+    const hard = P.count;
+    expect(soft).toBeGreaterThan(0);
+    expect(hard).toBeGreaterThan(soft * 2);
+    P.clear(); P.slideSparks(40, 60, 1, '#ffffff'); expect(P.count).toBeGreaterThanOrEqual(1);
+    P.clear(); P.confetti(40, 40, 36, ['#ffffff', '#000000']); expect(P.count).toBe(36);
+    P.clear(); P.confetti(40, 40, 10, []); expect(P.count).toBe(0);
+    P.clear(); P.afterImage(40, 64, 1, '#ffffff'); expect(P.count).toBe(1);
+    P.clear(); P.pop(40, 60, '#ffffff'); expect(P.count).toBeGreaterThanOrEqual(5);
+    // every kind draws without throwing (the blob included)
+    r.setLevel(quietSim(), BIOMES.tidepool);
+    P.afterImage(200, 100, -1, '#ffffff');
+    P.confetti(200, 100, 6, ['#ffffff']);
+    expect(() => r.draw(quietSim(), VIEW, FX, [], 1 / 60)).not.toThrow();
+  });
+
+  it('renderer events: wall slides spark, a hard landing throws more dust, the goal bursts confetti, the respawn pops the rig', () => {
+    const { r } = makeRenderer();
+    const sim = quietSim();
+    r.setLevel(sim, BIOMES.tidepool);
+    const count = (ev: SimEvent): number => { r.particles.clear(); r.onEvent(ev, sim); return r.particles.count; };
+    expect(count({ type: 'wallSlide', x: 40, y: 60, dir: 1 })).toBeGreaterThanOrEqual(2);
+    expect(count({ type: 'land', x: 40, y: 64, impact: 1 })).toBeGreaterThan(count({ type: 'land', x: 40, y: 64, impact: 0.05 }));
+    expect(count({ type: 'goal', x: 200, y: 64, summary: SUMMARY })).toBeGreaterThan(80);
+    const vis = (r as unknown as { playerVis: { squash: number } }).playerVis;
+    r.particles.clear();
+    r.onEvent({ type: 'respawn', x: 40, y: 64 }, sim);
+    expect(vis.squash).toBeLessThan(-0.3);
+    expect(r.particles.count).toBeGreaterThan(1);
+  });
+
+  it('a dash leaves skin-coloured after-images spaced along the way and none once it ends', () => {
+    const { r, ctx } = makeRenderer();
+    const sim = quietSim();
+    r.applySettings({ ...SETTINGS, skin: 'void' });
+    r.setLevel(sim, BIOMES.tidepool);
+    const p = sim.state.player;
+    p.dashT = 0.15; p.pose = 'dash'; p.vx = 400; p.vy = 0;
+    r.particles.clear();
+    const x0 = p.x;
+    for (let i = 0; i < 8; i++) { p.x += AFTER_IMAGE_SPACING / 2; r.draw(sim, VIEW, FX, [], 1 / 60); }
+    const travelled = p.x - x0;
+    expect(r.particles.count).toBeGreaterThanOrEqual(Math.floor(travelled / AFTER_IMAGE_SPACING) - 1);
+    expect(r.particles.count).toBeLessThanOrEqual(Math.ceil(travelled / AFTER_IMAGE_SPACING) + 1);
+    // the void skin's shell colour is what gets stamped (alpha() writes rgba(r,g,b,a))
+    const hex = SKINS.void.shell;
+    const rgb = `${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)}`;
+    const fills = (ctx.__sets.fillStyle ?? []).filter((v): v is string => typeof v === 'string');
+    expect(fills.some((f) => f.replace(/\s/g, '').startsWith(`rgba(${rgb},`))).toBe(true);
+    p.dashT = 0; p.pose = 'run';
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    const n = r.particles.count;
+    for (let i = 0; i < 4; i++) { p.x += AFTER_IMAGE_SPACING; r.draw(sim, VIEW, FX, [], 1 / 60); }
+    expect(r.particles.count).toBeLessThanOrEqual(n);
+  });
+
+  it('the eyes lead toward a goal within GOAL_LOOK_TILES, only for the live player, and the pupils move for it', () => {
+    const { r } = makeRenderer();
+    const sim = quietSim();
+    r.setLevel(sim, BIOMES.tidepool);
+    const goal = sim.state.entities.find((e) => e.kind === 'goal')!;
+    const p = sim.state.player;
+    p.y = goal.y - p.h;
+    p.x = goal.x - GOAL_LOOK_TILES * TILE * 2;
+    expect(r.goalLook(p)).toBeNull();
+    p.x = goal.x - 3 * TILE - p.w / 2;
+    const look = r.goalLook(p);
+    expect(look).not.toBeNull();
+    expect(look!.x).toBeGreaterThan(0.9);
+    p.dead = true;
+    expect(r.goalLook(p)).toBeNull();
+    p.dead = false;
+    // set for the live player's draw only, cleared right after
+    r.draw(sim, VIEW, FX, [], 1 / 60);
+    expect(lookTarget()).toBeNull();
+    // the same rig draws different eye ellipses with a target
+    const canvas = new StubCanvas();
+    const rig = () => ({
+      x: 0, y: 0, vx: 0, vy: 0, grounded: true, facing: 1 as const, state: 'idle' as const, t: 0, anim: 0, squash: 0, invuln: 0, blink: 0,
+      skin: skinById('clawd'), dashReady: true, dashFlash: 0,
+    });
+    drawClawd(canvas.ctx as unknown as CanvasRenderingContext2D, null, rig());
+    const plain = canvas.ctx.__calls.filter((c) => c.name === 'ellipse').map((c) => JSON.stringify(c.args));
+    canvas.ctx.__calls.length = 0;
+    setLookTarget({ x: -1, y: 0 });
+    drawClawd(canvas.ctx as unknown as CanvasRenderingContext2D, null, rig());
+    setLookTarget(null);
+    const led = canvas.ctx.__calls.filter((c) => c.name === 'ellipse').map((c) => JSON.stringify(c.args));
+    expect(led.length).toBe(plain.length);
+    expect(led).not.toEqual(plain);
   });
 });

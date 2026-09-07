@@ -671,6 +671,85 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
 @keyframes tilt{0%,100%{transform:rotate(0)}50%{transform:rotate(-90deg)}}
 
 /* ============================================================
+   CEREMONIES (P3-9) — clear reveal stages · 층 돌파 vista card · ending
+   ============================================================ */
+/* title: the one-line story hook after the ending */
+.title__hook{margin-top:.7rem;font-family:var(--f-kr);font-size:.8rem;color:var(--teal-hi);opacity:.9;letter-spacing:.01em;animation:fadeUp .6s .55s var(--e-out) both}
+.title__hook::before{content:"";display:inline-block;width:.45rem;height:.45rem;margin-right:.5rem;border-radius:50%;background:var(--teal);box-shadow:0 0 10px var(--teal);vertical-align:middle}
+
+/* medals row on the result modal (LevelRecord.medals) */
+.res__medals{display:flex;flex-wrap:wrap;gap:.4rem;margin:-.3rem 0 .8rem}
+.medal{display:inline-flex;align-items:center;gap:.4rem;padding:.28rem .7rem;border-radius:99px;font-family:var(--f-kr);font-size:.74rem;font-weight:700;
+  color:var(--gold-hi);background:rgba(244,201,93,.12);border:1px solid rgba(244,201,93,.42)}
+.medal::before{content:"";width:.5rem;height:.5rem;border-radius:50%;background:var(--gold);box-shadow:0 0 8px rgba(244,201,93,.8)}
+.medal--nodeath{color:var(--teal-hi);background:rgba(127,227,214,.1);border-color:rgba(127,227,214,.4)}
+.medal--nodeath::before{background:var(--teal);box-shadow:0 0 8px var(--teal)}
+.medal--relic{color:#F3C9E4;background:rgba(255,91,200,.08);border-color:rgba(255,91,200,.35)}
+.medal--relic::before{background:var(--magenta);box-shadow:0 0 8px var(--magenta)}
+@keyframes medalIn{from{opacity:0;transform:translateY(8px) scale(.7)}to{opacity:1;transform:none}}
+
+/* the clear ceremony: the result modal carries data-stage = rank → stars → medals → board → done (ui.ts + ceremony.ts).
+   Blocks of a later stage stay invisible and untappable until their stage, then fade up; the stars pop when theirs comes. */
+#scr-result .modal[data-stage="rank"] :is(.res__stars,.res__medals,.res__vs,.res__unlock,.name-inline,.submit,.lb,.install,.menu),
+#scr-result .modal[data-stage="stars"] :is(.res__medals,.res__vs,.res__unlock,.name-inline,.submit,.lb,.install,.menu),
+#scr-result .modal[data-stage="medals"] :is(.name-inline,.submit,.lb,.install,.menu){opacity:0;pointer-events:none;animation:none}
+#scr-result .modal[data-stage="rank"] .res__stars .star.on{animation:none}
+#scr-result .modal:is([data-stage="medals"],[data-stage="board"],[data-stage="done"]) .res__medals .medal{animation:medalIn .5s var(--e-back) both}
+#scr-result .modal:is([data-stage="medals"],[data-stage="board"],[data-stage="done"]) .res__medals .medal:nth-child(2){animation-delay:.1s}
+#scr-result .modal:is([data-stage="medals"],[data-stage="board"],[data-stage="done"]) .res__medals .medal:nth-child(3){animation-delay:.2s}
+#scr-result .modal:is([data-stage="medals"],[data-stage="board"],[data-stage="done"]) .res__medals .medal:nth-child(4){animation-delay:.3s}
+#scr-result .modal:is([data-stage="board"],[data-stage="done"]) :is(.name-inline,.submit,.lb,.install,.menu){animation:fadeUp .45s var(--e-out) both}
+
+/* full-screen ceremony surfaces sit before the modals in the DOM, so a pause or the credits stack above them */
+.screen--ceremony{flex-direction:column;align-items:center;justify-content:center;padding:var(--pad);text-align:center;pointer-events:auto}
+
+/* 층 돌파 vista card: the completed tier's biome gradient (--tier-a/b/d, accent --tier-c set by the UI), the numeral,
+   the title, one Korean line, the next tier; data-stage = in → line → next → out → done */
+.screen--tier{background:linear-gradient(165deg,var(--tier-a,#101B2E),var(--tier-b,#3F8C8C) 58%,var(--tier-d,#2B5A66));cursor:pointer}
+.screen--tier.is-active{animation:tierIn .5s var(--e-out) both}
+.screen--tier.is-active:is([data-stage="out"],[data-stage="done"]){animation:tierOut .45s var(--e-in-out) forwards}
+@keyframes tierIn{from{opacity:0}to{opacity:1}}
+@keyframes tierOut{to{opacity:0}}
+.tier-card{display:flex;flex-direction:column;align-items:center;gap:.3rem;max-width:34rem}
+.tier-card__kicker{font-size:.62rem;font-weight:800;letter-spacing:.38em;color:var(--tier-c,var(--teal));animation:fadeUp .5s .1s var(--e-out) both}
+.tier-card__num{font-size:clamp(4rem,16vh,7.5rem);font-weight:900;line-height:1;letter-spacing:-.05em;color:#fff;
+  text-shadow:0 0 40px var(--tier-c,var(--teal)),0 10px 30px rgba(0,0,0,.6);animation:rankIn .6s .05s var(--e-back) both}
+.tier-card__title{font-family:var(--f-kr);font-size:clamp(1.2rem,4vw,1.8rem);font-weight:800;letter-spacing:-.02em;color:var(--paper);margin:0;animation:fadeUp .5s .25s var(--e-out) both}
+.tier-card__title b{color:var(--tier-c,var(--teal))}
+.tier-card__line{font-family:var(--f-kr);font-size:clamp(.9rem,2.4vw,1.1rem);color:#E6EEF2;margin-top:.6rem;opacity:0}
+.tier-card__next{font-family:var(--f-kr);font-size:.82rem;color:var(--muted);letter-spacing:.04em;opacity:0}
+.screen--tier:is([data-stage="line"],[data-stage="next"],[data-stage="out"],[data-stage="done"]) .tier-card__line{animation:fadeUp .6s var(--e-out) both}
+.screen--tier:is([data-stage="next"],[data-stage="out"],[data-stage="done"]) .tier-card__next{animation:fadeUp .6s var(--e-out) both}
+.tier-card__skip{position:absolute;bottom:calc(1.2rem + env(safe-area-inset-bottom));font-family:var(--f-kr);font-size:.72rem;color:rgba(243,246,244,.55)}
+
+/* ending: the sky canvas fills the screen, the card scrolls if it must; data-stage = sky → title → line1..3 → totals → done */
+.screen--ending{background:#04060F;cursor:default}
+.ending__sky{position:absolute;inset:0;width:100%;height:100%}
+.ending{position:relative;display:flex;flex-direction:column;align-items:center;gap:.25rem;width:min(34rem,100%);max-height:100%;overflow-y:auto;
+  padding:.6rem .5rem;text-align:center;scrollbar-width:thin}
+.ending__kicker{font-size:.6rem;font-weight:800;letter-spacing:.36em;color:var(--teal);opacity:0}
+.ending__title{font-family:var(--f-kr);font-size:clamp(1.5rem,4.5vw,2.2rem);font-weight:900;letter-spacing:-.03em;color:#fff;margin:0;text-shadow:0 0 30px rgba(127,227,214,.5);opacity:0}
+.ending__lines{display:flex;flex-direction:column;gap:.3rem;margin:.45rem 0 .7rem;font-family:var(--f-kr);font-size:clamp(.84rem,2vw,.96rem);line-height:1.55;color:#DCE7EC;
+  text-shadow:0 1px 8px rgba(2,3,10,.9)}
+.ending__lines p{opacity:0}
+.ending__totals{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.35rem .5rem;width:100%;margin:0 0 .6rem;opacity:0}
+.ending__totals div{display:flex;flex-direction:column;align-items:center;gap:.05rem;padding:.35rem .3rem;border-radius:12px;background:rgba(5,10,18,.6);border:1px solid var(--line-2);min-width:0}
+.ending__totals dt{font-family:var(--f-kr);font-size:.64rem;color:var(--muted);letter-spacing:.03em;white-space:nowrap}
+.ending__totals dd{font-family:var(--f-num);font-variant-numeric:tabular-nums;font-size:.98rem;font-weight:700;color:var(--paper)}
+.ending .submit{margin-bottom:.5rem}
+.ending .submit,.ending .lb,.ending__menu{opacity:0;pointer-events:none}
+.ending__menu{width:min(22rem,100%);gap:0}
+@media (max-width:640px){.ending__totals{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/* short viewports: the menu's subtitles go so all four entries fit under the totals without scrolling */
+@media (max-height:600px){.ending__menu .menu__item small{display:none}.ending__menu .menu__item{padding-top:.3rem;padding-bottom:.3rem}}
+.ending:is([data-stage="title"],[data-stage="line1"],[data-stage="line2"],[data-stage="line3"],[data-stage="totals"],[data-stage="done"]) :is(.ending__kicker,.ending__title){animation:fadeUp .7s var(--e-out) both}
+.ending:is([data-stage="line1"],[data-stage="line2"],[data-stage="line3"],[data-stage="totals"],[data-stage="done"]) .ending__lines p:nth-child(1){animation:fadeUp .8s var(--e-out) both}
+.ending:is([data-stage="line2"],[data-stage="line3"],[data-stage="totals"],[data-stage="done"]) .ending__lines p:nth-child(2){animation:fadeUp .8s var(--e-out) both}
+.ending:is([data-stage="line3"],[data-stage="totals"],[data-stage="done"]) .ending__lines p:nth-child(3){animation:fadeUp .8s var(--e-out) both}
+.ending:is([data-stage="totals"],[data-stage="done"]) .ending__totals{animation:fadeUp .6s var(--e-out) both}
+.ending[data-stage="done"] :is(.submit,.lb,.ending__menu){opacity:1;pointer-events:auto;animation:fadeUp .5s var(--e-out) both}
+
+/* ============================================================
    RESPONSIVE / MOTION
    ============================================================ */
 @media (max-width:820px){
@@ -716,6 +795,14 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
   .modal{max-height:96vh;padding:1rem 1.1rem .8rem}
   .modal h2{margin-bottom:.5rem}
   .screen--page{padding-top:.6rem;padding-bottom:.5rem;gap:.5rem}
+  /* ceremonies (P3-9) fit a landscape phone: a smaller numeral, a tighter ending card */
+  .tier-card__num{font-size:clamp(2.6rem,22vh,4.5rem)}
+  .tier-card__line{margin-top:.2rem}
+  .ending{gap:.15rem;padding:.4rem .5rem}
+  .ending__title{font-size:1.3rem}
+  .ending__lines{margin:.25rem 0 .4rem;gap:.15rem;font-size:.78rem}
+  .ending__totals{gap:.25rem .5rem;margin-bottom:.4rem}
+  .ending__totals div{padding:.25rem .4rem}
 }
 /* phones held upright: the world is 16:9, the pad would cover it */
 @media (orientation:portrait) and (max-width:600px){
@@ -735,4 +822,8 @@ input[type=range].is-cursor,input[type=range]:focus-visible{box-shadow:0 0 0 3px
   .hud__toast.show,.hud__banner.show{animation:none;opacity:1}
   .hud__dash i{transition:none}
   .res__rank,.res__rank.pop,.card.is-unlocking,.card.is-unlocking .card__sky,.res__unlock{animation:none}
+  /* ceremonies (P3-9): the timelines jump to their last stage, so every block is simply visible; the tier card does not fade out early */
+  .screen--tier.is-active:is([data-stage="out"],[data-stage="done"]){animation:none}
+  .tier-card__line,.tier-card__next,.ending__kicker,.ending__title,.ending__lines p,.ending__totals{opacity:1;animation:none}
+  .title__hook,.medal{animation:none}
 }

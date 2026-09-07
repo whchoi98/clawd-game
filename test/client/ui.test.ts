@@ -35,6 +35,11 @@ import { echoWorldMode, setEchoWorldMode } from '../../src/client/save.js';
 import { validateName } from '../../src/client/ui/screens.js';
 import { Input } from '../../src/client/input/index.js';
 import { FONTS_HREF, loadFonts } from '../../src/client/fonts.js';
+import {
+  CLEAR_TIMELINE, ENDING_LINES, MEDAL_KR, TIER_CARD_S, TIER_LINES, TIER_NEXT_SUMMIT, TITLE_HOOK, Timeline, endingView, tierCardView,
+  type EndingView,
+} from '../../src/client/ui/ceremony.js';
+import { BIOMES } from '../../src/shared/biomes.js';
 
 // ------------------------------------------------------------------ fixtures
 // happy-dom replaces the global URL, so resolve the template path with node:url/path.
@@ -2165,5 +2170,253 @@ describe('UI result screen · 공유 card button and the install card (P3-4)', (
     ui.installCard(true);
     ui.showOver(makeSummary({ cleared: false, height: 40 }), 10);
     expect(document.querySelector('#scr-over .install')).toBeNull();
+  });
+});
+
+// ================================================================ ceremonies (P3-9)
+describe('UI ceremonies (P3-9)', () => {
+  const origMatchMedia = window.matchMedia;
+  beforeEach(() => { document.body.innerHTML = ''; });
+  afterEach(() => { (window as unknown as { matchMedia: unknown }).matchMedia = origMatchMedia; });
+
+  /** The plain setup plus a stinger recorder and a stubbed prefers-reduced-motion. */
+  function setupC(opts: { reduced?: boolean } = {}) {
+    (window as unknown as { matchMedia: (q: string) => { matches: boolean } }).matchMedia =
+      (q: string) => ({ matches: !!opts.reduced && q.includes('prefers-reduced-motion') });
+    mountTemplate();
+    const input = makeInput();
+    const actions: UIAction[] = [];
+    const sounds: string[] = [];
+    const stingers: { kind: string; idx: number | undefined }[] = [];
+    const settings = makeSettings();
+    const ui = new UI({
+      document, input, defaultBinds: BINDS, skins: { clawd: { name: 'Clawd', kr: '클로드' } },
+      audio: { ui: (n) => { sounds.push(n); }, init() {}, stinger: (kind, idx) => { stingers.push({ kind, idx }); } },
+    });
+    ui.on((a) => actions.push(a));
+    ui.applySettings(settings);
+    return { ui, input, actions, sounds, stingers, settings };
+  }
+  const view = (over: Partial<ResultView> = {}): ResultView =>
+    ({ summary: makeSummary(), levelName: '첫 물결', personalBest: true, stars: 3, submit: { state: 'pending' }, nextLevelId: 't2', ...over });
+  const stageOf = (): string | undefined => $('#scr-result .modal').dataset.stage;
+  const frames = (ui: UI, input: FakeInput, seconds: number): void => { for (let i = 0; i < Math.round(seconds * 60); i++) ui.frame(1 / 60, input); };
+
+  it('Timeline fires stages at their seconds, skip() jumps to the last stage only, instant starts done', () => {
+    const fired: string[] = [];
+    const tl = new Timeline(CLEAR_TIMELINE, (s) => fired.push(s)).start();
+    expect(fired).toEqual(['rank']);
+    expect(tl.stage).toBe('rank');
+    tl.update(0.6);
+    expect(fired).toEqual(['rank', 'stars']);
+    tl.update(2);
+    expect(fired).toEqual(['rank', 'stars', 'medals', 'board', 'done']);
+    expect(tl.done).toBe(true);
+    const skipped: string[] = [];
+    const tl2 = new Timeline(CLEAR_TIMELINE, (s) => skipped.push(s)).start();
+    tl2.skip();
+    expect(skipped).toEqual(['rank', 'done']);
+    const instant: string[] = [];
+    const tl3 = new Timeline(CLEAR_TIMELINE, (s) => instant.push(s), true).start();
+    expect(instant).toEqual(['done']);
+    expect(tl3.done).toBe(true);
+    tl3.update(1);
+    expect(instant).toEqual(['done']);
+  });
+
+  it('reveals the result in stages — rank → stars → medals → board → done — with a star chime per lit star', () => {
+    const { ui, input, stingers } = setupC();
+    ui.show('play');
+    ui.showResult(view());
+    expect(stageOf()).toBe('rank');
+    expect(ui.clearStage).toBe('rank');
+    // the stars are lit at once (the harness counts them); the CSS shows them at their stage
+    expect(document.querySelectorAll('#res-stars .star.on')).toHaveLength(3);
+    expect(stingers).toEqual([]);
+    frames(ui, input, 0.6);
+    expect(stageOf()).toBe('stars');
+    expect(stingers.filter((s) => s.kind === 'star').map((s) => s.idx)).toEqual([0, 1, 2]);
+    frames(ui, input, 0.6);
+    expect(stageOf()).toBe('medals');
+    expect(stingers.some((s) => s.kind === 'medal')).toBe(false);   // no medals on this record → no medal sound
+    frames(ui, input, 0.4);
+    expect(stageOf()).toBe('board');
+    frames(ui, input, 0.4);
+    expect(stageOf()).toBe('done');
+    expect(ui.clearStage).toBeNull();
+  });
+
+  it('a menu press during the reveal completes it silently and acts on nothing; the next press reaches the menu', () => {
+    const { ui, input, actions, stingers } = setupC();
+    ui.show('play');
+    ui.showResult(view());
+    input.queue.push('confirm');
+    ui.frame(1 / 60, input);
+    expect(stageOf()).toBe('done');
+    expect(actions.filter((a) => a.type === 'next' || a.type === 'retry')).toEqual([]);
+    expect(stingers).toEqual([]);   // skipped stages make no sound
+    input.queue.push('confirm');
+    ui.frame(1 / 60, input);
+    expect(actions.at(-1)).toEqual({ type: 'next' });
+    // a tap on the modal's surface skips too
+    ui.showResult(view());
+    expect(stageOf()).toBe('rank');
+    ui.show('play');
+    ui.showResult(view());
+    expect(stageOf()).toBe('rank');
+  });
+
+  it('prefers-reduced-motion: the reveal is instant and silent', () => {
+    const { ui, stingers } = setupC({ reduced: true });
+    ui.show('play');
+    ui.showResult(view());
+    expect(stageOf()).toBe('done');
+    expect(ui.clearStage).toBeNull();
+    expect(stingers).toEqual([]);
+  });
+
+  it("paints the record's medals as chips in a fixed order and chimes once when their stage comes", () => {
+    const { ui, input, stingers } = setupC();
+    const prog = makeProgress(['t1']);
+    prog.levels.t1.medals = ['par', 'nodeath', 'bogus'];
+    ui.refreshSelect(prog, LEVELS);
+    ui.show('play');
+    ui.showResult(view());
+    const row = $('#res-medals');
+    expect(row.hidden).toBe(false);
+    expect([...row.querySelectorAll('.medal')].map((m) => m.textContent)).toEqual([MEDAL_KR.nodeath, MEDAL_KR.par]);
+    expect(row.querySelector('.medal--nodeath')).not.toBeNull();
+    frames(ui, input, 1.2);
+    expect(stingers.filter((s) => s.kind === 'medal')).toHaveLength(1);
+    frames(ui, input, 1);
+    expect(stingers.filter((s) => s.kind === 'medal')).toHaveLength(1);
+    // no medals → the row hides
+    prog.levels.t1.medals = [];
+    ui.refreshSelect(prog, LEVELS);
+    ui.showResult(view());
+    expect($('#res-medals').hidden).toBe(true);
+  });
+
+  it('tier card: fills the vista from the biome, stays TIER_CARD_S, then leaves and reports done exactly once', () => {
+    const { ui, input } = setupC();
+    ui.show('play');
+    let done = 0;
+    ui.tierBreak(tierCardView('tidepool'), () => { done++; });
+    const sec = $('#scr-tier');
+    expect(sec.classList.contains('is-active')).toBe(true);
+    expect(ui.tierCardOpen).toBe(true);
+    expect(ui.screen).toBe('play');   // the card rides over the finished run; the shell keeps ticking
+    expect($('#tier-num').textContent).toBe('I');
+    expect($('#tier-floor').textContent).toBe('1층');
+    expect($('#tier-name').textContent).toBe('조수 웅덩이');
+    expect($('#tier-line').textContent).toBe(TIER_LINES.tidepool);
+    expect($('#tier-next').textContent).toContain('폭풍 첨탑');
+    expect(sec.style.getPropertyValue('--tier-c')).toBe(BIOMES.tidepool.accent);
+    expect(sec.dataset.stage).toBe('in');
+    frames(ui, input, 0.6);
+    expect(sec.dataset.stage).toBe('line');
+    frames(ui, input, 0.8);
+    expect(sec.dataset.stage).toBe('next');
+    frames(ui, input, TIER_CARD_S - 1.4 - 0.2);
+    expect(done).toBe(0);
+    frames(ui, input, 0.4);
+    expect(done).toBe(1);
+    expect(ui.tierCardOpen).toBe(false);
+    expect(sec.classList.contains('is-active')).toBe(false);
+    frames(ui, input, 1);
+    expect(done).toBe(1);
+  });
+
+  it('tier card: any key or tap skips it (done once); pause stays shut; a base screen replacing it still reports done', () => {
+    const { ui, input, actions } = setupC();
+    ui.show('play');
+    let done = 0;
+    ui.tierBreak(tierCardView('stormspire'), () => { done++; });
+    expect($('#tier-num').textContent).toBe('II');
+    expect($('#tier-next').textContent).toContain('공허의 초');
+    input.queue.push('pause');
+    ui.frame(1 / 60, input);
+    expect(done).toBe(1);
+    expect(ui.screen).toBe('play');
+    expect(active('pause')).toBe(false);
+    expect(actions).toEqual([]);
+    expect(ui.tierCardOpen).toBe(false);
+    // the last tier's card points past the summit; a tap on the card skips
+    ui.tierBreak(tierCardView('voidreef'), () => { done++; });
+    expect($('#tier-next').textContent).toBe(TIER_NEXT_SUMMIT);
+    window.dispatchEvent(new Event('blur'));   // no pause over the card
+    expect(active('pause')).toBe(false);
+    $('#scr-tier').click();
+    expect(done).toBe(2);
+    ui.tierBreak(tierCardView('tidepool'), () => { done++; });
+    ui.show('select');
+    expect(done).toBe(3);
+    expect(ui.tierCardOpen).toBe(false);
+  });
+
+  it('ending: stands in for the result, reveals the lines and totals, keeps the submission line current, leaves on 다시 오르기', () => {
+    const { ui, input, actions } = setupC();
+    const prog = makeProgress(ZONES.map((z) => z[0]));
+    ui.refreshSelect(prog, LEVELS);
+    ui.show('play');
+    const result = view({ nextLevelId: undefined });
+    const ev: EndingView = endingView(prog, LEVELS, result);
+    ui.showEnding(ev);
+    const sec = $('#scr-ending');
+    expect(sec.classList.contains('is-active')).toBe(true);
+    expect(ui.endingShown).toBe(true);
+    expect(ui.screen).toBe('result');
+    expect(active('result')).toBe(false);
+    expect([...document.querySelectorAll('#ending-lines p')].map((p) => p.textContent)).toEqual([...ENDING_LINES]);
+    expect($('#ending-totals').textContent).toContain('27 / 27');   // 9 zones × 3 stars
+    expect($('#end-submit').textContent).toContain('전송 중');
+    expect($('#ending-body').dataset.stage).toBe('sky');
+    frames(ui, input, 0.8);
+    expect($('#ending-body').dataset.stage).toBe('title');
+    // a key skips the reveal to the menu and acts on nothing
+    input.queue.push('confirm');
+    ui.frame(1 / 60, input);
+    expect($('#ending-body').dataset.stage).toBe('done');
+    expect(actions).toEqual([]);
+    ui.updateResult(view({ submit: { state: 'accepted', rank: 2, total: 9 }, leaderboard: makeLb() }));
+    expect($('#end-submit').textContent).toContain('세계 2위');
+    expect($<HTMLElement>('#scr-ending [data-act="shareEcho"]').hidden).toBe(false);
+    expect(document.querySelectorAll('#end-lb tbody tr.lb__row')).toHaveLength(3);
+    // the next press confirms 다시 오르기 → quit; the shell's base show closes the overlay
+    input.queue.push('confirm');
+    ui.frame(1 / 60, input);
+    expect(actions.at(-1)).toEqual({ type: 'quit' });
+    ui.show('select');
+    expect(ui.endingShown).toBe(false);
+    expect(sec.classList.contains('is-active')).toBe(false);
+    expect(ui.screen).toBe('select');
+  });
+
+  it('ending: the credits stack above it and come back; reduced motion shows everything at once; the title carries the hook afterwards', () => {
+    const { ui, input } = setupC({ reduced: true });
+    const prog = makeProgress(ZONES.map((z) => z[0]));
+    ui.refreshSelect(prog, LEVELS);
+    ui.show('play');
+    ui.showEnding(endingView(prog, LEVELS, view({ nextLevelId: undefined })));
+    expect($('#ending-body').dataset.stage).toBe('done');
+    $('#scr-ending [data-act="openCredits"]').click();
+    expect(ui.screen).toBe('credits');
+    expect(ui.endingShown).toBe(true);
+    input.queue.push('cancel');
+    ui.frame(1 / 60, input);
+    expect(ui.screen).toBe('result');
+    expect(ui.endingShown).toBe(true);
+    // a blur / hidden tab never pauses over the ending
+    window.dispatchEvent(new Event('blur'));
+    expect(ui.screen).toBe('result');
+    expect(active('pause')).toBe(false);
+    // the title's one-line story hook appears once the ending was seen
+    ui.show('title');
+    expect(ui.endingShown).toBe(false);
+    expect($('#title-hook').hidden).toBe(true);
+    prog.endingSeen = true;
+    ui.refreshSelect(prog, LEVELS);
+    expect($('#title-hook').hidden).toBe(false);
+    expect($('#title-hook').textContent).toBe(TITLE_HOOK);
   });
 });

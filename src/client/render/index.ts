@@ -3,7 +3,7 @@
  * and talks to it through `RendererPort`; the building blocks are exported for
  * the QA harness and tests.
  */
-export { Renderer } from './renderer.js';
+export { Renderer, AFTER_IMAGE_SPACING } from './renderer.js';
 export type { RendererOptions, SimView } from './renderer.js';
 export {
   Stage, VIEW_W, VIEW_H, UI_FONT,
@@ -15,6 +15,6 @@ export type { FpsStats, QualityTier, StageOptions, StageSettings, TierStorage, V
 export { Sky } from './sky.js';
 export { Terrain, SPIKE_SCALE, SPIKE_TIP_INSET } from './tiles.js';
 export { Particles } from './particles.js';
-export { SKINS, drawClawd, drawClawdPortrait, skinById, tintedSkin } from './clawd.js';
+export { SKINS, GOAL_LOOK_TILES, LOOK_WEIGHT, drawClawd, drawClawdPortrait, lookTarget, setLookTarget, skinById, tintedSkin } from './clawd.js';
 export type { RigPose, RigState, Skin } from './clawd.js';
 export { Actors, PlayerVisual, drawGhost, UPDRAFT_STREAKS_PER_S } from './actors.js';

@@ -8,7 +8,7 @@
  * type is either a key of `EVENT_SFX` or listed in `SILENT_EVENTS`. The test
  * suite asserts the union is complete.
  */
-import type { FoeKind, PlayerState, SimEvent } from '../../sim/types.js';
+import type { BiomeId, FoeKind, PlayerState, SimEvent } from '../../sim/types.js';
 import type { UiSound } from '../contracts.js';
 
 export type OscType = 'sine' | 'triangle' | 'square' | 'sawtooth';
@@ -70,7 +70,13 @@ export type SfxName =
   | 'shard' | 'relic' | 'crystal' | 'toggle' | 'checkpoint' | 'spring'
   | 'hurt' | 'death' | 'respawn' | 'goal'
   | 'foeHit' | 'foeKilled' | 'bolt' | 'crumble' | 'splash' | 'tideOver'
-  | 'uiMove' | 'uiConfirm' | 'uiCancel' | 'uiToggle' | 'uiUnlock' | 'uiError';
+  /** Clear stings, one per biome, written in that biome track's key (P3-9). */
+  | 'stingTidepool' | 'stingStormspire' | 'stingVoidreef'
+  /** Ceremony stingers (P3-9): the tier-break fanfare and the ending chord. */
+  | 'fanfare' | 'endingSting'
+  | 'uiMove' | 'uiConfirm' | 'uiCancel' | 'uiToggle' | 'uiUnlock' | 'uiError'
+  /** Result ceremony (P3-9): a star popping in (pitch by index) and a medal landing. */
+  | 'uiStar' | 'uiMedal';
 
 /** Per-play parameters extracted from the event (or supplied by the UI). */
 export interface SfxParams {
@@ -93,10 +99,22 @@ export interface SfxParams {
   /** foeHit / foeKilled */
   kind?: FoeKind;
   dir?: number;
+  /** checkpoint: index of the pillar in the run (the chime rises per pillar) · uiStar: star index 0..2. */
+  idx?: number;
 }
 
 /** Highest combo step that still raises the shard pitch. */
 export const SHARD_COMBO_CAP = 12;
+/**
+ * The shard combo ladder in semitones above E5 (midi 76): a major-pentatonic
+ * climb, so a long combo sings a scale instead of a whole-tone siren. From
+ * SHARD_SHIMMER_AT on, a fifth above rides along (the "8+" shimmer).
+ */
+export const SHARD_LADDER: readonly number[] = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26, 28];
+export const SHARD_SHIMMER_AT = 8;
+/** Checkpoint pillars raise the chime by a scale step each, up to this index. */
+export const CHECKPOINT_PITCH_CAP = 6;
+const CHECKPOINT_LADDER: readonly number[] = [0, 2, 3, 5, 7, 8, 10];
 
 type Recipe = (s: Synth, p: SfxParams) => void;
 
@@ -144,9 +162,11 @@ export const SFX: Record<SfxName, Recipe> = {
   },
   shard(s, p) {
     const step = clamp(Math.floor(p.combo ?? 0), 0, SHARD_COMBO_CAP);
-    const f = midi(76 + step * 2);
+    const f = midi(76 + SHARD_LADDER[step]);
     s.tone(f, f, 0.1, { type: 'triangle', gain: 0.2 * p.vol, fx: 0.35, pan: p.pan });
     s.tone(f * 2, f * 2, 0.16, { type: 'sine', gain: 0.1 * p.vol, at: 0.03, fx: 0.4, pan: p.pan });
+    // a long combo shimmers: a fifth above, softer, a hair later
+    if (step >= SHARD_SHIMMER_AT) s.tone(f * 1.5, f * 1.5, 0.14, { type: 'sine', gain: 0.07 * p.vol, at: 0.05, fx: 0.5, pan: p.pan });
   },
   relic(s, p) {
     [0, 4, 7, 12].forEach((iv, i) =>
@@ -167,16 +187,18 @@ export const SFX: Record<SfxName, Recipe> = {
     else s.tone(880, 660, 0.16, { type: 'triangle', gain: 0.12 * p.vol, at: 0.05, fx: 0.3, pan: p.pan });
   },
   checkpoint(s, p) {
+    // each pillar of the run chimes a scale step higher than the last
+    const base = 64 + CHECKPOINT_LADDER[clamp(Math.floor(p.idx ?? 0), 0, CHECKPOINT_PITCH_CAP)];
     [0, 7, 12].forEach((iv, i) =>
-      s.tone(midi(64 + iv), null, 0.4, { type: 'triangle', gain: 0.13 * p.vol, at: i * 0.06, fx: 0.5 }));
+      s.tone(midi(base + iv), null, 0.4, { type: 'triangle', gain: 0.13 * p.vol, at: i * 0.06, fx: 0.5 }));
   },
   spring(s, p) {
     s.tone(180, 1000, 0.22, { type: 'sine', gain: 0.22 * p.vol, curve: 'lin', fx: 0.2, pan: p.pan });
     s.noise(0.06, { gain: 0.05 * p.vol, type: 'highpass', freq: 2000, pan: p.pan });
   },
   hurt(s, p) {
-    const low = (p.hp ?? 2) <= 1 ? 0.85 : 1;
-    s.tone(340 * low, 90, 0.3, { type: 'sawtooth', gain: 0.22 * p.vol, filter: { type: 'lowpass', freq: 2200 } });
+    // one hit sound whatever hp is left: the low-hp danger layer went with the hp bar (SIM v3 lands instant death)
+    s.tone(340, 90, 0.3, { type: 'sawtooth', gain: 0.22 * p.vol, filter: { type: 'lowpass', freq: 2200 } });
     s.noise(0.2, { gain: 0.16 * p.vol, type: 'lowpass', freq: 1200 });
   },
   death(s, p) {
@@ -223,6 +245,70 @@ export const SFX: Record<SfxName, Recipe> = {
     s.tone(midi(53), midi(41), 1.6, { type: 'triangle', gain: 0.1 * p.vol, at: 0.1, fx: 0.8 });
   },
 
+  // ------------------------------------------------------------ clear stings (one per biome, in the track's key)
+  stingTidepool(s, p) {
+    // E dorian (the tidepool track): a bright marimba climb E–G–B–D–E–G with a water-drop on top
+    [0, 3, 7, 10, 12, 15].forEach((iv, i) => {
+      const f = midi(64 + iv);
+      s.tone(f, null, 0.5, { type: 'sine', gain: 0.17 * p.vol, at: i * 0.075, fx: 0.55, pan: -0.3 + i * 0.12 });
+      s.tone(f * 4, null, 0.05, { type: 'sine', gain: 0.05 * p.vol, at: i * 0.075, pan: -0.3 + i * 0.12 });
+    });
+    s.tone(midi(88) * 0.7, midi(88), 0.16, { type: 'sine', gain: 0.1 * p.vol, at: 0.5, fx: 0.8 });
+    s.tone(midi(88), null, 1.3, { type: 'triangle', gain: 0.06 * p.vol, at: 0.55, fx: 0.9 });
+  },
+  stingStormspire(s, p) {
+    // E phrygian (the stormspire track): a saw stab on E, the b2 F snapping back to the fifth, a crash under it
+    const stab = (m: number, at: number, dur: number, g: number): void => {
+      s.tone(midi(m), null, dur, { type: 'sawtooth', gain: g * p.vol, at, fx: 0.3, filter: { type: 'lowpass', freq: 3200, freqEnd: 500, q: 2 } });
+      s.tone(midi(m), null, dur, { type: 'sawtooth', gain: g * 0.6 * p.vol, at, detune: 9, fx: 0.3, filter: { type: 'lowpass', freq: 2800, freqEnd: 500, q: 2 } });
+    };
+    stab(52, 0, 0.32, 0.16);
+    stab(53, 0.16, 0.14, 0.12);
+    stab(59, 0.3, 0.7, 0.16);
+    stab(64, 0.3, 0.7, 0.1);
+    s.tone(midi(40), null, 0.7, { type: 'sine', gain: 0.24 * p.vol, at: 0.3, attack: 0.01 });
+    s.noise(0.9, { gain: 0.16 * p.vol, type: 'lowpass', freq: 600, freqEnd: 180, attack: 0.02, at: 0.3, fx: 0.5 });
+  },
+  stingVoidreef(s, p) {
+    // A aeolian (the voidreef track): dark glass bells E–C–A–G falling, then the octave rising out of the deep
+    [7, 3, 0, 10].forEach((iv, i) => {
+      const f = midi(69 + iv);
+      s.tone(f, null, 0.9, { type: 'sine', gain: 0.14 * p.vol, at: i * 0.11, fx: 0.9, pan: 0.35 - i * 0.2 });
+      s.tone(f * 2.76, null, 0.4, { type: 'sine', gain: 0.035 * p.vol, at: i * 0.11, fx: 0.9 });
+    });
+    s.tone(midi(45), midi(57), 1.4, { type: 'sine', gain: 0.18 * p.vol, at: 0.45, attack: 0.3, fx: 0.7 });
+    s.tone(midi(81), null, 1.6, { type: 'triangle', gain: 0.05 * p.vol, at: 0.7, attack: 0.2, fx: 0.95 });
+  },
+
+  // ------------------------------------------------------------ ceremonies
+  fanfare(s, p) {
+    // tier break: a brass-like F lydian motif (F–A–C, the lydian B as a grace, F) over a kick and a crash, ~2.4 s
+    const brass = (m: number, at: number, dur: number, g: number): void => {
+      s.tone(midi(m), null, dur, { type: 'sawtooth', gain: g * p.vol, at, attack: 0.02, fx: 0.4, filter: { type: 'lowpass', freq: 1800, q: 0.8 } });
+      s.tone(midi(m), null, dur, { type: 'square', gain: g * 0.35 * p.vol, at, attack: 0.02, detune: -7, fx: 0.4, filter: { type: 'lowpass', freq: 1400 } });
+      s.tone(midi(m - 12), null, dur, { type: 'triangle', gain: g * 0.5 * p.vol, at, attack: 0.02, fx: 0.3 });
+    };
+    brass(65, 0, 0.28, 0.12);
+    brass(69, 0.3, 0.28, 0.12);
+    brass(72, 0.6, 0.28, 0.13);
+    brass(71, 0.9, 0.12, 0.08);
+    brass(77, 1.05, 1.3, 0.16);
+    brass(72, 1.05, 1.3, 0.08);
+    s.tone(120, 42, 0.18, { type: 'sine', gain: 0.32 * p.vol, at: 1.05, attack: 0.002 });
+    s.noise(1.4, { gain: 0.2 * p.vol, type: 'lowpass', freq: 500, freqEnd: 160, attack: 0.02, at: 1.05, fx: 0.5 });
+    [0, 4, 7, 12].forEach((iv, i) => s.tone(midi(89 + iv), null, 0.8, { type: 'sine', gain: 0.05 * p.vol, at: 1.25 + i * 0.07, fx: 0.9 }));
+  },
+  endingSting(s, p) {
+    // the ending: a slow F lydian bell cluster (F–A–C–E–B) blooming over a low F, long tails
+    [0, 4, 7, 11, 18].forEach((iv, i) => {
+      const f = midi(65 + iv);
+      s.tone(f, null, 2.4, { type: 'sine', gain: 0.12 * p.vol, at: i * 0.22, attack: 0.05, fx: 0.95, pan: -0.4 + i * 0.2 });
+      s.tone(f * 2.76, null, 0.9, { type: 'sine', gain: 0.03 * p.vol, at: i * 0.22, fx: 0.95 });
+    });
+    s.tone(midi(41), null, 3.2, { type: 'sine', gain: 0.2 * p.vol, attack: 0.6, fx: 0.7 });
+    s.tone(midi(53), null, 3.0, { type: 'triangle', gain: 0.06 * p.vol, attack: 0.9, fx: 0.9, filter: { type: 'lowpass', freq: 900 } });
+  },
+
   // ------------------------------------------------------------ ui
   uiMove(s, p) { s.tone(660, null, 0.05, { type: 'sine', gain: 0.08 * p.vol }); },
   uiConfirm(s, p) { s.tone(520, 780, 0.11, { type: 'triangle', gain: 0.14 * p.vol, fx: 0.2 }); },
@@ -237,6 +323,20 @@ export const SFX: Record<SfxName, Recipe> = {
   uiError(s, p) {
     s.tone(220, 180, 0.16, { type: 'square', gain: 0.1 * p.vol, filter: { type: 'lowpass', freq: 1400 } });
     s.tone(220, 180, 0.16, { type: 'square', gain: 0.1 * p.vol, at: 0.14, filter: { type: 'lowpass', freq: 1400 } });
+  },
+  uiStar(s, p) {
+    // a star pops in: a bright ping, a fourth higher per star, staggered by index so three fire from one stage
+    const i = clamp(Math.floor(p.idx ?? 0), 0, 2);
+    const f = midi(88 + i * 5);
+    s.tone(f * 0.8, f, 0.22, { type: 'sine', gain: 0.13 * p.vol, at: i * 0.12, fx: 0.6, pan: -0.3 + i * 0.3 });
+    s.tone(f * 2, null, 0.12, { type: 'triangle', gain: 0.05 * p.vol, at: i * 0.12 + 0.02, fx: 0.6 });
+  },
+  uiMedal(s, p) {
+    // a medal lands: a metallic tick and a two-note chime (E5 → B5)
+    s.noise(0.04, { gain: 0.1 * p.vol, type: 'highpass', freq: 3200 });
+    s.tone(midi(76), null, 0.3, { type: 'triangle', gain: 0.12 * p.vol, at: 0.02, fx: 0.5 });
+    s.tone(midi(83), null, 0.45, { type: 'sine', gain: 0.11 * p.vol, at: 0.13, fx: 0.7 });
+    s.tone(midi(83) * 2.76, null, 0.2, { type: 'sine', gain: 0.03 * p.vol, at: 0.13, fx: 0.7 });
   },
 };
 
@@ -261,6 +361,27 @@ export const EVENT_SFX: Record<SoundedEvent, SfxName> = {
 
 export const UI_SFX: Record<UiSound, SfxName> = {
   move: 'uiMove', confirm: 'uiConfirm', cancel: 'uiCancel', toggle: 'uiToggle', unlock: 'uiUnlock', error: 'uiError',
+};
+
+/**
+ * The clear sting per biome (P3-9), keyed by the biome id — which is also the
+ * biome's music track key, so the engine picks it from the track it is playing.
+ * Any other track (the title, none) keeps the generic `goal` fanfare.
+ */
+export const BIOME_STING: Readonly<Record<BiomeId, SfxName>> = {
+  tidepool: 'stingTidepool', stormspire: 'stingStormspire', voidreef: 'stingVoidreef',
+};
+
+/** The clear sting for a track key, or null when the key is not a biome's. */
+export function stingFor(track: string | null | undefined): SfxName | null {
+  if (!track) return null;
+  return (BIOME_STING as Readonly<Record<string, SfxName | undefined>>)[track] ?? null;
+}
+
+/** Ceremony stingers the shell and the UI trigger outside the sim event stream (P3-9). */
+export type StingerKind = 'tier' | 'ending' | 'star' | 'medal';
+export const STINGERS: Readonly<Record<StingerKind, SfxName>> = {
+  tier: 'fanfare', ending: 'endingSting', star: 'uiStar', medal: 'uiMedal',
 };
 
 const isSilent = (t: SimEvent['type']): t is SilentEvent => (SILENT_EVENTS as readonly string[]).includes(t);
