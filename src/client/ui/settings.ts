@@ -95,6 +95,12 @@ export interface SettingsPanelDeps {
   extraDataRows?: () => HTMLElement[];
   /** The touch layout changed (P3-7): the UI previews it on the real pad; `onChange` is called as well. */
   onTouchLayout?: (layout: TouchLayout) => void;
+  /**
+   * Skin unlocks (P3-6): the Korean unlock hint when `id` is still locked for
+   * this save ('별 6개' …), null when the player may pick it. Without the hook
+   * every skin is available.
+   */
+  skinLocked?: (id: string) => string | null;
 }
 
 export class SettingsPanel {
@@ -140,6 +146,29 @@ export class SettingsPanel {
     }
     this.refreshBindLabels();
     this.syncTouch(s);
+    this.syncSkins();
+  }
+
+  /**
+   * Re-evaluate the skin picker's locks (P3-6): a clear may have opened a skin
+   * since the pane was built. A locked entry is greyed, `aria-disabled`, shows
+   * its unlock hint and refuses the click; the selected skin is never locked
+   * (grandfathering lives in the hook).
+   */
+  syncSkins(): void {
+    const doc = this.d.doc;
+    for (const b of doc.querySelectorAll<HTMLButtonElement>('#pane-av .seg--skins button[data-value]')) {
+      const id = b.dataset.value ?? '';
+      const hint = this.d.skinLocked?.(id) ?? null;
+      const locked = hint !== null;
+      b.classList.toggle('is-locked', locked);
+      if (locked) { b.setAttribute('aria-disabled', 'true'); b.title = `잠김 · ${hint}`; } else { b.removeAttribute('aria-disabled'); b.removeAttribute('title'); }
+      let small = b.querySelector<HTMLElement>('.seg__hint');
+      if (locked) {
+        if (!small) { small = el(doc, 'small', { class: 'seg__hint' }); b.appendChild(small); }
+        small.textContent = hint;
+      } else small?.remove();
+    }
   }
 
   /** Re-read the touch layout widgets (the mute chip or a settings write may have changed the object). */
@@ -178,6 +207,8 @@ export class SettingsPanel {
       this.toggleRow('블룸 (발광)', 'bloom', '발광체 주변의 빛 번짐'),
       this.toggleRow('필름 그레인', 'grain', '미세한 입자감'),
     );
+    // skin locks (P3-6) are applied once the picker sits in the pane
+    this.syncSkins();
 
     ctrl.replaceChildren(...BIND_ROWS.map(([action, label]) => this.bindRow(action, label)));
     const resetRow = this.row('기본 조작으로', '모든 키를 처음 상태로 되돌린다');
@@ -357,6 +388,8 @@ export class SettingsPanel {
     b.addEventListener('click', () => {
       const cur = this.d.settings();
       if (!cur) return;
+      // A locked skin (P3-6) is shown, not picked: the hint says what opens it.
+      if (b.classList.contains('is-locked')) { this.d.sound('error'); return; }
       setSegValue(cur, key, value);
       for (const x of seg.querySelectorAll<HTMLElement>('button')) {
         const active = x === b;

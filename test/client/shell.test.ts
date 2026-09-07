@@ -24,7 +24,7 @@ import type {
 } from '../../src/shared/protocol.js';
 import type {
   ApiPort, AudioPort, Binds, FxState, GhostView, HudState, InputPort, LevelRecord, MenuAction, Progress, RendererPort, ResultView,
-  Screen, Settings, TouchState, UIAction, WorldView,
+  Screen, Settings, TouchState, UIAction, UiSound, WorldView,
 } from '../../src/client/contracts.js';
 import { MAX_STEPS_PER_FRAME, TickScheduler, planTicks } from '../../src/client/loop.js';
 import { FxBus } from '../../src/client/fx.js';
@@ -49,11 +49,13 @@ import { CARD_KR, type CardEnv, type CardShareData } from '../../src/client/shar
 import { INSTALL_CARD_MAX_DISMISS } from '../../src/client/scenes.js';
 import { defaultProgress, repairProgress } from '../../src/client/save.js';
 import { fmtTime } from '../../src/client/ui/hud.js';
-import { echoWorldMode, segmentBests, setEchoWorldMode } from '../../src/client/save.js';
+import { bestComboOf, bestRankOf, echoWorldMode, segmentBests, setEchoWorldMode, worldRankOf } from '../../src/client/save.js';
+import { medalsFor, mergeMedals, newMedals } from '../../src/client/unlocks.js';
+import type { MeResponse } from '../../src/shared/protocol.js';
 import {
-  ASSIST_OFFER_DEATHS, DEATH_MARKS_MAX, NAME_ASKED_KEY, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, TIER_RESULT_GAP,
-  assistSeenKey, starsFor, transferErrorText,
-  type DeathMark, type SegmentRow, type ShellUI, type VersusView, type YesterdayInfo,
+  ASSIST_OFFER_DEATHS, DEATH_MARKS_MAX, NAME_ASKED_KEY, RANK_REFRESH_MS, RANK_TOP_LIMIT, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS,
+  RESULT_DELAY, TIER_RESULT_GAP, assistSeenKey, starsFor, transferErrorText,
+  type ClearExtras, type DeathMark, type SegmentRow, type ShellUI, type VersusView, type YesterdayInfo,
 } from '../../src/client/scenes.js';
 import { ENDING_LINES, type EndingView, type TierCardView } from '../../src/client/ui/ceremony.js';
 import { ENDING_TRACK } from '../../src/client/audio/music.js';
@@ -115,7 +117,7 @@ function fakeRenderer(): FakeRenderer {
     viewW: 512, viewH: 288, fps: 60, qualityTier: 'high',
     applySettings() {},
     clearParticles() {},
-    skins: { clawd: { name: 'CLAWD', kr: '클로드' } },
+    skins: { clawd: { name: 'CLAWD', kr: '클로드' }, azure: { name: 'AMAZONI', kr: '아마조니' } },
   };
   return r;
 }
@@ -124,11 +126,14 @@ interface FakeAudio extends AudioPort {
   events: SimEvent[]; track: string | null; intensity: number; muffled: boolean; inits: number;
   /** Every ceremony stinger the shell asked for (P3-9). */
   stingers: StingerKind[];
+  /** Every UI sound the shell asked for (the skin unlock chime, P3-6). */
+  uis: UiSound[];
 }
 function fakeAudio(): FakeAudio & { setMuffle(on: boolean): void; stinger(kind: StingerKind): void } {
   const a = {
     events: [] as SimEvent[], track: null as string | null, intensity: 0, muffled: false, inits: 0, ready: true, running: true,
     stingers: [] as StingerKind[],
+    uis: [] as UiSound[],
     stinger(kind: StingerKind) { a.stingers.push(kind); },
     init() { a.inits++; },
     unlock() { a.inits++; },
@@ -136,7 +141,7 @@ function fakeAudio(): FakeAudio & { setMuffle(on: boolean): void; stinger(kind: 
     onEvent(ev: SimEvent) { a.events.push(ev); },
     setTrack(k: string | null) { a.track = k; },
     setIntensity(v: number) { a.intensity = v; },
-    ui() {},
+    ui(n: UiSound) { a.uis.push(n); },
     suspend() {},
     resume() {},
     setMuffle(on: boolean) { a.muffled = on; },
@@ -172,6 +177,8 @@ interface FakeUI extends ShellUI {
   transferStatuses: { text: string | null; kind: string | undefined }[];
   /** Every installCard() value (P3-4). */
   installCards: boolean[];
+  /** Every setClearExtras() value (P3-6): the medals a clear added and its longest combo. */
+  clearExtras: (ClearExtras | null)[];
   emit(a: UIAction): void; setScreen(s: Screen): void;
 }
 function fakeUI(): FakeUI {
@@ -180,7 +187,8 @@ function fakeUI(): FakeUI {
   const u: FakeUI = {
     cbs: [], shown: [], result: null, over: null, huds: [], hints: [], toasts: [], banners: [], dailyCalls: [], selectRefreshes: 0,
     unlockCalls: [], goalScreens: [], versionBehind: [], offers: [], nameAsks: 0, nameAnswer: null, yesterdays: [],
-    splits: [], segmentCalls: [], versusCalls: [], transferCodes: [], transferStatuses: [], installCards: [],
+    splits: [], segmentCalls: [], versusCalls: [], transferCodes: [], transferStatuses: [], installCards: [], clearExtras: [],
+    setClearExtras(x) { u.clearExtras.push(x); },
     installCard(on) { u.installCards.push(on); },
     showTransferCode(code, expiresAt) { u.transferCodes.push({ code, expiresAt }); },
     transferStatus(text, kind) { u.transferStatuses.push({ text, kind }); },
@@ -244,6 +252,9 @@ type StoredEntry = Omit<LeaderboardEntry, 'you'> & { ownerId: string };
 interface FakeApi extends ApiPort {
   submissions: RunSubmit[]; lbQueries: LeaderboardQuery[]; ghosts: Record<string, GhostResponse>; failWith: Error | null;
   levels: Record<string, LevelDef>; board: StoredEntry[];
+  /** Every GET /api/me query (P3-12): the personal row lives there since the public page is edge-cached. */
+  meQueries: LeaderboardQuery[];
+  me(q: LeaderboardQuery): Promise<MeResponse>;
   /** Versions the fake server reports (undefined = field absent, like a pre-P1 server). */
   healthSim?: number; dailySim?: number; dailyGen?: number;
   healthCalls: number;
@@ -257,9 +268,17 @@ interface FakeApi extends ApiPort {
 const FAKE_CODES = ['ABCDEFGH', 'JKLMNPQR', 'STUVWXYZ', '23456789'];
 function fakeApi(levels: LevelDef[]): FakeApi {
   const a: FakeApi = {
-    submissions: [], lbQueries: [], ghosts: {}, failWith: null, board: [], healthCalls: 0,
+    submissions: [], lbQueries: [], meQueries: [], ghosts: {}, failWith: null, board: [], healthCalls: 0,
     snapshots: new Map(), transferCreates: [],
     levels: Object.fromEntries(levels.map((l) => [l.id, l])),
+    // GET /api/me: our own row (by the raw owner id the server keeps), never a whole page.
+    async me(q): Promise<MeResponse> {
+      if (a.failWith) throw a.failWith;
+      a.meQueries.push(q);
+      const mine = a.board.find((e) => e.ownerId === q.playerId);
+      const yours = mine ? (({ ownerId: _o, ...e }) => ({ ...e, you: true }))(mine) : undefined;
+      return { mode: q.mode, board: q.board, total: a.board.length, ...(yours ? { yours } : {}) };
+    },
     async transferCreate(body) {
       if (a.failWith) throw a.failWith;
       a.transferCreates.push(body);
@@ -313,7 +332,8 @@ function fakeApi(levels: LevelDef[]): FakeApi {
     async leaderboard(q): Promise<LeaderboardResponse> {
       if (a.failWith) throw a.failWith;
       a.lbQueries.push(q);
-      const entries = a.board.slice(0, q.limit ?? 20).map(({ ownerId, ...e }) => ({ ...e, you: ownerId === q.playerId }));
+      // the public page (P3-12): a playerId is ignored like the real route does, `you` is always false
+      const entries = a.board.slice(0, q.limit ?? 20).map(({ ownerId: _o, ...e }) => ({ ...e, you: false }));
       return { mode: q.mode, board: q.board, total: a.board.length, entries };
     },
     async ghost(runId): Promise<GhostResponse> {
@@ -611,7 +631,8 @@ describe('Api', () => {
     expect(d.seed).toBe(7);
     const lb = await api.leaderboard({ mode: 'story', board: 't1', limit: 5, playerId: 'abcdefghij' });
     expect(lb.entries).toEqual([]);
-    expect(calls[1].url).toBe('https://x.test/api/leaderboard?mode=story&board=t1&limit=5&playerId=abcdefghij');
+    // the public page is shared at the edge: a playerId passed by the caller never reaches the URL (P3-12; our row is /api/me)
+    expect(calls[1].url).toBe('https://x.test/api/leaderboard?mode=story&board=t1&limit=5');
   });
 
   it('returns a rejected RunResponse from a 422 and throws ApiError otherwise', async () => {
@@ -895,9 +916,11 @@ describe('Scenes', () => {
     await scenes.settle();
     expect(scenes.run!.echoes.length).toBe(1);
     expect(scenes.run!.echoes[0].label).toBe('나');
-    // every board query carries our player id so the server can flag the row; ids never come back
+    // the public board is asked without our id (it is shared at the edge); our own row comes from /api/me with it, and ids never come back
     expect(api.lbQueries.length).toBeGreaterThan(0);
-    for (const q of api.lbQueries) expect(q.playerId).toBe(save.progress.player.id);
+    for (const q of api.lbQueries) expect(q.playerId).toBeUndefined();
+    expect(api.meQueries.length).toBeGreaterThan(0);
+    for (const q of api.meQueries) expect(q.playerId).toBe(save.progress.player.id);
 
     // a different player holds the top spot now
     api.board[0] = { ...api.board[0], ownerId: 'someone-else-1', playerTag: 'bbbbbbbbbbbb', name: '라이벌' };
@@ -2000,7 +2023,11 @@ describe('Scenes · daily streak and yesterday\'s tower (P2-3)', () => {
     expect(scenes.yesterday!.lb).not.toBeNull();
     const yq = api.lbQueries.filter((q) => q.board === YESTERDAY);
     expect(yq).toHaveLength(1);
-    expect(yq[0]).toMatchObject({ mode: 'daily', limit: 1, playerId: save.progress.player.id });
+    expect(yq[0]).toMatchObject({ mode: 'daily', limit: 1 });
+    expect(yq[0].playerId).toBeUndefined();
+    // our row on yesterday's board comes from /api/me, once
+    expect(api.meQueries.filter((q) => q.board === YESTERDAY)).toHaveLength(1);
+    expect(api.meQueries.filter((q) => q.board === YESTERDAY)[0].playerId).toBe(save.progress.player.id);
     expect(ui.yesterdays.at(-1)).toMatchObject({ date: YESTERDAY, seed: Y_SEED });
     // opening the screen again the same day does not ask again
     ui.emit({ type: 'openDaily' });
@@ -2335,7 +2362,7 @@ describe('Scenes · rival echo, live splits, death marks and segment bests (P2-4
     expect(fmtVersus('라이벌', 0)).toMatchObject({ text: '라이벌과 같은 기록', sign: 0 });
   });
 
-  it('a board 1..10 with our row at rank 7 → the ghost of rank 6 runs as 라이벌 · 이름 (limit 50, our player id on the query)', async () => {
+  it('a board 1..10 with our row at rank 7 → the ghost of rank 6 runs as 라이벌 · 이름 (limit 50, our row from /api/me)', async () => {
     const def = flatRoom();
     const { scenes, ui, api, save } = makeScenes([def], { echoWorld: true, echoSelf: false });
     scenes.bootSync();
@@ -2350,8 +2377,9 @@ describe('Scenes · rival echo, live splits, death marks and segment bests (P2-4
     expect(run.rival).toEqual({ kind: 'rival', name: '주자6', ticks: 4000 + 60 * 6 });
     const q = api.lbQueries.at(-1)!;
     expect(q.limit).toBe(50);
-    expect(q.playerId).toBe(save.progress.player.id);
+    expect(q.playerId).toBeUndefined();
     expect(q.board).toBe('flat');
+    expect(api.meQueries.at(-1)).toMatchObject({ mode: 'story', board: 'flat', playerId: save.progress.player.id });
   });
 
   it('without a row of ours → the median entry; 1위 mode → the leader labelled 1위 · 이름; leading ourselves → the chaser', async () => {
@@ -3388,5 +3416,179 @@ describe('tier break · ending ceremonies (P3-9)', () => {
     clear(s, 't3');
     runFrames(s.scenes, () => cer.tiers.length > 1, 200);
     expect(cer.tiers).toHaveLength(2);
+  });
+});
+
+// ================================================================ P3-6 · medals · rank · combo · skins · personal rows · busy retry
+describe('P3-6 · medals, rank, combo, skins, /api/me rows and the busy retry', () => {
+  const NOW = Date.parse('2026-09-06T12:00:00.000Z');
+
+  /** Hold right until the result is up and every round trip settled. */
+  async function finishRun(s: { scenes: Scenes; ui: FakeUI; input: FakeInput }): Promise<void> {
+    s.input.heldMask = IN.RIGHT;
+    runFrames(s.scenes, () => s.ui.screen === 'result');
+    await s.scenes.settle();
+  }
+
+  it('a clear records its medals (kept for good), best rank and best combo, and hands the new medals to the result screen', async () => {
+    const def = flatRoom();
+    const s = makeScenes([def]);
+    s.scenes.bootSync();
+    // a medal from an earlier install stays even though this clear does not earn it
+    s.save.levelRecord('flat').medals = ['relic'];
+    s.ui.emit({ type: 'start', levelId: 'flat' });
+    await finishRun(s);
+    const summary = s.ui.result!.summary;
+    const earned = medalsFor(summary);
+    expect(earned).toContain('nodeath');
+    const rec = s.save.progress.levels.flat;
+    expect(rec.medals).toEqual(mergeMedals(['relic'], earned));
+    expect(rec.medals).toContain('relic');
+    expect(bestRankOf(rec)).toBe(summary.rank);
+    const combo = s.scenes.run!.sim.state.stats.bestCombo;
+    expect(bestComboOf(rec)).toBe(combo);
+    expect(s.ui.clearExtras).toHaveLength(1);
+    expect(s.ui.clearExtras[0]).toEqual({ newMedals: newMedals(['relic'], earned), combo, comboRecord: combo > 0 });
+    // hp keeps flowing to the HUD whatever the mode (the UI decides whether the hearts show)
+    expect(s.ui.huds.at(-1)).toMatchObject({ hp: expect.any(Number), maxHp: expect.any(Number), assist: false });
+    // the same clear again: nothing new to pop, nothing lost
+    s.ui.emit({ type: 'retry' });
+    await finishRun(s);
+    expect(s.ui.clearExtras).toHaveLength(2);
+    expect(s.ui.clearExtras[1]!.newMedals).toEqual([]);
+    expect(s.save.progress.levels.flat.medals).toEqual(mergeMedals(['relic'], earned));
+  });
+
+  it('boards are public: no playerId on /api/leaderboard; our row comes from /api/me, flags the matching entry, and the card rank is stored and refreshed', async () => {
+    const def = flatRoom();
+    let now = NOW;
+    const s = makeScenes([def], { echoWorld: true, echoSelf: false, now: () => now });
+    s.scenes.bootSync();
+    s.ui.emit({ type: 'start', levelId: 'flat' });
+    await finishRun(s);
+    for (const q of s.api.lbQueries) expect(q.playerId).toBeUndefined();
+    expect(s.api.meQueries.length).toBeGreaterThan(0);
+    for (const q of s.api.meQueries) expect(q).toMatchObject({ mode: 'story', board: 'flat', playerId: s.save.progress.player.id });
+    const lb = s.ui.result!.leaderboard!;
+    expect(lb.yours).toMatchObject({ rank: 1, you: true, runId: 'run-1' });
+    expect(lb.entries[0].you).toBe(true);
+    expect(s.ui.result!.submit).toMatchObject({ state: 'accepted', rank: 1 });
+    const rec = s.save.progress.levels.flat;
+    expect(worldRankOf(rec)).toBe(1);
+
+    // back on the select screen the rank is re-read: throttled within RANK_REFRESH_MS …
+    s.ui.emit({ type: 'quit' });
+    await s.scenes.settle();
+    const mine = s.api.board[0];
+    s.api.board[0] = { ...mine, rank: 4 };
+    const before = s.api.lbQueries.length;
+    s.ui.emit({ type: 'openSelect' });
+    await s.scenes.settle();
+    expect(s.api.lbQueries.length).toBe(before);
+    expect(worldRankOf(rec)).toBe(1);
+    // … then from the cached top page when our run is on it (one public request, no /api/me) …
+    now += RANK_REFRESH_MS;
+    const meBefore = s.api.meQueries.length;
+    s.ui.emit({ type: 'openSelect' });
+    await s.scenes.settle();
+    expect(s.api.lbQueries.slice(before)).toEqual([{ mode: 'story', board: 'flat', limit: RANK_TOP_LIMIT }]);
+    expect(s.api.meQueries.length).toBe(meBefore);
+    expect(worldRankOf(rec)).toBe(4);
+    // … and from /api/me when it has fallen off the page
+    const others: typeof s.api.board = Array.from({ length: RANK_TOP_LIMIT }, (_, k) => ({
+      ...mine, rank: k + 1, runId: `run-o${k}`, ownerId: `other-${k}`, playerTag: String(k).padStart(12, 'b'), name: `주자${k}`,
+    }));
+    s.api.board = [...others, { ...mine, rank: RANK_TOP_LIMIT + 5 }];
+    now += RANK_REFRESH_MS;
+    s.ui.emit({ type: 'openSelect' });
+    await s.scenes.settle();
+    expect(s.api.meQueries.length).toBe(meBefore + 1);
+    expect(worldRankOf(rec)).toBe(RANK_TOP_LIMIT + 5);
+    expect(s.ui.selectRefreshes).toBeGreaterThan(0);
+  });
+
+  it('503 busy: the run is queued with reason busy, a retry is armed for Retry-After (doubling on repeats), the timer resends and the result settles', async () => {
+    const def = flatRoom();
+    const ui = fakeUI();
+    const input = fakeInput();
+    const api = fakeApi([def]);
+    const { save, storage } = makeSave();
+    save.settings.echoWorld = false;
+    const timers = manualTimers();
+    let now = NOW;
+    const queue = new SubmitQueue({ storage, now: () => now, schedule: timers.schedule, cancel: timers.cancel });
+    const scenes = new Scenes({
+      renderer: fakeRenderer(), audio: fakeAudio(), ui, input, api, save, queue, levels: [def], build: 'test',
+      randomSeed: () => 777, random: () => 0.5, now: () => now,
+    });
+    api.failWith = new ApiError('HTTP 503', 503, 'busy', { error: 'busy', detail: { retryAfter: 3 } }, 3);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'flat' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.result!.submit).toEqual({ state: 'queued', reason: 'busy' });
+    expect(queue.size()).toBe(1);
+    expect(queue.retryAt).toBe(now + 3000);
+    expect(timers.pending()).toBe(1);
+    expect(api.submissions).toHaveLength(0);
+    // still busy at the first retry: the item stays, the next wait doubles
+    now += 3000;
+    timers.fire();
+    await queue.flush(api);
+    expect(queue.size()).toBe(1);
+    expect(queue.retryAt).toBe(now + 6000);
+    expect(ui.result!.submit).toEqual({ state: 'queued', reason: 'busy' });
+    // the pool has room again: the timer's flush sends it, the result line and the record settle
+    api.failWith = null;
+    now += 6000;
+    timers.fire();
+    await queue.flush(api);
+    expect(api.submissions).toHaveLength(1);
+    expect(queue.size()).toBe(0);
+    expect(timers.pending()).toBe(0);
+    expect(ui.result!.submit).toMatchObject({ state: 'accepted', rank: 1 });
+    expect(save.progress.levels.flat.runId).toBe('run-1');
+    expect(worldRankOf(save.progress.levels.flat)).toBe(1);
+    expect(storage.getItem(QUEUE_KEY)).toBeNull();
+    // a 429 on the live path is queued the same way, with its own Retry-After
+    api.failWith = new ApiError('HTTP 429', 429, 'rate-limited', undefined, 12);
+    ui.emit({ type: 'retry' });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.result!.submit).toEqual({ state: 'queued', reason: 'busy' });
+    expect(queue.retryAt).toBe(now + 12_000);
+  });
+
+  it('skins: six stars unlock 아마조니 with a toast and the unlock chime; boot records rule-granted skins silently', async () => {
+    const def = flatRoom();
+    const levels = [def, { ...flatRoom(), id: 'flat2' }, { ...flatRoom(), id: 'flat3' }];
+    const s = makeScenes(levels);
+    // five stars before the clear: nothing opens at boot
+    s.save.progress.levels.flat2 = { done: true, bestTicks: 900, bestShards: 0, stars: 3, relics: 0, deaths: 0 };
+    s.save.progress.levels.flat3 = { done: true, bestTicks: 900, bestShards: 0, stars: 2, relics: 0, deaths: 0 };
+    s.scenes.bootSync();
+    expect(s.save.progress.unlockedSkins).toBeUndefined();
+    expect(s.audio.uis).not.toContain('unlock');
+    s.ui.emit({ type: 'start', levelId: 'flat' });
+    await finishRun(s);
+    expect(s.save.progress.unlockedSkins).toContain('azure');
+    expect(s.ui.toasts.some((t) => t.startsWith('새 캐릭터 해금') && t.includes('아마조니'))).toBe(true);
+    expect(s.audio.uis).toContain('unlock');
+    // the same clear again announces nothing new
+    const unlocks = s.audio.uis.filter((n) => n === 'unlock').length;
+    s.ui.emit({ type: 'retry' });
+    await finishRun(s);
+    expect(s.audio.uis.filter((n) => n === 'unlock').length).toBe(unlocks);
+
+    // a save that already meets the rule: boot records the skin, says nothing
+    const quiet = makeScenes(levels);
+    quiet.save.progress.levels.flat2 = { done: true, bestTicks: 900, bestShards: 0, stars: 3, relics: 0, deaths: 0 };
+    quiet.save.progress.levels.flat3 = { done: true, bestTicks: 900, bestShards: 0, stars: 3, relics: 0, deaths: 0 };
+    quiet.scenes.bootSync();
+    expect(quiet.save.progress.unlockedSkins).toEqual(['azure']);
+    expect(quiet.ui.toasts).toEqual([]);
+    expect(quiet.audio.uis).not.toContain('unlock');
   });
 });
