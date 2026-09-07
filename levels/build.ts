@@ -48,9 +48,13 @@ import { v1 } from './zones/v1.js';
 import { v2 } from './zones/v2.js';
 import { v3 } from './zones/v3.js';
 import { v4 } from './zones/v4.js';
+import { m1 } from './zones/m1.js';
+import { m2 } from './zones/m2.js';
+import { m3 } from './zones/m3.js';
+import { m4 } from './zones/m4.js';
 
-/** Tower order: three tiers of four zones — three side-scrolling rooms and one vertical climb (t4 · s4 · v4, P2-10) each. */
-export const ZONES: LevelDef[] = [t1, t2, t3, t4, s1, s2, s3, s4, v1, v2, v3, v4];
+/** Tower order: four tiers of four zones — three side-scrolling rooms and one vertical climb (t4 · s4 · v4 · m4, P2-10 / P5-1) each. */
+export const ZONES: LevelDef[] = [t1, t2, t3, t4, s1, s2, s3, s4, v1, v2, v3, v4, m1, m2, m3, m4];
 
 export const GENERATED_PATH = fileURLToPath(new URL('../src/sim/levels.generated.ts', import.meta.url));
 export const ECHOES_PATH = fileURLToPath(new URL('../src/sim/echoes.generated.ts', import.meta.url));

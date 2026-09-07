@@ -60,7 +60,7 @@ describe('selftest — corpus digests', () => {
     expect(report.gen).toBe(GEN_VERSION);
     expect(report.digests.map((d) => d.key)).toEqual(corpusKeys());
     expect(report.digests.map((d) => d.key)).toEqual([...Object.keys(GOAL_ECHOES), ...DAILY_SEEDS.map((s) => `daily:${s}`)]);
-    expect(Object.keys(GOAL_ECHOES)).toHaveLength(12);
+    expect(Object.keys(GOAL_ECHOES)).toHaveLength(16);
     expect(DAILY_SEEDS).toEqual([1, 20260906]);
   });
 

@@ -461,7 +461,7 @@ describe('hint templates (hints.ts)', () => {
   const DEVICES = ['keyboard', 'gamepad', 'touch'] as const;
 
   it('hintFor renders every shipped zone for every device; touch never names a key', () => {
-    expect(REAL_LEVELS).toHaveLength(12);
+    expect(REAL_LEVELS).toHaveLength(16);
     for (const def of REAL_LEVELS) {
       expect(def.hint, def.id).toBeTruthy();
       expect(hasRawKeyName(def.hint!), `${def.id} hint carries a raw key name`).toBe(false);
@@ -2341,16 +2341,25 @@ describe('UI ceremonies (P3-9)', () => {
     expect(active('pause')).toBe(false);
     expect(actions).toEqual([]);
     expect(ui.tierCardOpen).toBe(false);
-    // the last tier's card points past the summit; a tap on the card skips
+    // the third tier's card points on to the fourth (P5-1); a tap on the card skips
     ui.tierBreak(tierCardView('voidreef'), () => { done++; });
+    expect($('#tier-num').textContent).toBe('III');
+    expect($('#tier-next').textContent).toBe('다음: IV층 오로라 정점');
+    $('#scr-tier').click();
+    expect(done).toBe(2);
+    // the last tier's card points past the summit
+    ui.tierBreak(tierCardView('summit'), () => { done++; });
+    expect($('#tier-num').textContent).toBe('IV');
+    expect($('#tier-floor').textContent).toBe('4층');
+    expect($('#tier-name').textContent).toBe('오로라 정점');
     expect($('#tier-next').textContent).toBe(TIER_NEXT_SUMMIT);
     window.dispatchEvent(new Event('blur'));   // no pause over the card
     expect(active('pause')).toBe(false);
     $('#scr-tier').click();
-    expect(done).toBe(2);
+    expect(done).toBe(3);
     ui.tierBreak(tierCardView('tidepool'), () => { done++; });
     ui.show('select');
-    expect(done).toBe(3);
+    expect(done).toBe(4);
     expect(ui.tierCardOpen).toBe(false);
   });
 
