@@ -325,7 +325,7 @@
 
 ## 기각·보류 (사유)
 
-- GF-04 4번째 바이옴+결정론 보스+엔딩 (6일): feasibility 4·4·5 — 심사 2인 이상 ≤4. BiomeId·weather 유니온·BAND_ORDER·music까지 신작 렌더이고 dmath 결정론 보스는 전례 없는 규모(12~15일 추정). 엔딩 화면·층 돌파 비스타·한 줄 서사만 P3-9에 흡수; 정점 존/보스는 P2-10 세로 존 클리어율과 스토리 완주율(v3 clear/t1 start)을 본 뒤 재검토.
+- GF-04 4번째 바이옴+결정론 보스+엔딩 (6일) — **2026-09-07 오너 목표(캐릭터·배경 강화, 스테이지 추가)로 4번째 바이옴 부분이 Phase 5 P5-1로 부활**(`2026-09-07-phase5-content-plan.md`; 보스는 계속 보류): feasibility 4·4·5 — 심사 2인 이상 ≤4. BiomeId·weather 유니온·BAND_ORDER·music까지 신작 렌더이고 dmath 결정론 보스는 전례 없는 규모(12~15일 추정). 엔딩 화면·층 돌파 비스타·한 줄 서사만 P3-9에 흡수; 정점 존/보스는 P2-10 세로 존 클리어율과 스토리 완주율(v3 clear/t1 start)을 본 뒤 재검토.
 - pwa-push-daily-reminder (4일): feasibility 4·4·4, fit 4·5·5 — 심사 3인 ≤4. iOS 홈 화면 설치 필수·옵트인 한 자리 수, VAPID·EventBridge·Lambda·GSI는 CF→ALB→Fargate→DDB 스택 제약을 벗어남. 스트릭 UI(P2-3)가 습관을 먼저 만든다.
 - season-ladder-lite (4일): feasibility 5·5·4, fit 5·5·5 — 두 판정관 fit/feasibility ≤5, 한 명 ≤4·나머지 5. 데일리 인구 0에서 포인트 래더는 순서가 뒤이고 배치 Lambda로 스택이 커진다. 데일리 DAU ≥100 후 재검토.
 - UX-04 한/영 i18n (4일): fit 5·5·6 — 오너 제약 '한국어 UI'와 충돌하고 해라체 톤의 영어 카피 검수 비용이 별도. 오너가 시장(한국 1위 vs 글로벌)을 정하면 typed string table 방식으로 재상정.
