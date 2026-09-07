@@ -10,8 +10,9 @@
  * and a two-crystal chain across the well to the summit deck at the top left,
  * the relic on a spire over the apex.
  *
- * Rev 1 (P5-5): a bubble chain of three ('b') crosses the well three rows
- * under the crystal chain — the low road: step off the apex ledge onto the
+ * Rev 1 (P5-5): a bubble chain of three ('b') crosses the well under the
+ * crystal chain — five rows under it at the first two rungs, each crystal a
+ * column left of the rung below it — the low road: step off the apex ledge onto the
  * first (or hold {stomp}), each launch carries you three tiles left and three
  * rows up to the next, the last one lands on the summit deck. The crystal
  * route is untouched (its dashes pass well above the bubbles); a missed bubble
@@ -83,8 +84,9 @@ m.ent('D', 17, 6);
 m.ent('D', 14, 3);
 m.ground(2, 11, 3, 4);
 m.ent('G', 6, 2);
-//     the bubble chain (P5-5): the low road across the well, three left and three up per hop, the first two tiles
-//     off the apex ledge's face, the last two tiles off the deck's; the crystals stay three rows above them
+//     the bubble chain (P5-5): the low road across the well, three left and three up per hop, the first two tiles off
+//     the apex ledge's face, the last right against the deck's; the crystals hang five rows over the first two rungs (a
+//     column left of each) and the last rung sits two rows under and two columns left of the upper crystal
 m.ent('b', 18, 11);
 m.ent('b', 15, 8);
 m.ent('b', 12, 5);

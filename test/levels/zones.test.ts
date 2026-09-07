@@ -4,7 +4,9 @@ import {
   isVerticalZone, validate, validateZone, zoneRules, zoneShape,
 } from '../../levels/dsl.js';
 import { ZONES } from '../../levels/build.js';
+import { PLAYER_W } from '../../src/sim/config.js';
 import { Level } from '../../src/sim/level.js';
+import { FOE_WAKE_GAP } from '../../src/sim/sim.js';
 import type { LevelDef } from '../../src/sim/types.js';
 import { hasRawKeyName, hintFor } from '../../src/client/ui/hints.js';
 
@@ -405,32 +407,37 @@ describe('the sixteen zones', () => {
       expect(flat).toContain('t');
       // the roof runs from the second column's lintel to the corridor exit, so the gates are the only way through
       expect(m3.rows[0].slice(31, 81)).toBe('#'.repeat(50));
-      for (let y = 1; y <= 3; y++) expect(m3.rows[y].slice(31, 36), `lintel row ${y}`).toBe('#####');
-      // rev 1 (P5-5): the second column's well is four spike columns wide (32..35) under the lintel, open from row 4
-      // down to the spikes on row 18, with shelf 2 starting at column 36 (top row 7)
-      for (let y = 4; y <= 17; y++) expect(m3.rows[y].slice(31, 36).replace(/b/g, '.'), `well row ${y}`).toBe('.....');
-      expect(m3.rows[18].slice(31, 37)).toBe('z^^^^#');
-      expect(m3.rows[19].slice(31, 37)).toBe('######');
-      for (let y = 7; y <= 18; y++) expect(m3.rows[y][36], `shelf 2 face at row ${y}`).toBe('#');
-      expect(m3.rows[6][36]).toBe('.');
-      expect(m3.rows[16].slice(17, 31)).toBe('#'.repeat(14));   // shelf 1 still ends at column 30
-      // the bubbles: the yard perch and the two-rung well ladder, (33,15) and (35,12) — two columns and three rows apart,
-      // each a tile clear of the updraft at 31, under the lintel and over the spikes; nothing hangs over either rung
+      for (let y = 1; y <= 3; y++) expect(m3.rows[y].slice(31, 35), `lintel row ${y}`).toBe('####');
+      // the second column's well is the rev 0 well: three spike columns (32..34) under the lintel, open air from row 4 down to
+      // the spikes on row 18, shelf 2 starting at column 35 (top row 7) — and no bubble hangs in it (P5-5 fix round 1: every
+      // rung position inside met the arc of a plain jump off shelf 1 lifted by the column)
+      for (let y = 4; y <= 17; y++) expect(m3.rows[y].slice(31, 35), `well row ${y}`).toBe('....');
+      expect(m3.rows[18].slice(31, 36)).toBe('z^^^#');
+      expect(m3.rows[19].slice(31, 36)).toBe('#####');
+      for (let y = 7; y <= 18; y++) expect(m3.rows[y][35], `shelf 2 face at row ${y}`).toBe('#');
+      expect(m3.rows[6][35]).toBe('.');
+      expect(m3.rows[16].slice(17, 31)).toBe('#'.repeat(14));   // shelf 1 ends at column 30
+      // the bubbles (P5-5): the yard perch with its shard five rows up, and the shard stair up the chaser room's left wall —
+      // (81,23) under the corridor exit and (83,20), two columns and three rows apart, the shard five rows over the upper
+      // rung; twelve shards in all
       const F = 26;
-      expectBubbles(m3, [[10, F - 6], [33, 15], [35, 12]]);
+      expectBubbles(m3, [[10, F - 6], [81, F - 3], [83, F - 6]]);
       expect(m3.rows[F - 11][10]).toBe('o');
-      const ladder = bubbles(m3).filter(([x]) => x >= 32).sort((a, b) => b[1] - a[1]);
-      expect(ladder).toEqual([[33, 15], [35, 12]]);
-      for (const [x, y] of ladder) for (let yy = 4; yy < y; yy++) expect(m3.rows[yy][x], `open air over the rung at (${x},${y}), row ${yy}`).toBe('.');
-      for (let i = 1; i < ladder.length; i++) {
-        expect(Math.abs(ladder[i][0] - ladder[i - 1][0]), 'rungs two columns apart').toBe(2);
-        expect(ladder[i - 1][1] - ladder[i][1], 'rungs three rows apart').toBe(3);
+      expect(m3.rows[F - 11][83]).toBe('o');
+      expect(census(m3).shards).toBe(12);
+      const stair = bubbles(m3).filter(([x]) => x >= 81).sort((a, b) => b[1] - a[1]);
+      expect(stair).toEqual([[81, 23], [83, 20]]);
+      for (let i = 1; i < stair.length; i++) {
+        expect(Math.abs(stair[i][0] - stair[i - 1][0]), 'rungs two columns apart').toBe(2);
+        expect(stair[i - 1][1] - stair[i][1], 'rungs three rows apart').toBe(3);
       }
-      for (const [x, y] of ladder) {
-        expect(x).toBeGreaterThanOrEqual(33);
-        expect(x).toBeLessThanOrEqual(35);
-        expect(y).toBeGreaterThanOrEqual(8);
-        expect(y).toBeLessThanOrEqual(16);
+      for (const [x, y] of stair) {
+        // only air (or the stair's shard) between the corridor-exit row and the rung: a drop from the exit meets it from above,
+        // its launch meets nothing but the shard
+        for (let yy = 7; yy < y; yy++) if (m3.rows[yy][x] !== 'o') expect(m3.rows[yy][x], `open air over the rung at (${x},${y}), row ${yy}`).toBe('.');
+        // the rung's bob envelope (centre + half bubble + bob amplitude) ends above a walker's head on the standing row 25
+        expect(y * 16 + 8 + 6 + 10, `the rung at (${x},${y}) reaches a walker on the room floor`).toBeLessThan(25 * 16 + 1);
+        expect(m3.rows[26][x], `room floor under the rung at (${x},${y})`).toBe('#');
       }
       for (let y = 1; y <= 6; y++) {
         expect(m3.rows[y].slice(57, 59), `gate 1 row ${y}`).toBe('%%');
@@ -450,6 +457,13 @@ describe('the sixteen zones', () => {
       expect(m3.rows[26].slice(81, 99)).toBe('#'.repeat(18));
       expect((25 - chaser.ty) * 16).toBeGreaterThan(130);
       expect(Math.hypot((97 - chaser.tx) * 16, (17 - chaser.ty) * 16)).toBeLessThan(130);
+      // the wake-range guard (P5-5 fix round 1): the chaser wakes when the gap between its 15-wide box and the player's box is
+      // within FOE_WAKE_GAP on both axes, and a rider on the stair is inside its vertical range — so every rung keeps the
+      // horizontal box gap of a player centred on it above FOE_WAKE_GAP (ten tiles or more of centre distance; nine is not enough)
+      for (const [x, y] of stair) {
+        expect(Math.abs(x - chaser.tx), `stair rung (${x},${y}) too close to the chaser`).toBeGreaterThanOrEqual(10);
+        expect(Math.abs(x - chaser.tx) * 16 - 15 / 2 - PLAYER_W / 2, `stair rung (${x},${y}) inside the chaser's horizontal wake range`).toBeGreaterThan(FOE_WAKE_GAP);
+      }
     });
 
     it('m4 is the summit: a shaft with a spring and two rest ledges, one lift, three updrafts, a two-crystal chain, no spikes, the goal on the top deck', () => {

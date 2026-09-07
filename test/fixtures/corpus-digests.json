@@ -189,14 +189,14 @@
       "key": "m3",
       "levelId": "m3",
       "seed": 251,
-      "tick": 13604,
-      "ticks": 13551,
+      "tick": 13580,
+      "ticks": 13527,
       "cleared": true,
-      "shards": 9,
+      "shards": 10,
       "deaths": 0,
-      "x": 1781513,
-      "y": 256990,
-      "hash": "3dba455c"
+      "x": 1781477,
+      "y": 237194,
+      "hash": "2df2a063"
     },
     {
       "key": "m4",

@@ -14,15 +14,13 @@
     "giveUpSec": 90,
     "giveUpDeaths": 25
   },
-  "clears": 79,
-  "clearRate": 0.2633333333333333,
-  "gaveUp": 221,
-  "deaths": 227,
-  "deathsPerEpisode": 0.7566666666666667,
-  "medianClearSec": 17.04,
+  "clears": 71,
+  "clearRate": 0.23666666666666666,
+  "gaveUp": 229,
+  "deaths": 5,
+  "deathsPerEpisode": 0.016666666666666666,
+  "medianClearSec": 16.38,
   "causes": {
-    "bubble": 202,
-    "spike": 20,
     "foe": 5
   },
   "checkpoints": [
@@ -37,15 +35,15 @@
       "index": 1,
       "tx": 19,
       "ty": 15,
-      "reached": 299,
-      "rate": 0.9966666666666667
+      "reached": 298,
+      "rate": 0.9933333333333333
     },
     {
       "index": 2,
       "tx": 37,
       "ty": 6,
-      "reached": 299,
-      "rate": 0.9966666666666667
+      "reached": 300,
+      "rate": 1
     },
     {
       "index": 3,
@@ -58,100 +56,60 @@
       "index": 4,
       "tx": 70,
       "ty": 6,
-      "reached": 79,
-      "rate": 0.2633333333333333
+      "reached": 71,
+      "rate": 0.23666666666666666
     },
     {
       "index": 5,
       "tx": 91,
       "ty": 25,
-      "reached": 67,
-      "rate": 0.22333333333333333
+      "reached": 60,
+      "rate": 0.2
     },
     {
       "index": 6,
       "tx": 104,
       "ty": 16,
-      "reached": 76,
-      "rate": 0.25333333333333335
+      "reached": 68,
+      "rate": 0.22666666666666666
     }
   ],
   "cells": [
     {
-      "tx": 34,
+      "tx": 92,
       "ty": 12,
-      "deaths": 69,
+      "deaths": 1,
       "causes": {
-        "bubble": 69
+        "foe": 1
       }
     },
     {
-      "tx": 34,
-      "ty": 13,
-      "deaths": 67,
-      "causes": {
-        "bubble": 67
-      }
-    },
-    {
-      "tx": 34,
-      "ty": 11,
-      "deaths": 23,
-      "causes": {
-        "bubble": 23
-      }
-    },
-    {
-      "tx": 34,
+      "tx": 92,
       "ty": 14,
-      "deaths": 22,
+      "deaths": 1,
       "causes": {
-        "bubble": 22
-      }
-    },
-    {
-      "tx": 34,
-      "ty": 15,
-      "deaths": 20,
-      "causes": {
-        "bubble": 20
-      }
-    },
-    {
-      "tx": 35,
-      "ty": 17,
-      "deaths": 20,
-      "causes": {
-        "spike": 20
+        "foe": 1
       }
     },
     {
       "tx": 93,
       "ty": 12,
-      "deaths": 2,
+      "deaths": 1,
       "causes": {
-        "foe": 2
+        "foe": 1
       }
     },
     {
       "tx": 101,
-      "ty": 16,
-      "deaths": 2,
-      "causes": {
-        "foe": 2
-      }
-    },
-    {
-      "tx": 35,
-      "ty": 13,
+      "ty": 15,
       "deaths": 1,
       "causes": {
-        "bubble": 1
+        "foe": 1
       }
     },
     {
-      "tx": 92,
-      "ty": 13,
+      "tx": 103,
+      "ty": 14,
       "deaths": 1,
       "causes": {
         "foe": 1
@@ -160,27 +118,27 @@
   ],
   "hotspots": [
     {
-      "x0": 34,
-      "x1": 35,
-      "ty": 12,
-      "deaths": 222,
-      "share": 0.9779735682819384,
-      "cause": "bubble"
-    },
-    {
       "x0": 92,
       "x1": 93,
       "ty": 12,
       "deaths": 3,
-      "share": 0.013215859030837005,
+      "share": 0.6,
       "cause": "foe"
     },
     {
       "x0": 101,
       "x1": 101,
-      "ty": 16,
-      "deaths": 2,
-      "share": 0.00881057268722467,
+      "ty": 15,
+      "deaths": 1,
+      "share": 0.2,
+      "cause": "foe"
+    },
+    {
+      "x0": 103,
+      "x1": 103,
+      "ty": 14,
+      "deaths": 1,
+      "share": 0.2,
       "cause": "foe"
     }
   ]

@@ -15,7 +15,7 @@
  *
  * Rev 1 (P5-5): two bubbles ('b') hang over the spike bed, one under each gap
  * between the shelves, each a shard perch — stomp the bubble (fall onto it, or
- * hold {stomp}) and the launch carries you through a shard five rows up, then
+ * hold {stomp}) and the launch carries you through a shard six rows up, then
  * drift onto the next shelf; the popped bubble is gone for 2.5 s, so falling
  * straight back is the spikes. The tower's first bubbles, on a side route only.
  *
@@ -78,8 +78,8 @@ m.ent('R', 79, F - 16);
 m.shards([[78, F - 16], [80, F - 16]]);
 m.ent('f', 84, F - 19);                          // a flyer drifting over the descent
 //     bubble perches (P5-5): one bubble in each shelf gap, one tile left of the next shelf and high enough that the
-//     launch (55 units with JUMP released) clears that shelf's top with room to spare; a shard six or seven rows over
-//     each, inside the launch's reach. Straight back down is the spikes — drift right onto the ice instead.
+//     launch (55 units with JUMP released) clears that shelf's top with room to spare; a shard six rows over each,
+//     inside the launch's reach. Straight back down is the spikes — drift right onto the ice instead.
 m.ent('b', 79, F - 5);
 m.ent('o', 80, F - 11);
 m.ent('b', 84, F - 3);

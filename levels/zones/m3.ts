@@ -15,37 +15,38 @@
  * Rev 1 (P5-5): three bubbles ('b'). One hangs over the start yard a tile right
  * of the dash-up perch, five rows over the floor — walk off the perch onto it
  * (or double-jump beside it and hold {stomp}) and the launch passes a shard
- * five rows up; a miss drops you back onto the yard. Two more hang up the
- * spiked side of the second column's well — widened from three spike columns
- * to four (32..35) to make room for them — the bubble ladder between the
- * updrafts: (33,15) and (35,12), two columns and three rows apart, so the
- * launch off the lower one rises past the upper one's side with a clear tile
- * between before the rider drifts over onto it. The column lifts anyone who
- * jumps off shelf 1 into the well: come down onto the lower bubble from that
- * lift (or ride the column and step off onto it) and keep {jump} held through
- * the launch — held it rises ≈ 72 units and clears the upper bubble with room,
- * released ≈ 55 and barely. The launch off the upper bubble alone stops short
- * of shelf 2 (feet ≈ 114..132 against the floor top at 112): the bounce refills
- * the air jump, so {jump} again near the apex (feet ≈ 82, the head three units
- * under the lintel) or a dash-up carries you onto the shelf at column 36.
- * Straight down is still the spikes; a tile left is the column; nothing hangs
- * over either bubble, so a launch straight up meets only air and falls back
- * onto the spikes. No bubble hangs over shelf 1 (a launch plus two air jumps
- * and a dash-up from there would), every bubble stays a tile clear of the
- * column (a rider's box never touches one) and out of the phone spawn frame.
- * Probed on the sim (Phase 5 C, task 1-B): the ride up the column exits onto
- * shelf 2 without touching a bubble, the ladder chains with {jump} held and an
- * air jump off the upper launch, and a full-speed jump off shelf 1 into the
- * well ends on the spikes, not a bubble — only a {jump} tap of four ticks or
- * less (≤ 33 ms) from a tile before the edge arcs low enough to meet the upper
- * bubble's underside.
+ * five rows up; a miss drops you back onto the yard. The other two are a shard
+ * stair up the left wall of the chaser room, (81,23) and (83,20): the first
+ * rung hangs three rows over the standing row against the wall, right under the
+ * corridor exit, so whoever steps off the exit and falls straight down lands on
+ * it from above — a pop and a bounce, never a side hit, the drop being nineteen
+ * rows; the second rung is two columns right and three rows up. Have {jump}
+ * held BEFORE the landing (held, the launch rises ≈ 72 units, released ≈ 55;
+ * the second rung's top is 48 above the first's, up to 68 over the bobs — a
+ * press after the pop spends the refilled air jump and cuts the launch) and
+ * drift over onto the second; its launch passes a shard five rows up, in reach
+ * of the held launch only. From the floor the stair starts with a double jump
+ * beside the first rung and {stomp} held over it. A walker on the floor never
+ * touches a rung (the lower one's bob envelope ends nine units over a standing
+ * head), a runner who jumps off the exit passes far over both, and the whole
+ * stair — rungs, rider and the launch apex — keeps more than 140 units of
+ * horizontal gap to the chaser's box at (93,13): it wakes only within 140 units
+ * on both axes, so the room floor is out of its vertical range and the stair
+ * out of its horizontal one (a rider centred on the upper rung has 147; the
+ * wind-up needs 130 units centre to centre, i.e. an overshoot past column 85).
+ * Probed on the sim (Phase 5 C, fix round 1): the drop entry and the floor
+ * entry both chain to the shard with the chaser idle throughout, a
+ * right-holding walker crossing the room floor meets no bubble, and the ride
+ * up updraft 2 is the rev 0 well, untouched. The well itself carries no bubble:
+ * every rung position inside it met the arc of a plain jump off shelf 1 lifted
+ * by the column (202 novice deaths in one cell before this fix).
  *
  * The well of the second column is capped by a rock lintel and the roof runs
  * over the whole shelf, so no dash-up climb gets above the corridor. Shards are
  * side routes: the dash-up perch at the start, the bubble perch beside it, two
  * over the yard off the first column's top, two over shelf 1 off the second's,
- * the '&' ledge, beside the relic. Seven checkpoints, every neighbour pair
- * within 32 columns.
+ * the '&' ledge, beside the relic, over the shard stair in the chaser room.
+ * Seven checkpoints, every neighbour pair within 32 columns.
  */
 import { room } from '../dsl.js';
 
@@ -74,25 +75,16 @@ m.ground(17, 30, 16);
 m.ent('C', 19, 15);
 m.ent('f', 24, 10);
 
-// --- act 1b: updraft 2 in a four-column well between the shelves (column rows 6..18 at 31, spikes 32..35), a lintel over
-//     the well; shards off its top over shelf 1
-m.ground(31, 35, 19);
-m.spikes(32, 35, 18);
+// --- act 1b: updraft 2 in a well between the shelves (column rows 6..18), a lintel over the well; shards off its top over shelf 1
+m.ground(31, 34, 19);
+m.spikes(32, 34, 18);
 m.ent('z', 31, 18);
-m.block(31, 35, 0, 3);
+m.block(31, 34, 0, 3);
 m.shards([[30, 4], [29, 3]]);
-//     the well ladder (P5-5): two bubbles up the spiked side of the well, (33,15) and (35,12) — three rows apart and TWO
-//     columns apart, so the launch off the lower one rises past the upper one's side with a clear tile between and the
-//     rider drifts over onto it; both a tile clear of the column at 31. The column lifts a jump off shelf 1 — come down
-//     onto the lower bubble from that lift, or ride the column and step off onto it. The launch off the upper bubble
-//     stops just short of shelf 2: the refilled air jump (or a dash-up) near the apex steps onto it. A miss falls onto
-//     the spikes or drifts left into the column; nothing hangs over either bubble, and the lintel caps the well.
-m.ent('b', 33, 15);
-m.ent('b', 35, 12);
 
 // --- act 2: shelf 2 and the switch corridor under one roof (rows 1..6 open): k → '%' gate → '&' ledge → k → '&' gate → turret
-m.ground(36, 80, 7);
-m.plat(36, 80, 0);
+m.ground(35, 80, 7);
+m.plat(35, 80, 0);
 //     each toggle stands four or five tiles before its gate, so a runner dashes it before the gate reads as a wall
 m.ent('C', 37, 6);
 m.ent('C', 51, 6);
@@ -114,6 +106,14 @@ m.plat(96, 98, F - 8);
 m.ent('R', 97, F - 9);
 m.shards([[96, F - 9], [98, F - 9]]);
 m.ent('c', 93, F - 13);
+//     the shard stair (P5-5): two bubbles up the room's left wall, (81,23) and (83,20) — two columns and three rows apart,
+//     so the held launch off the lower one (≈ 72 units) clears the upper one's top and the rider drifts over onto it; the
+//     lower rung hangs under the corridor exit, where a straight drop lands on it from above (pop and bounce) and a
+//     walker's head passes nine units under its bob; the shard five rows over the upper rung, inside its launch's reach.
+//     Everything stays left of column 84, more than 140 units from the chaser's box: it never wakes for the stair.
+m.ent('b', 81, F - 3);
+m.ent('b', 83, F - 6);
+m.ent('o', 83, F - 11);
 
 // --- act 4: updraft 3 flush with the room's floor edge (column rows 15..27) up to the goal shelf
 m.ground(99, 102, F + 2);
