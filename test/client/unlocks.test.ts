@@ -6,10 +6,11 @@ import { describe, expect, it } from 'vitest';
 import type { LevelDef, RunSummary } from '../../src/sim/types.js';
 import type { LevelRecord, Progress, Settings } from '../../src/client/contracts.js';
 import {
-  AZURE_STARS, RANK_CAP, SKIN_RULES, anyRankAtLeast, availableSkins, betterRank, effectiveSkin, fmtWorldRank, maxMedals, maxStars,
-  medalsFor, mergeMedals, newMedals, skinAvailable, skinHint, skinsUnlockedBy, syncUnlockedSkins, tierReached, totalMedals, totalStars,
-  totalsText, worldRankText,
+  AZURE_STARS, CORAL_MEDALS, FROST_TIER, NOVA_S_RANKS, RANK_CAP, SKIN_RULES, allZonesDone, anyRankAtLeast, availableSkins, betterRank,
+  countRankAtLeast, effectiveSkin, fmtWorldRank, maxMedals, maxStars, medalsFor, mergeMedals, newMedals, skinAvailable, skinHint,
+  skinsUnlockedBy, syncUnlockedSkins, tierReached, totalMedals, totalStars, totalsText, worldRankText,
 } from '../../src/client/unlocks.js';
+import { BIOME_ORDER } from '../../src/shared/biomes.js';
 import {
   bestComboOf, bestRankOf, clearWorldRank, defaultProgress, recordBestCombo, recordBestRank, setWorldRank, worldRankOf,
 } from '../../src/client/save.js';
@@ -128,7 +129,7 @@ describe('unlocks · rank · combo · world rank (save.ts record helpers)', () =
 
 describe('unlocks · skins', () => {
   it('rule table: clawd free · azure at 6 stars (5 is not enough) · ember when a storm zone is open · void at the first S', () => {
-    expect(SKIN_RULES.map((r) => r.id)).toEqual(['clawd', 'azure', 'ember', 'void']);
+    expect(SKIN_RULES.map((r) => r.id)).toEqual(['clawd', 'azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
     expect(AZURE_STARS).toBe(6);
     const five = progress({ t1: rec({ stars: 3 }), t2: rec({ stars: 2 }) });
     const six = progress({ t1: rec({ stars: 3 }), t2: rec({ stars: 3 }) });
@@ -180,6 +181,101 @@ describe('unlocks · skins', () => {
     junk.levels.t1 = rec({ stars: 0, bestRank: 'S' } as Partial<LevelRecord>);
     expect(syncUnlockedSkins(junk, LEVELS)).toEqual(['void']);
     expect(junk.unlockedSkins).toEqual(['azure', 'void']);
+  });
+});
+
+// ================================================================ P5-2 · the four costume skins
+describe('unlocks · Phase 5 skins: coral · frost · gold · nova (P5-2)', () => {
+  /** The full tower once the summit lands: four zones per tier, the summit last. */
+  const ZONES16: [string, LevelDef['biome']][] = [
+    ['t1', 'tidepool'], ['t2', 'tidepool'], ['t3', 'tidepool'], ['t4', 'tidepool'],
+    ['s1', 'stormspire'], ['s2', 'stormspire'], ['s3', 'stormspire'], ['s4', 'stormspire'],
+    ['v1', 'voidreef'], ['v2', 'voidreef'], ['v3', 'voidreef'], ['v4', 'voidreef'],
+    ['m1', 'summit'], ['m2', 'summit'], ['m3', 'summit'], ['m4', 'summit'],
+  ];
+  const LEVELS16 = ZONES16.map(([id, biome], i) => ({ id, name: id, en: id, biome, par: 60, seed: i, rows: ['P.G', '###'] })) as LevelDef[];
+  /** The shipped tower: no summit zone yet. */
+  const LEVELS12 = LEVELS16.slice(0, 12);
+  const ALL4 = ['nodeath', 'par', 'shards', 'relic'] as const;
+  const doneAll = (levels: LevelDef[], extra: Partial<LevelRecord> = {}) =>
+    progress(Object.fromEntries(levels.map((l) => [l.id, rec({ stars: 1, ...extra })])));
+
+  it('coral opens at CORAL_MEDALS medals across the tower: 11 is not enough, 12 is; junk medals do not count', () => {
+    expect(CORAL_MEDALS).toBe(12);
+    const eleven = progress({ t1: rec({ medals: [...ALL4] }), t2: rec({ medals: [...ALL4] }), t3: rec({ medals: ['nodeath', 'par', 'shards'] }) });
+    const twelve = progress({ t1: rec({ medals: [...ALL4] }), t2: rec({ medals: [...ALL4] }), t3: rec({ medals: [...ALL4] }) });
+    const junk = progress({ t1: rec({ medals: [...ALL4] }), t2: rec({ medals: [...ALL4] }), t3: rec({ medals: ['nodeath', 'par', 'shards', 'bogus'] }) });
+    expect(totalMedals(eleven, LEVELS12)).toBe(11);
+    expect(skinsUnlockedBy(eleven, LEVELS12)).not.toContain('coral');
+    expect(skinsUnlockedBy(twelve, LEVELS12)).toContain('coral');
+    expect(skinsUnlockedBy(junk, LEVELS12)).not.toContain('coral');
+    expect(skinHint('coral')).toBe('메달 12개');
+  });
+
+  it('nova opens at NOVA_S_RANKS zones ranked S: two S (and any number of A) is not enough, three is; void still opens at the first', () => {
+    expect(NOVA_S_RANKS).toBe(3);
+    const S = (id: string) => [id, rec({ bestRank: 'S' } as Partial<LevelRecord>)] as const;
+    const two = progress({ ...Object.fromEntries([S('t1'), S('t2')]), t3: rec({ bestRank: 'A' } as Partial<LevelRecord>), t4: rec({ bestRank: 'A' } as Partial<LevelRecord>) });
+    const three = progress(Object.fromEntries([S('t1'), S('t2'), S('s1')]));
+    expect(countRankAtLeast(two, 'S')).toBe(2);
+    expect(countRankAtLeast(two, 'A')).toBe(4);
+    expect(skinsUnlockedBy(two, LEVELS12)).toContain('void');
+    expect(skinsUnlockedBy(two, LEVELS12)).not.toContain('nova');
+    expect(skinsUnlockedBy(three, LEVELS12)).toContain('nova');
+    expect(skinHint('nova')).toBe('S 등급 3개');
+  });
+
+  it('gold opens when every story zone is done: 15 of 16 is not enough, 16 is; the hint counts the zones it is given', () => {
+    const fifteen = doneAll(LEVELS16.slice(0, 15));
+    const sixteen = doneAll(LEVELS16);
+    expect(allZonesDone(fifteen, LEVELS16)).toBe(false);
+    expect(allZonesDone(sixteen, LEVELS16)).toBe(true);
+    expect(allZonesDone(sixteen, [])).toBe(false);
+    expect(skinsUnlockedBy(fifteen, LEVELS16)).not.toContain('gold');
+    expect(skinsUnlockedBy(sixteen, LEVELS16)).toContain('gold');
+    // the rule follows the zone list it is given: the shipped 12-zone tower fully done opens gold too
+    expect(skinsUnlockedBy(doneAll(LEVELS12), LEVELS12)).toContain('gold');
+    expect(skinsUnlockedBy(doneAll(LEVELS12), LEVELS16)).not.toContain('gold');
+    // a zone recorded but not done does not count
+    const almost = doneAll(LEVELS16);
+    almost.levels.m4 = rec({ done: false });
+    expect(skinsUnlockedBy(almost, LEVELS16)).not.toContain('gold');
+    expect(skinHint('gold')).toBe('모든 구역 클리어');
+    expect(skinHint('gold', LEVELS16)).toBe('16구역 전부 클리어');
+    expect(skinHint('gold', LEVELS12)).toBe('12구역 전부 클리어');
+    expect(skinHint('gold', [])).toBe('모든 구역 클리어');
+    // the other hints ignore the zone list
+    expect(skinHint('azure', LEVELS16)).toBe('별 6개');
+    expect(skinHint('clawd', LEVELS16)).toBeNull();
+  });
+
+  it('frost opens when the summit tier is reached (a summit zone open); it is inert while the tower has no summit zone', () => {
+    expect(FROST_TIER).toBe('summit');
+    expect(BIOME_ORDER.length >= 4 ? BIOME_ORDER[3] : 'summit').toBe('summit');
+    // v4 done opens m1 (the first summit zone): the tier is reached
+    const v4 = doneAll(LEVELS16.slice(0, 12));
+    expect(tierReached(LEVELS16, v4, 'summit')).toBe(true);
+    expect(skinsUnlockedBy(v4, LEVELS16)).toContain('frost');
+    // v3 done alone does not cross the tier boundary (no skip into a new tier)
+    const v3 = doneAll(LEVELS16.slice(0, 11));
+    expect(tierReached(LEVELS16, v3, 'summit')).toBe(false);
+    expect(skinsUnlockedBy(v3, LEVELS16)).not.toContain('frost');
+    // the shipped tower: everything done, still no summit zone to open → frost stays locked
+    const shipped = doneAll(LEVELS12, { medals: [...ALL4], bestRank: 'S' } as Partial<LevelRecord>);
+    expect(skinsUnlockedBy(shipped, LEVELS12)).toEqual(['clawd', 'azure', 'ember', 'void', 'coral', 'gold', 'nova']);
+    expect(skinHint('frost')).toBe('4층 진입');
+  });
+
+  it('syncUnlockedSkins records the Phase 5 skins with the old ones and announces each once; the picker treats them like any skin', () => {
+    const p = doneAll(LEVELS16, { medals: [...ALL4], bestRank: 'S' } as Partial<LevelRecord>);
+    expect(syncUnlockedSkins(p, LEVELS16)).toEqual(['azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
+    expect(syncUnlockedSkins(p, LEVELS16)).toEqual([]);
+    expect(p.unlockedSkins).toEqual(['azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
+    expect([...availableSkins(progress({}), settings('clawd'), LEVELS16)]).toEqual(['clawd']);
+    expect(skinAvailable('gold', progress({}), settings('gold'), LEVELS16)).toBe(true);   // grandfathered
+    expect(effectiveSkin(progress({}, { unlockedSkins: ['nova'] }), settings('nova'), LEVELS16)).toBe('nova');
+    expect(effectiveSkin(progress({}), settings('frost'), LEVELS16)).toBe('frost');
+    expect(effectiveSkin(null, settings('coral'), LEVELS16)).toBe('coral');
   });
 });
 

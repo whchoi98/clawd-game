@@ -700,6 +700,49 @@ describe('audio pass (P3-9)', () => {
     expect(STINGERS.medal).not.toBe(UI_SFX.unlock);
   });
 
+  it('summit (P5-2): F# lydian at 76 bpm with its own arrangement — glass bells and a wind pad in every bar — renders bars and plays through the engine', () => {
+    const t = TRACKS.summit;
+    expect(t).toBeDefined();
+    expect(t.root).toBe(42);
+    expect(t.scale).toBe('lydian');
+    expect(t.bpm).toBe(76);
+    expect(t.arrange).not.toBe(TRACKS.voidreef.arrange);
+    expect(t.arrange).not.toBe(TRACKS.title.arrange);
+    expect(t.voice.pad).toBe('glass');
+    for (const k of [0, 0.5, 1]) {
+      const notes = planWindow(t, 0, 8, k);
+      expect(notes.length).toBeGreaterThan(0);
+      expect(notes.filter((n) => n.inst === 'bell').length, `bells at ${k}`).toBeGreaterThanOrEqual(16);   // two per bar, the bed
+      expect(notes.filter((n) => n.inst === 'wind').length, `wind at ${k}`).toBeGreaterThanOrEqual(8);     // one swell per bar
+      for (const n of notes) { expect(n.dur).toBeGreaterThan(0); expect(n.vel).toBeGreaterThan(0); }
+    }
+    // the wind is unpitched (never fed to the scale check) and renders as a noise voice
+    expect(planWindow(t, 0, 4, 1).filter((n) => n.inst === 'wind').every((n) => n.midi === 0)).toBe(true);
+    engine.setTrack('summit');
+    expect(engine.track).toBe('summit');
+    const ctx = ctxOf();
+    const before = sources(ctx).length;
+    const noiseBefore = nodesOf('bufferSource', ctx).length;
+    engine.tick();
+    expect(sources(ctx).length).toBeGreaterThan(before);
+    expect(nodesOf('bufferSource', ctx).length).toBeGreaterThan(noiseBefore);
+  });
+
+  it('stingSummit (P5-2): the fourth clear sting opens on a note none of the other three start on, keyed to the summit track', () => {
+    expect(BIOME_STING.summit).toBe('stingSummit');
+    expect(stingFor('summit')).toBe('stingSummit');
+    const names = ['stingTidepool', 'stingStormspire', 'stingVoidreef', 'stingSummit'] as const;
+    const openings = names.map((n) => firstFreq(() => engine.play(n, { vol: 1, pan: 0 })));
+    expect(new Set(openings.map((f) => Math.round(f))).size).toBe(4);
+    expect(openings[3]).toBeCloseTo(midi(78), 3);          // F#5
+    expect(voicesOf(() => engine.play('stingSummit', { vol: 1, pan: 0 }))).toBeGreaterThan(10);
+    // on the summit track a goal plays the summit sting, not the generic fanfare
+    engine.setTrack('summit');
+    const direct = voicesOf(() => engine.play('stingSummit', { vol: 1, pan: 0 }));
+    expect(voicesOf(() => engine.onEvent(sampleEvent('goal'), fakeSim() as never))).toBe(direct);
+    expect(firstFreq(() => engine.onEvent(sampleEvent('goal'), fakeSim() as never))).toBeCloseTo(midi(78), 3);
+  });
+
   it("the ending track is the title theme's variation: the same F lydian, slower, glass instead of saw, no drums; the engine plays it", () => {
     const t = TRACKS[ENDING_TRACK], title = TRACKS.title;
     expect(t).toBeDefined();
