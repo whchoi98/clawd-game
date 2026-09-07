@@ -7,9 +7,12 @@
  *   /healthz          root context — no rate limit, no request log
  *   /api/*            encapsulated context with @fastify/rate-limit (per IP;
  *                     POST /runs, POST /events, GET /ghost and /transfer carry
- *                     their own budgets), @fastify/compress (br/gzip over 1 KB —
+ *                     their own budgets — the /runs one is fleet-shared through
+ *                     the repo), @fastify/compress (br/gzip over 1 KB —
  *                     CloudFront does not compress under CachingDisabled),
- *                     Cache-Control: no-store on every response
+ *                     Cache-Control: no-store on every response unless the
+ *                     route set its own (GET /leaderboard is edge-cacheable,
+ *                     GET /me is the personal, never-cached half of it)
  *   /* (static)       root context, only when deps.staticDir is set
  *
  * Before returning, every empty story board is seeded with the developer's
@@ -27,6 +30,7 @@ import { apiHealthRoute, healthzRoute } from './routes/health.js';
 import { dailyRoute } from './routes/daily.js';
 import { RUN_BODY_LIMIT, runsRoute } from './routes/runs.js';
 import { leaderboardRoute } from './routes/leaderboard.js';
+import { meRoute } from './routes/me.js';
 import { ghostRoute } from './routes/ghost.js';
 import { eventsRoute } from './routes/events.js';
 import { transferRoute } from './routes/transfer.js';
@@ -91,12 +95,14 @@ export const buildApp: BuildApp = async (deps: AppDeps): Promise<FastifyInstance
     });
     await api.register(compress, { global: true, threshold: COMPRESS_THRESHOLD, encodings: ['br', 'gzip'] });
     api.addHook('onSend', async (_req, reply) => {
-      reply.header('cache-control', 'no-store');
+      // Default for everything the routes did not decide themselves (leaderboard sets an edge-cacheable policy).
+      if (!reply.hasHeader('cache-control')) reply.header('cache-control', 'no-store');
     });
     apiHealthRoute(api, deps);
     dailyRoute(api, deps);
     runsRoute(api, deps, playerLimiter);
     leaderboardRoute(api, deps);
+    meRoute(api, deps);
     ghostRoute(api, deps);
     eventsRoute(api, deps);
     transferRoute(api, deps);

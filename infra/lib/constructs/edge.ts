@@ -40,18 +40,28 @@ export const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
 ].join('; ');
 
+/** Longest the edge may keep one leaderboard page; the origin asks for s-maxage=5 (src/server/routes/leaderboard.ts). */
+export const LEADERBOARD_EDGE_MAX_TTL_SECONDS = 60;
+/** Path pattern of the one cacheable API behaviour; must precede `/api/*` in the behaviour order. */
+export const LEADERBOARD_PATH_PATTERN = '/api/leaderboard*';
+
 /**
  * CloudFront in front of the ALB. HTTP only to the origin (the SG and header
  * rule, not TLS, gate the ALB); HTTPS enforced for viewers.
  *
- *  - `/assets/*`  hashed immutable files → CACHING_OPTIMIZED
- *  - `/api/*`     never cached, all methods, full viewer request forwarded
- *  - default      index.html and friends: honour origin Cache-Control (min TTL 0)
+ *  - `/assets/*`           hashed immutable files → CACHING_OPTIMIZED
+ *  - `/api/leaderboard*`   the public top-N (P3-12): honours the origin's
+ *                          `s-maxage=5, stale-while-revalidate=30` up to 60 s,
+ *                          keyed by the full query string, gzip/br in the key
+ *                          so the edge may compress; GET/HEAD only
+ *  - `/api/*`              never cached, all methods, full viewer request forwarded
+ *  - default               index.html and friends: honour origin Cache-Control (min TTL 0)
  */
 export class Edge extends Construct {
   readonly distribution: cloudfront.Distribution;
   readonly responseHeadersPolicy: cloudfront.ResponseHeadersPolicy;
   readonly htmlCachePolicy: cloudfront.CachePolicy;
+  readonly leaderboardCachePolicy: cloudfront.CachePolicy;
 
   constructor(scope: Construct, id: string, props: EdgeProps) {
     super(scope, id);
@@ -98,6 +108,23 @@ export class Edge extends Construct {
       enableAcceptEncodingBrotli: true,
     });
 
+    // The leaderboard is the same JSON for every viewer, so it may live at the
+    // edge for the few seconds the origin allows: TTL 0/0/60 lets the origin's
+    // s-maxage decide (and nothing without one is kept), the query string is the
+    // key (mode, board, limit), no headers or cookies, and gzip/br in the key so
+    // CloudFront may cache and serve compressed variants.
+    this.leaderboardCachePolicy = new cloudfront.CachePolicy(this, 'LeaderboardCache', {
+      comment: 'Public leaderboard pages: honour origin s-maxage up to 60 s, key on the query string',
+      minTtl: cdk.Duration.seconds(0),
+      defaultTtl: cdk.Duration.seconds(0),
+      maxTtl: cdk.Duration.seconds(LEADERBOARD_EDGE_MAX_TTL_SECONDS),
+      queryStringBehavior: cloudfront.CacheQueryStringBehavior.all(),
+      headerBehavior: cloudfront.CacheHeaderBehavior.none(),
+      cookieBehavior: cloudfront.CacheCookieBehavior.none(),
+      enableAcceptEncodingGzip: true,
+      enableAcceptEncodingBrotli: true,
+    });
+
     const viewer = cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS;
 
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
@@ -117,6 +144,17 @@ export class Edge extends Construct {
           viewerProtocolPolicy: viewer,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          responseHeadersPolicy: this.responseHeadersPolicy,
+          compress: true,
+        },
+        // Behaviours are matched in this order: the leaderboard must come before the /api/* catch-all.
+        [LEADERBOARD_PATH_PATTERN]: {
+          origin,
+          viewerProtocolPolicy: viewer,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+          cachePolicy: this.leaderboardCachePolicy,
+          // Same viewer forwarding as the rest of the API (the server still rate-limits on CloudFront-Viewer-Address).
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_AND_CLOUDFRONT_2022,
           responseHeadersPolicy: this.responseHeadersPolicy,
           compress: true,
         },

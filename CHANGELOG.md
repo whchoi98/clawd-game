@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### Added
+- P3-12 스케일 절벽 제거: 리플레이 검증을 `worker_threads` 워커 1개 + 세마포어(동시 4 · 대기 16)로 옮기고 초과 시 `503 { error: 'busy' }` + `Retry-After: 3`(`src/server/verifyPool.ts`), `POST /api/runs` IP 예산(12/분)을 DynamoDB `RL#<ip>#<minute>` 카운터(TTL 120 s)로 플릿 공유, `GET /api/leaderboard`는 공개 top-N만 + `Cache-Control: public, s-maxage=5, stale-while-revalidate=30`과 CloudFront `/api/leaderboard*` 전용 캐시 behaviour(최대 60 s), 새 `GET /api/me?mode&board&playerId`(no-store, `rankCapped` 1,000), `BOARD#<mode>#<board>` 총원 카운터(`saveBest`가 유지, 없으면 COUNT 폴백), Fargate 태스크 512 CPU / 1024 MiB · 상한 10(`cdk.json` `taskCpu` · `taskMemory` · `maxTasks`) + ALB p95 > 0.8 s 스텝 스케일링(+2), 부하 스크립트 `tools/load/submit.mjs`, 런북 `docs/runbooks/scale.md`.
+
 ## [0.2.0] - 2026-09-06
 
 배포: https://clawd-game.whchoi.net/ (CloudFront E38DW91AO2DWTB, ECS 롤아웃 완료, 라이브 QA 통과 — 배포 점검 13/13, 스모크 15/15, 모바일 40/40, 기록 제출 E2E).

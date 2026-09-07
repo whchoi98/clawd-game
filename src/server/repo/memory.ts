@@ -5,11 +5,15 @@
  * `previousRunId` is not the current best; the same replay hash may appear on
  * a board once (DuplicateReplayError names the run that holds it); runs stay
  * readable by id even after they leave the board. Transfer snapshots, admin
- * delist / rename and the 90-day ttl of a replaced story run are mirrored too.
+ * delist / rename and the 90-day ttl of a replaced story run are mirrored too,
+ * as are the P3-12 extras: `boardTotal` (the board length), `rankBounded`
+ * (a capped strictly-better count) and `hitRateCounter` — which here is the
+ * in-process limiter a single task always had.
  */
 import type { Mode } from '../../shared/protocol.js';
 import { boardKey as storedBoard } from '../boards.js';
 import { DuplicateReplayError, SaveConflictError } from './errors.js';
+import type { BoardTotals, BoundedRank, RankBounded, RateCounters } from './extras.js';
 import { replacedRunTtl } from './ttl.js';
 import type { Repo, StoredRun } from './types.js';
 
@@ -30,13 +34,14 @@ export interface MemoryRepoOptions {
   now?: () => number;
 }
 
-export class MemoryRepo implements Repo {
+export class MemoryRepo implements Repo, BoardTotals, RankBounded, RateCounters {
   private readonly runs = new Map<string, StoredRun>();
   private readonly boards = new Map<string, StoredRun[]>();
   private readonly bests = new Map<string, StoredRun>();
   private readonly hashes = new Map<string, { runId: string; playerId: string }>();
   private readonly snapshots = new Map<string, { code: string; blob: string; ttl: number }>();
   private readonly codes = new Map<string, { playerId: string; ttl: number }>();
+  private readonly rateCounters = new Map<string, { n: number; ttl: number }>();
   private readonly now: () => number;
 
   constructor(opts: MemoryRepoOptions = {}) {
@@ -87,6 +92,31 @@ export class MemoryRepo implements Repo {
 
   async getRun(runId: string): Promise<StoredRun | null> {
     return this.runs.get(runId) ?? null;
+  }
+
+  // ---------------------------------------------------------------- P3-12 extras
+  async boardTotal(mode: Mode, board: string): Promise<number> {
+    return (this.boards.get(boardKey(mode, board)) ?? []).length;
+  }
+
+  async rankBounded(mode: Mode, board: string, score: number, cap: number): Promise<BoundedRank> {
+    const { better } = await this.rankOf(mode, board, score);
+    return better > cap ? { better: cap, capped: true } : { better, capped: false };
+  }
+
+  /**
+   * Per-process counter with the same fixed-minute semantics as the DynamoDB
+   * item. Expiry follows the caller's clock (the minute it passes), not this
+   * repo's, so a limiter on an injected clock sees consistent counts.
+   */
+  async hitRateCounter(ip: string, minute: number, ttl: number): Promise<number> {
+    const nowSec = minute * 60;
+    for (const [k, v] of this.rateCounters) if (v.ttl <= nowSec) this.rateCounters.delete(k);
+    const key = `${ip}#${minute}`;
+    const cur = this.rateCounters.get(key);
+    const n = (cur?.n ?? 0) + 1;
+    this.rateCounters.set(key, { n, ttl: cur?.ttl ?? ttl });
+    return n;
   }
 
   /** Seed a board that has no entries yet; false (and nothing written) when it already has any. */
@@ -150,5 +180,6 @@ export class MemoryRepo implements Repo {
     this.hashes.clear();
     this.snapshots.clear();
     this.codes.clear();
+    this.rateCounters.clear();
   }
 }
