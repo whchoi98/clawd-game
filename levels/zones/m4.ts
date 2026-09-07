@@ -10,6 +10,14 @@
  * and a two-crystal chain across the well to the summit deck at the top left,
  * the relic on a spire over the apex.
  *
+ * Rev 1 (P5-5): a bubble chain of three ('b') crosses the well under the
+ * crystal chain — five rows under it at the first two rungs, each crystal a
+ * column left of the rung below it — the low road: step off the apex ledge onto the
+ * first (or hold {stomp}), each launch carries you three tiles left and three
+ * rows up to the next, the last one lands on the summit deck. The crystal
+ * route is untouched (its dashes pass well above the bubbles); a missed bubble
+ * is a long fall onto shelf 2 or 3 — bare rock — and the climb again.
+ *
  * Every landing yard is bare rock: the summit has no spikes at all. Shards are
  * side routes: a dash-up perch over the base, the wall side of the shaft above
  * its exit, the air beside the lift's top, the far side of every column top
@@ -76,8 +84,14 @@ m.ent('D', 17, 6);
 m.ent('D', 14, 3);
 m.ground(2, 11, 3, 4);
 m.ent('G', 6, 2);
+//     the bubble chain (P5-5): the low road across the well, three left and three up per hop, the first two tiles off
+//     the apex ledge's face, the last right against the deck's; the crystals hang five rows over the first two rungs (a
+//     column left of each) and the last rung sits two rows under and two columns left of the upper crystal
+m.ent('b', 18, 11);
+m.ent('b', 15, 8);
+m.ent('b', 12, 5);
 
 export const m4 = m.def({
-  id: 'm4', name: '정점 승강', en: 'SUMMIT ASCENT', biome: 'summit', par: 130, seed: 271,
-  hint: '탑의 끝이다 — 통로는 벽에 붙은 순간 {jump}, 상승기류는 꼭대기에서 옆으로, 마지막 수정 다리는 {dash} 대시로 건넌다',
+  id: 'm4', name: '정점 승강', en: 'SUMMIT ASCENT', biome: 'summit', par: 130, seed: 271, rev: 1,
+  hint: '탑의 끝이다 — 통로는 벽에 붙은 순간 {jump}, 상승기류는 꼭대기에서 옆으로, 마지막 다리는 {dash} 수정으로 건너거나 거품을 {stomp} 밟아 건넌다',
 });

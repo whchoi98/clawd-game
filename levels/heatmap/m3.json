@@ -2,7 +2,7 @@
   "levelId": "m3",
   "name": "바람의 첨탑",
   "sim": 4,
-  "rev": 0,
+  "rev": 1,
   "seed": 251,
   "par": 110,
   "episodes": 300,

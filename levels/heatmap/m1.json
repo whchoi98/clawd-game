@@ -2,7 +2,7 @@
   "levelId": "m1",
   "name": "얼음 회랑",
   "sim": 4,
-  "rev": 0,
+  "rev": 1,
   "seed": 211,
   "par": 80,
   "episodes": 300,
@@ -14,17 +14,17 @@
     "giveUpSec": 90,
     "giveUpDeaths": 25
   },
-  "clears": 273,
-  "clearRate": 0.91,
-  "gaveUp": 27,
-  "deaths": 458,
-  "deathsPerEpisode": 1.5266666666666666,
-  "medianClearSec": 18.82,
+  "clears": 274,
+  "clearRate": 0.9133333333333333,
+  "gaveUp": 26,
+  "deaths": 422,
+  "deathsPerEpisode": 1.4066666666666667,
+  "medianClearSec": 18.44,
   "causes": {
-    "saw": 308,
-    "foe": 86,
-    "spike": 18,
-    "pit": 46
+    "saw": 292,
+    "foe": 84,
+    "pit": 45,
+    "spike": 1
   },
   "checkpoints": [
     {
@@ -52,30 +52,22 @@
       "index": 3,
       "tx": 90,
       "ty": 19,
-      "reached": 149,
-      "rate": 0.49666666666666665
+      "reached": 158,
+      "rate": 0.5266666666666666
     }
   ],
   "cells": [
     {
       "tx": 67,
       "ty": 6,
-      "deaths": 61,
+      "deaths": 59,
       "causes": {
-        "saw": 61
+        "saw": 59
       }
     },
     {
       "tx": 68,
       "ty": 7,
-      "deaths": 51,
-      "causes": {
-        "saw": 51
-      }
-    },
-    {
-      "tx": 68,
-      "ty": 6,
       "deaths": 49,
       "causes": {
         "saw": 49
@@ -84,70 +76,70 @@
     {
       "tx": 69,
       "ty": 7,
-      "deaths": 48,
+      "deaths": 47,
       "causes": {
-        "saw": 48
+        "saw": 47
+      }
+    },
+    {
+      "tx": 68,
+      "ty": 6,
+      "deaths": 46,
+      "causes": {
+        "saw": 46
       }
     },
     {
       "tx": 106,
       "ty": 25,
-      "deaths": 37,
+      "deaths": 36,
       "causes": {
-        "pit": 37
-      }
-    },
-    {
-      "tx": 67,
-      "ty": 7,
-      "deaths": 34,
-      "causes": {
-        "saw": 34
+        "pit": 36
       }
     },
     {
       "tx": 81,
       "ty": 4,
-      "deaths": 34,
+      "deaths": 33,
       "causes": {
-        "foe": 34
+        "foe": 33
+      }
+    },
+    {
+      "tx": 67,
+      "ty": 7,
+      "deaths": 32,
+      "causes": {
+        "saw": 32
       }
     },
     {
       "tx": 70,
       "ty": 6,
-      "deaths": 27,
+      "deaths": 25,
       "causes": {
-        "saw": 27
-      }
-    },
-    {
-      "tx": 85,
-      "ty": 20,
-      "deaths": 17,
-      "causes": {
-        "spike": 17
+        "saw": 25
       }
     },
     {
       "tx": 66,
       "ty": 6,
-      "deaths": 16,
+      "deaths": 14,
       "causes": {
-        "saw": 16
-      }
-    },
-    {
-      "tx": 81,
-      "ty": 5,
-      "deaths": 11,
-      "causes": {
-        "foe": 11
+        "saw": 14
       }
     },
     {
       "tx": 81,
       "ty": 3,
+      "deaths": 10,
+      "causes": {
+        "foe": 10
+      }
+    },
+    {
+      "tx": 81,
+      "ty": 5,
       "deaths": 10,
       "causes": {
         "foe": 10
@@ -194,14 +186,6 @@
       }
     },
     {
-      "tx": 70,
-      "ty": 7,
-      "deaths": 5,
-      "causes": {
-        "saw": 5
-      }
-    },
-    {
       "tx": 82,
       "ty": 4,
       "deaths": 5,
@@ -215,6 +199,14 @@
       "deaths": 5,
       "causes": {
         "pit": 5
+      }
+    },
+    {
+      "tx": 70,
+      "ty": 7,
+      "deaths": 4,
+      "causes": {
+        "saw": 4
       }
     },
     {
@@ -234,14 +226,6 @@
       }
     },
     {
-      "tx": 65,
-      "ty": 6,
-      "deaths": 1,
-      "causes": {
-        "saw": 1
-      }
-    },
-    {
       "tx": 80,
       "ty": 5,
       "deaths": 1,
@@ -250,19 +234,19 @@
       }
     },
     {
-      "tx": 81,
-      "ty": 20,
-      "deaths": 1,
-      "causes": {
-        "spike": 1
-      }
-    },
-    {
       "tx": 83,
       "ty": 3,
       "deaths": 1,
       "causes": {
         "foe": 1
+      }
+    },
+    {
+      "tx": 85,
+      "ty": 20,
+      "deaths": 1,
+      "causes": {
+        "spike": 1
       }
     },
     {
@@ -276,43 +260,35 @@
   ],
   "hotspots": [
     {
-      "x0": 65,
+      "x0": 66,
       "x1": 70,
       "ty": 6,
-      "deaths": 308,
-      "share": 0.6724890829694323,
+      "deaths": 292,
+      "share": 0.6919431279620853,
       "cause": "saw"
     },
     {
       "x0": 80,
       "x1": 83,
       "ty": 4,
-      "deaths": 69,
-      "share": 0.15065502183406113,
+      "deaths": 66,
+      "share": 0.15639810426540285,
       "cause": "foe"
     },
     {
       "x0": 105,
       "x1": 107,
       "ty": 25,
-      "deaths": 46,
-      "share": 0.10043668122270742,
+      "deaths": 45,
+      "share": 0.1066350710900474,
       "cause": "pit"
-    },
-    {
-      "x0": 85,
-      "x1": 85,
-      "ty": 20,
-      "deaths": 17,
-      "share": 0.03711790393013101,
-      "cause": "spike"
     },
     {
       "x0": 93,
       "x1": 94,
       "ty": 19,
       "deaths": 10,
-      "share": 0.021834061135371178,
+      "share": 0.023696682464454975,
       "cause": "foe"
     },
     {
@@ -320,7 +296,15 @@
       "x1": 58,
       "ty": 18,
       "deaths": 5,
-      "share": 0.010917030567685589,
+      "share": 0.011848341232227487,
+      "cause": "foe"
+    },
+    {
+      "x0": 52,
+      "x1": 52,
+      "ty": 18,
+      "deaths": 3,
+      "share": 0.0071090047393364926,
       "cause": "foe"
     }
   ]

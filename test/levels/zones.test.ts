@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CHECKPOINT_MAX_GAP, CHECKPOINT_PAR_SEC, SHARD_MAX, SHARD_MIN, ZONE_SHAPES, census, checkpointsFor, climbOrder, isVerticalZone, validate,
-  validateZone, zoneRules, zoneShape,
+  BUBBLE_P_CLEARANCE, CHECKPOINT_MAX_GAP, CHECKPOINT_PAR_SEC, SHARD_MAX, SHARD_MIN, ZONE_SHAPES, census, checkpointsFor, climbOrder,
+  isVerticalZone, validate, validateZone, zoneRules, zoneShape,
 } from '../../levels/dsl.js';
 import { ZONES } from '../../levels/build.js';
+import { PLAYER_W } from '../../src/sim/config.js';
 import { Level } from '../../src/sim/level.js';
+import { FOE_WAKE_GAP } from '../../src/sim/sim.js';
 import type { LevelDef } from '../../src/sim/types.js';
 import { hasRawKeyName, hintFor } from '../../src/client/ui/hints.js';
 
@@ -20,9 +22,13 @@ const BIOME: Record<string, string> = {
 };
 /** The vertical zone of each tier (P2-10 / P5-1): a 44-wide tower climbed bottom to top. */
 const VERTICAL = ['t4', 's4', 'v4', 'm4'];
-/** The fourth tier (P5-1): shipped fresh at geometry revision 0. */
+/** The fourth tier (P5-1), shipped fresh at geometry revision 0; m1 · m3 · m4 went to rev 1 with the bubbles (P5-5). */
 const SUMMIT = ['m1', 'm2', 'm3', 'm4'];
+/** Zones still at geometry revision 0: the three older vertical zones and m2 (the summit bubbles skipped it). */
+const REV0 = ['t4', 's4', 'v4', 'm2'];
 const HANGUL = /[가-힣]/;
+/** Grid characters that are terrain (anything a bubble could not be stomped through). */
+const TERRAIN = '#=X~W^V{}%&';
 
 const byId: Record<string, LevelDef> = Object.fromEntries(ZONES.map((z) => [z.id, z]));
 
@@ -31,6 +37,32 @@ function markers(def: LevelDef): { ch: string; x: number; y: number }[] {
   const out: { ch: string; x: number; y: number }[] = [];
   def.rows.forEach((r, y) => { for (let x = 0; x < r.length; x++) if ('PCG'.includes(r[x])) out.push({ ch: r[x], x, y }); });
   return out;
+}
+
+/** Every bubble ('b') cell, in scan order (top row first). */
+function bubbles(def: LevelDef): [number, number][] {
+  const out: [number, number][] = [];
+  def.rows.forEach((r, y) => { for (let x = 0; x < r.length; x++) if (r[x] === 'b') out.push([x, y]); });
+  return out;
+}
+
+/**
+ * The bubble placements of a zone (P5-5), read straight off the grid: exactly `expected` (any order), each with an
+ * open tile or a spawn (never terrain) directly above so it can be stomped, and each more than BUBBLE_P_CLEARANCE
+ * tiles (Chebyshev) from P so none sits in the spawn frame.
+ */
+function expectBubbles(def: LevelDef, expected: [number, number][]): void {
+  const found = bubbles(def);
+  expect(found).toHaveLength(expected.length);
+  const key = (c: [number, number]) => `${c[0]},${c[1]}`;
+  expect(found.map(key).sort()).toEqual(expected.map(key).sort());
+  const p = markers(def).find((m) => m.ch === 'P')!;
+  for (const [x, y] of found) {
+    expect(y, `${def.id}: b at (${x},${y}) on the top row`).toBeGreaterThan(0);
+    const above = def.rows[y - 1][x];
+    expect(TERRAIN.includes(above), `${def.id}: b at (${x},${y}) has '${above}' above it`).toBe(false);
+    expect(Math.max(Math.abs(x - p.x), Math.abs(y - p.y)), `${def.id}: b at (${x},${y}) is inside the spawn frame of P at (${p.x},${p.y})`).toBeGreaterThan(BUBBLE_P_CLEARANCE);
+  }
 }
 
 /** Columns of every P / C / G marker, left to right (the horizontal-zone reading). */
@@ -132,11 +164,14 @@ describe('the sixteen zones', () => {
     expect(byId.m4.hint).toMatch(/\{dash\}/);
   });
 
-  it('the nine original zones are at geometry revision 1 (P2-8 tune-up); the vertical zones and the summit tier ship fresh at rev 0', () => {
-    for (const z of ZONES) {
-      if (VERTICAL.includes(z.id) || SUMMIT.includes(z.id)) expect(z.rev ?? 0, z.id).toBe(0);
-      else expect(z.rev, z.id).toBe(1);
-    }
+  it('geometry revisions: the nine original zones (P2-8 tune-up) and m1 · m3 · m4 (P5-5 bubbles) are at rev 1; t4 · s4 · v4 and m2 are still at rev 0', () => {
+    for (const z of ZONES) expect(z.rev ?? 0, z.id).toBe(REV0.includes(z.id) ? 0 : 1);
+    expect(byId.m1.rev).toBe(1);
+    expect(byId.m3.rev).toBe(1);
+    expect(byId.m4.rev).toBe(1);
+    expect(byId.m2.rev).toBeUndefined();
+    // no bubble anywhere but the three rev-1 summit zones
+    for (const z of ZONES) if (!['m1', 'm3', 'm4'].includes(z.id)) expect(bubbles(z), z.id).toEqual([]);
   });
 
   for (const id of ORDER) {
@@ -333,6 +368,11 @@ describe('the sixteen zones', () => {
       expect(m1.rows[F - 1].slice(73, 89)).toBe('^'.repeat(16));
       for (const ch of ['w', 's', 'f']) expect(flat, `m1 lacks '${ch}'`).toContain(ch);
       expect(flat).not.toMatch(/[%&kzmMt]/);
+      // rev 1 (P5-5): two bubble perches over the spike bed, one in each shelf gap, a shard six rows over each
+      expectBubbles(m1, [[79, F - 5], [84, F - 3]]);
+      expect(m1.rows[F - 11][80]).toBe('o');
+      expect(m1.rows[F - 9][84]).toBe('o');
+      for (const [x, y] of bubbles(m1)) expect(m1.rows[F - 1][x], `spikes under the bubble at (${x},${y})`).toBe('^');
     });
 
     it('m2 crosses four crumble spans on rock piers, rides a horizontal and a vertical platform and fields three turrets', () => {
@@ -368,6 +408,37 @@ describe('the sixteen zones', () => {
       // the roof runs from the second column's lintel to the corridor exit, so the gates are the only way through
       expect(m3.rows[0].slice(31, 81)).toBe('#'.repeat(50));
       for (let y = 1; y <= 3; y++) expect(m3.rows[y].slice(31, 35), `lintel row ${y}`).toBe('####');
+      // the second column's well is the rev 0 well: three spike columns (32..34) under the lintel, open air from row 4 down to
+      // the spikes on row 18, shelf 2 starting at column 35 (top row 7) — and no bubble hangs in it (P5-5 fix round 1: every
+      // rung position inside met the arc of a plain jump off shelf 1 lifted by the column)
+      for (let y = 4; y <= 17; y++) expect(m3.rows[y].slice(31, 35), `well row ${y}`).toBe('....');
+      expect(m3.rows[18].slice(31, 36)).toBe('z^^^#');
+      expect(m3.rows[19].slice(31, 36)).toBe('#####');
+      for (let y = 7; y <= 18; y++) expect(m3.rows[y][35], `shelf 2 face at row ${y}`).toBe('#');
+      expect(m3.rows[6][35]).toBe('.');
+      expect(m3.rows[16].slice(17, 31)).toBe('#'.repeat(14));   // shelf 1 ends at column 30
+      // the bubbles (P5-5): the yard perch with its shard five rows up, and the shard stair up the chaser room's left wall —
+      // (81,23) under the corridor exit and (83,20), two columns and three rows apart, the shard five rows over the upper
+      // rung; twelve shards in all
+      const F = 26;
+      expectBubbles(m3, [[10, F - 6], [81, F - 3], [83, F - 6]]);
+      expect(m3.rows[F - 11][10]).toBe('o');
+      expect(m3.rows[F - 11][83]).toBe('o');
+      expect(census(m3).shards).toBe(12);
+      const stair = bubbles(m3).filter(([x]) => x >= 81).sort((a, b) => b[1] - a[1]);
+      expect(stair).toEqual([[81, 23], [83, 20]]);
+      for (let i = 1; i < stair.length; i++) {
+        expect(Math.abs(stair[i][0] - stair[i - 1][0]), 'rungs two columns apart').toBe(2);
+        expect(stair[i - 1][1] - stair[i][1], 'rungs three rows apart').toBe(3);
+      }
+      for (const [x, y] of stair) {
+        // only air (or the stair's shard) between the corridor-exit row and the rung: a drop from the exit meets it from above,
+        // its launch meets nothing but the shard
+        for (let yy = 7; yy < y; yy++) if (m3.rows[yy][x] !== 'o') expect(m3.rows[yy][x], `open air over the rung at (${x},${y}), row ${yy}`).toBe('.');
+        // the rung's bob envelope (centre + half bubble + bob amplitude) ends above a walker's head on the standing row 25
+        expect(y * 16 + 8 + 6 + 10, `the rung at (${x},${y}) reaches a walker on the room floor`).toBeLessThan(25 * 16 + 1);
+        expect(m3.rows[26][x], `room floor under the rung at (${x},${y})`).toBe('#');
+      }
       for (let y = 1; y <= 6; y++) {
         expect(m3.rows[y].slice(57, 59), `gate 1 row ${y}`).toBe('%%');
         expect(m3.rows[y].slice(67, 69), `gate 2 row ${y}`).toBe('&&');
@@ -386,6 +457,13 @@ describe('the sixteen zones', () => {
       expect(m3.rows[26].slice(81, 99)).toBe('#'.repeat(18));
       expect((25 - chaser.ty) * 16).toBeGreaterThan(130);
       expect(Math.hypot((97 - chaser.tx) * 16, (17 - chaser.ty) * 16)).toBeLessThan(130);
+      // the wake-range guard (P5-5 fix round 1): the chaser wakes when the gap between its 15-wide box and the player's box is
+      // within FOE_WAKE_GAP on both axes, and a rider on the stair is inside its vertical range — so every rung keeps the
+      // horizontal box gap of a player centred on it above FOE_WAKE_GAP (ten tiles or more of centre distance; nine is not enough)
+      for (const [x, y] of stair) {
+        expect(Math.abs(x - chaser.tx), `stair rung (${x},${y}) too close to the chaser`).toBeGreaterThanOrEqual(10);
+        expect(Math.abs(x - chaser.tx) * 16 - 15 / 2 - PLAYER_W / 2, `stair rung (${x},${y}) inside the chaser's horizontal wake range`).toBeGreaterThan(FOE_WAKE_GAP);
+      }
     });
 
     it('m4 is the summit: a shaft with a spring and two rest ledges, one lift, three updrafts, a two-crystal chain, no spikes, the goal on the top deck', () => {
@@ -405,6 +483,9 @@ describe('the sixteen zones', () => {
       }
       const lift = lv.spawns.find((s) => s.ch === 'M')!;
       expect(lv.patrolSpan(lift.tx, lift.ty, 0, 1, 8)).toBe(8 * 16);
+      // rev 1 (P5-5): the bubble chain across the well, three left and three up per hop, under the crystal chain
+      expectBubbles(m4, [[18, 11], [15, 8], [12, 5]]);
+      for (const z of lv.spawns.filter((s) => s.ch === 'D')) expect(z.ty, `crystal at (${z.tx},${z.ty}) hangs above the bubbles`).toBeLessThan(8);
       // the goal deck is the highest floor in the tower and the goal stands on it
       const route = climbOrder(markers(m4));
       const goal = route[route.length - 1];
