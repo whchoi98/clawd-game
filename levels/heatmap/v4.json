@@ -1,0 +1,84 @@
+{
+  "levelId": "v4",
+  "name": "별빛 우물",
+  "sim": 3,
+  "rev": 0,
+  "seed": 197,
+  "par": 120,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 0,
+  "clearRate": 0,
+  "gaveUp": 300,
+  "deaths": 0,
+  "deathsPerEpisode": 0,
+  "medianClearSec": null,
+  "causes": {},
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 8,
+      "ty": 54,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 1,
+      "tx": 9,
+      "ty": 18,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 2,
+      "tx": 12,
+      "ty": 41,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 3,
+      "tx": 16,
+      "ty": 28,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 4,
+      "tx": 18,
+      "ty": 14,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 5,
+      "tx": 20,
+      "ty": 41,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 6,
+      "tx": 25,
+      "ty": 54,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 7,
+      "tx": 34,
+      "ty": 14,
+      "reached": 0,
+      "rate": 0
+    }
+  ],
+  "cells": [],
+  "hotspots": []
+}

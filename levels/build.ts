@@ -1,6 +1,6 @@
 /**
  * Level builder. Validates every hand-authored zone (geometry rules plus the
- * zone pacing rules: checkpoint density and spacing, 8–12 shards) and writes
+ * zone pacing rules: size envelope, checkpoint density and spacing, 8–12 shards) and writes
  * src/sim/levels.generated.ts — a dependency-free data module the sim, the
  * client and the server all import. Output is a pure function of the zone
  * sources, so rebuilding without changes yields a byte-identical file.
@@ -39,15 +39,18 @@ import { CHUNK_SOURCES } from './chunks/index.js';
 import { t1 } from './zones/t1.js';
 import { t2 } from './zones/t2.js';
 import { t3 } from './zones/t3.js';
+import { t4 } from './zones/t4.js';
 import { s1 } from './zones/s1.js';
 import { s2 } from './zones/s2.js';
 import { s3 } from './zones/s3.js';
+import { s4 } from './zones/s4.js';
 import { v1 } from './zones/v1.js';
 import { v2 } from './zones/v2.js';
 import { v3 } from './zones/v3.js';
+import { v4 } from './zones/v4.js';
 
-/** Tower order: three tiers of three zones. */
-export const ZONES: LevelDef[] = [t1, t2, t3, s1, s2, s3, v1, v2, v3];
+/** Tower order: three tiers of four zones — three side-scrolling rooms and one vertical climb (t4 · s4 · v4, P2-10) each. */
+export const ZONES: LevelDef[] = [t1, t2, t3, t4, s1, s2, s3, s4, v1, v2, v3, v4];
 
 export const GENERATED_PATH = fileURLToPath(new URL('../src/sim/levels.generated.ts', import.meta.url));
 export const ECHOES_PATH = fileURLToPath(new URL('../src/sim/echoes.generated.ts', import.meta.url));

@@ -35,7 +35,7 @@ const SW_READY_TIMEOUT_MS = 20_000;
 /** Screenshot of the title screen served entirely from the worker's cache. */
 const OFFLINE_SHOT = '04-offline.png';
 const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), 'out');
-const ZONES = ['t1', 't2', 't3', 's1', 's2', 's3', 'v1', 'v2', 'v3'] as const;
+const ZONES = ['t1', 't2', 't3', 't4', 's1', 's2', 's3', 's4', 'v1', 'v2', 'v3', 'v4'] as const;
 const STEP_TIMEOUT_MS = 30_000;
 /** Distinct colours required among the 48 sampled canvas pixels. */
 const MIN_DISTINCT_COLOURS = 4;

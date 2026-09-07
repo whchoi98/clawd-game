@@ -19,20 +19,35 @@ const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > 
 export const CAM_DEADZONE = 46;
 /** How far above the feet the view centre rests. */
 export const CAM_LIFT = 26;
+/**
+ * Extra lift on a vertical zone (a level taller than it is wide — the towers of
+ * P2-10 and the daily tower): the next ledge is what the climb is about, so a
+ * grounded player sees more of what is above than of what was climbed. Taken
+ * on ground contact and held through the jump, so it never bobs mid-air.
+ */
+export const CAM_VERTICAL_LEAD = 18;
 
 export interface LevelBox { pxW: number; pxH: number }
+
+/** True for a level box taller than it is wide (rows > cols: square tiles). */
+export function isVerticalLevel(level: LevelBox): boolean {
+  return level.pxH > level.pxW;
+}
 
 export class Camera {
   x = 0;
   y = 0;
   /** The y the vertical follow is locked to (feet at the last support). */
   groundY = 0;
+  /** Upward lead added to CAM_LIFT while the last support was on a vertical level (0 elsewhere). */
+  lead = 0;
 
   /** Snap to the player (new level, respawn, teleport). */
   reset(p: PlayerState): void {
     this.x = p.x + p.w / 2;
     this.y = p.y - 12;
     this.groundY = this.y;
+    this.lead = 0;
   }
 
   update(dt: number, p: PlayerState, level: LevelBox, viewW: number, viewH: number, zoom = 1): void {
@@ -44,11 +59,14 @@ export class Camera {
     this.x = damp(this.x, px + lead, 0.16, dt);
 
     // vertical: only chase the feet when supported, else use a wide dead zone
-    if (p.grounded || p.dead) this.groundY = py;
+    if (p.grounded || p.dead) {
+      this.groundY = py;
+      this.lead = isVerticalLevel(level) ? CAM_VERTICAL_LEAD : 0;
+    }
     const dz = CAM_DEADZONE;
     if (py < this.groundY - dz) this.groundY = py + dz;
     else if (py > this.groundY + dz * 1.5) this.groundY = py - dz * 1.5;
-    const ty = this.groundY - CAM_LIFT + (p.stomping ? 18 : 0);
+    const ty = this.groundY - CAM_LIFT - this.lead + (p.stomping ? 18 : 0);
     this.y = damp(this.y, ty, p.grounded ? 0.2 : 0.34, dt);
 
     this.clamp(level, viewW, viewH, zoom);

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_PIT_TILES, SHAFT_WIDTH_TILES } from '../../src/sim/legend.js';
 import {
-  CHECKPOINT_MAX_GAP, CHECKPOINT_PAR_SEC, SHARD_MAX, SHARD_MIN, assertValid, census, checkpointsFor, dumpAt, room, validate, validateZone, zoneRules,
+  CHECKPOINT_MAX_GAP, CHECKPOINT_PAR_SEC, SHARD_MAX, SHARD_MIN, ZONE_SHAPES, assertValid, census, checkpointsFor, climbOrder, dumpAt, isVerticalZone,
+  room, validate, validateZone, zoneRules, zoneShape, zoneSizeProblem,
   type ZoneMeta,
 } from '../../levels/dsl.js';
 import type { LevelDef } from '../../src/sim/types.js';
@@ -332,7 +333,7 @@ describe('Room marks (P2-7)', () => {
 describe('zone pacing rules (P2-8): validateZone = validate + zoneRules', () => {
   /** A 100-wide zone: flat floor, P at 3, G at 96, `shards` shards on the floor, checkpoints at the given columns. */
   function zone(checkpoints: number[], shards = 10, par = 45) {
-    const m = room(100, 14).ground(0, 99, 10).ent('P', 3, 9).ent('G', 96, 9);
+    const m = room(100, 16).ground(0, 99, 10).ent('P', 3, 9).ent('G', 96, 9);
     for (const x of checkpoints) m.ent('C', x, 9);
     for (let i = 0; i < shards; i++) m.ent('o', 5 + i * 2, 7);
     return m.def({ ...META, par });
@@ -388,5 +389,99 @@ describe('zone pacing rules (P2-8): validateZone = validate + zoneRules', () => 
     // test rooms and chunk rooms keep using validate(): a one-shard flat room is still sound
     expect(validate(flatRoom().def(META))).toEqual([]);
     expect(zoneRules(flatRoom().def(META)).join('\n')).toMatch(/0 checkpoint\(s\)/);
+  });
+});
+
+describe('vertical zones (P2-10): shape envelope, climb-order spacing, tower frame', () => {
+  /** A 44 x 64 tower: base, P at the bottom, G on a summit deck, ledges carrying the checkpoints given as [x, y] standing cells. */
+  function towerZone(checkpoints: [number, number][], shards = 10, par = 90) {
+    const m = room(44, 64).tower();
+    m.ent('P', 21, 59);
+    m.ground(2, 20, 6, 2).ent('G', 6, 5);
+    for (const [x, y] of checkpoints) m.plat(x - 1, x + 1, y + 1).ent('C', x, y);
+    for (let i = 0; i < shards; i++) m.ent('o', 4 + i * 3, 58);
+    return m.def({ ...META, par });
+  }
+
+  it('ZONE_SHAPES names the two envelopes and zoneShape reads taller-than-wide as vertical', () => {
+    expect(ZONE_SHAPES).toEqual({ horizontal: { cols: [60, 120], rows: [16, 30] }, vertical: { cols: [36, 48], rows: [60, 100] } });
+    expect(zoneShape(room(100, 16).def(META))).toBe('horizontal');
+    expect(zoneShape(room(44, 64).def(META))).toBe('vertical');
+    expect(zoneShape(room(40, 40).def(META))).toBe('horizontal');     // square reads as a room
+    expect(isVerticalZone(room(44, 64).def(META))).toBe(true);
+    expect(isVerticalZone(flatRoom().def(META))).toBe(false);
+  });
+
+  it('zoneSizeProblem accepts both envelopes at their limits and refuses everything between and beyond', () => {
+    for (const [w, h] of [[60, 16], [120, 30], [100, 20], [36, 60], [48, 100], [44, 72]]) {
+      expect(zoneSizeProblem(room(w, h).def(META)), `${w}x${h}`).toBeNull();
+    }
+    for (const [w, h] of [[59, 16], [121, 30], [100, 15], [100, 31], [44, 59], [35, 64], [49, 64], [44, 101], [40, 40], [50, 50]]) {
+      const err = zoneSizeProblem(room(w, h).def(META));
+      expect(err, `${w}x${h}`).toMatch(new RegExp(`test: ${w}x${h} is neither a horizontal zone \\(60–120 x 16–30\\) nor a vertical one \\(36–48 x 60–100\\)`));
+    }
+    // the size rule is one of the zone rules, so validateZone reports it; validate() alone does not
+    const small = flatRoom().def(META);
+    expect(validate(small)).toEqual([]);
+    expect(zoneRules(small).join('\n')).toMatch(/40x14 is neither/);
+  });
+
+  it('climbOrder walks the markers bottom to top, and along a shared row from the nearest to the marker before', () => {
+    const P = { ch: 'P', x: 21, y: 59 }, G = { ch: 'G', x: 6, y: 5 };
+    const a = { ch: 'C', x: 4, y: 48 }, b = { ch: 'C', x: 29, y: 43 }, c = { ch: 'C', x: 39, y: 30 };
+    const dLeft = { ch: 'C', x: 10, y: 25 }, dRight = { ch: 'C', x: 31, y: 25 }, e = { ch: 'C', x: 4, y: 12 };
+    const order = climbOrder([G, dLeft, e, P, c, a, dRight, b]);
+    // rows 59 → 48 → 43 → 30 → 25 (the right bank first, since the climb arrived at x 39) → 25 → 12 → 5
+    expect(order).toEqual([P, a, b, c, dRight, dLeft, e, G]);
+    // the same shelf reached from the left is walked left to right
+    const fromLeft = climbOrder([dLeft, dRight, { ch: 'C', x: 4, y: 30 }]);
+    expect(fromLeft.map((m) => m.x)).toEqual([4, 10, 31]);
+    expect(climbOrder([])).toEqual([]);
+  });
+
+  it('a vertical zone is judged along the climb: Manhattan distance between neighbours, 32 at most, with the far marker dumped', () => {
+    // P (21,59) → C (30,46): 9 + 13 = 22 · → C (10,34): 20 + 12 = 32 · → C (30,20): 20 + 14 = 34 ✗ · → G (6,5): 24 + 15 = 39 ✗
+    const errs = zoneRules(towerZone([[30, 46], [10, 34], [30, 20], [8, 10]], 10, 90));
+    expect(errs.join('\n')).toMatch(/C at \(10,34\) and C at \(30,20\) are 34 tiles apart along the climb \(max 32\)\ncell \(30, 20\)/);
+    expect(errs.join('\n')).not.toMatch(/columns apart/);
+    // spaced within 32 along the zig-zag it passes, though two of its checkpoints share a column with P (columns never mattered here)
+    const ok = towerZone([[30, 46], [10, 34], [21, 22], [8, 10], [21, 47]], 10, 90);
+    expect(zoneRules(ok)).toEqual([]);
+    expect(validateZone(ok)).toEqual([]);
+    // the checkpoint count rule is unchanged: par 90 wants five
+    expect(zoneRules(towerZone([[30, 46], [10, 34], [21, 22], [8, 10]], 10, 90)).join('\n')).toMatch(/4 checkpoint\(s\) for par 90s — needs at least 5/);
+  });
+
+  it('a horizontal zone still reads columns left to right and reports them as columns', () => {
+    const m = room(100, 16).ground(0, 99, 10).ent('P', 3, 9).ent('G', 96, 9);
+    for (const x of [36, 60, 80]) m.ent('C', x, 9);
+    for (let i = 0; i < 10; i++) m.ent('o', 5 + i * 2, 7);
+    expect(zoneRules(m.def(META)).join('\n')).toMatch(/P at \(3,9\) and C at \(36,9\) are 33 columns apart/);
+  });
+
+  it('tower() frames the room like the daily tower: side walls the whole height and a base floor', () => {
+    const rows = room(12, 10).tower({ wall: 2, base: 3 }).rows();
+    for (let y = 0; y < 7; y++) expect(rows[y]).toBe('##........##');
+    for (let y = 7; y < 10; y++) expect(rows[y]).toBe('############');
+    const thin = room(8, 6).tower({ wall: 1, base: 1 }).rows();
+    expect(thin[0]).toBe('#......#');
+    expect(thin[5]).toBe('########');
+    expect(room(44, 66).tower().rows()[0]).toBe('##' + '.'.repeat(40) + '##');
+    expect(() => room(4, 6).tower()).toThrow(/bad wall thickness/);
+    expect(() => room(12, 3).tower()).toThrow(/bad base/);
+  });
+
+  it('shaft floorDepth limits the floor to a shelf instead of a column to the bottom of the room', () => {
+    const shelf = room(14, 20).shaft(5, 2, 12, { floorDepth: 3 }).rows();
+    for (let y = 12; y <= 14; y++) expect(shelf[y].slice(3, 11)).toBe('########');
+    for (let y = 15; y < 20; y++) expect(shelf[y]).toBe('..............');
+    const deep = room(14, 20).shaft(5, 2, 12).rows();
+    for (let y = 12; y < 20; y++) expect(deep[y].slice(3, 11)).toBe('########');
+    expect(() => room(14, 20).shaft(5, 2, 12, { floorDepth: 0 })).toThrow(/bad floorDepth/);
+    // a wall-side shaft: the room edge is one wall, a single pillar the other
+    const side = room(12, 20).tower({ wall: 2, base: 4 }).shaft(2, 4, 16, { leftTop: 0, rightTop: 4, floorDepth: 4 }).rows();
+    for (let y = 4; y <= 13; y++) expect(side[y].slice(0, 8)).toBe('##....##');
+    expect(side[14].slice(0, 8)).toBe('##......');
+    expect(side[15].slice(0, 8)).toBe('##......');
   });
 });

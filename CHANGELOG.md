@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### Added (Phase 4 B)
+- P2-10 층마다 세로형 존 1개: `t4` 소금 굴뚝(SALT CHIMNEY, par 90 — 벽에 붙은 4칸 월점프 통로 3개·용수철·일방 휴식 발판, 선반마다 물웅덩이 안전망), `s4` 천둥 승강기(THUNDER LIFT, par 110 — 4행마다 바위 착지가 있는 무너지는 계단, 세로 승강 발판 `M` 2개, 토글 2개로 번갈아 켜는 `&`/`%` 스위치 블록 계단, 포탑·톱날), `v4` 별빛 우물(STARLIGHT WELL, par 120 — 상승기류 3단, 벽면 가시 옆 크리스탈 4개(중간에 휴식 발판)로 정점 선반에 오른 뒤 우물을 가로지르는 회랑 바닥으로 내려와 다시 정상 데크로 오르는 크리스탈 체인 8개 — 회랑이 벽까지 닿아 체인 외의 길이 없다). 모두 44×66~72 타워(데일리 타워처럼 양쪽 2칸 벽·4행 바닥, `Room.tower()`), 체크포인트 6~8개, 파편 9~12개. 각 층의 4번째 구역으로 등록(`ORDER` t1 t2 t3 t4 s1 … v4, `CHAPTERS` 4개씩; 해금 규칙 N → N+1·N+2와 층 경계 규칙은 순서 기반이라 변경 없음). DSL: `Room.tower()`, `shaft(..., { floorDepth })`, `ZONE_SHAPES`/`zoneShape`/`zoneSizeProblem`(가로 60~120×16~30 또는 세로 36~48×60~100), `climbOrder`와 세로 존의 체크포인트 간격 규칙(등반 순서 맨해튼 거리 ≤ 32). 카메라는 세로 존(rows > cols)에서 지면 접촉 시 위쪽 리드 +18(`CAM_VERTICAL_LEAD`, 공중에서는 유지 — 흔들림 없음). 구역 선택 카드 4열(`.tier__cards`). 골든 리플레이 빠른·페이스 코퍼스 3개씩(페이스 103~104 %), 초보 봇 히트맵 3개(오른쪽 홀드 정책은 탑을 오르지 못해 사망 0·클리어 0으로 기록), 코퍼스 다이제스트 14개로 갱신, `qa:smoke`가 12구역을 캡처.
+
 ### Added
 - P3-12 스케일 절벽 제거: 리플레이 검증을 `worker_threads` 워커 1개 + 세마포어(동시 4 · 대기 16)로 옮기고 초과 시 `503 { error: 'busy' }` + `Retry-After: 3`(`src/server/verifyPool.ts`), `POST /api/runs` IP 예산(12/분)을 DynamoDB `RL#<ip>#<minute>` 카운터(TTL 120 s)로 플릿 공유, `GET /api/leaderboard`는 공개 top-N만 + `Cache-Control: public, s-maxage=5, stale-while-revalidate=30`과 CloudFront `/api/leaderboard*` 전용 캐시 behaviour(최대 60 s), 새 `GET /api/me?mode&board&playerId`(no-store, `rankCapped` 1,000), `BOARD#<mode>#<board>` 총원 카운터(`saveBest`가 유지, 없으면 COUNT 폴백), Fargate 태스크 512 CPU / 1024 MiB · 상한 10(`cdk.json` `taskCpu` · `taskMemory` · `maxTasks`) + ALB p95 > 0.8 s 스텝 스케일링(+2), 부하 스크립트 `tools/load/submit.mjs`, 런북 `docs/runbooks/scale.md`.
 ### Added (Phase 4 A)
