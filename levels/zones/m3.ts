@@ -25,21 +25,22 @@
  * the launch rises ≈ 72 units, released ≈ 55; the second rung's top is 48 above
  * the first's, up to 68 over the bobs — a press after the pop spends the
  * refilled air jump and cuts the launch) and drift over onto the second; its
- * launch passes a shard five rows up, in reach of the held launch only. From the floor the stair starts with a double jump
- * beside the first rung and {stomp} held over it. A walker on the floor never
- * touches a rung (the lower one's bob envelope ends nine units over a standing
- * head), a runner who jumps off the exit passes far over both, and the whole
- * stair — rungs, rider and the launch apex — keeps more than 140 units of
- * horizontal gap to the chaser's box at (93,13): it wakes only within 140 units
- * on both axes, so the room floor is out of its vertical range and the stair
- * out of its horizontal one (a rider centred on the upper rung has 147; the
- * wind-up needs 130 units centre to centre, i.e. an overshoot past column 85).
- * Probed on the sim (Phase 5 C, fix round 1): the drop entry and the floor
- * entry both chain to the shard with the chaser idle throughout, a
- * right-holding walker crossing the room floor meets no bubble, and the ride
- * up updraft 2 is the rev 0 well, untouched. The well itself carries no bubble:
- * every rung position inside it met the arc of a plain jump off shelf 1 lifted
- * by the column (202 novice deaths in one cell before this fix).
+ * launch passes a shard five rows up, in reach of the held launch only. From
+ * the floor the stair starts with a double jump beside the first rung and
+ * {stomp} held over it. A walker on the floor never touches a rung (the lower
+ * one's bob envelope ends nine units over a standing head), a runner who jumps
+ * off the exit passes far over both, and the whole stair — rungs, rider and the
+ * launch apex — keeps more than 140 units of horizontal gap to the chaser's box
+ * at (93,13): it wakes only within 140 units on both axes, so the room floor is
+ * out of its vertical range and the stair out of its horizontal one (a rider
+ * centred on the upper rung has 147; the wind-up needs 130 units centre to
+ * centre, i.e. an overshoot past column 85). Probed on the sim (Phase 5 C, fix
+ * round 1): the drop entry and the floor entry both chain to the shard with the
+ * chaser idle throughout, a right-holding walker crossing the room floor meets
+ * no bubble, and the ride up updraft 2 is the rev 0 well, untouched. The well
+ * itself carries no bubble: every rung position inside it met the arc of a
+ * plain jump off shelf 1 lifted by the column (202 novice deaths in one cell
+ * before this fix).
  *
  * The well of the second column is capped by a rock lintel and the roof runs
  * over the whole shelf, so no dash-up climb gets above the corridor. Shards are

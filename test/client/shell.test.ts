@@ -15,7 +15,7 @@ import { Sim } from '../../src/sim/sim.js';
 import { decodeMasks, encodeMasks, verifyReplay } from '../../src/sim/replay.js';
 import { LEVELS as REAL_LEVELS } from '../../src/sim/levels.generated.js';
 import { GUIDE_DELAY, GUIDE_LABEL, GUIDE_T1, guideFor } from '../../src/client/echo/guide.js';
-import { REHINT_HAZARD, REHINT_PIT } from '../../src/client/ui/hints.js';
+import { DEATH_LINE_BUBBLE, REHINT_BUBBLE, REHINT_HAZARD, REHINT_PIT } from '../../src/client/ui/hints.js';
 import { DEATH_FADE_AT, FADE_IN_HALF } from '../../src/client/fx.js';
 import { MAX_MASKS_B64, MAX_TRANSFER_BYTES, PlayerRef, RejectReason, TransferCode } from '../../src/shared/protocol.js';
 import type {
@@ -54,14 +54,14 @@ import { medalsFor, mergeMedals, newMedals } from '../../src/client/unlocks.js';
 import type { MeResponse } from '../../src/shared/protocol.js';
 import {
   ASSIST_OFFER_DEATHS, DEATH_MARKS_MAX, NAME_ASKED_KEY, RANK_REFRESH_MS, RANK_TOP_LIMIT, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS,
-  RESULT_DELAY, TIER_RESULT_GAP, assistSeenKey, starsFor, transferErrorText,
+  REHINT_NEED, RESULT_DELAY, TIER_RESULT_GAP, assistSeenKey, starsFor, transferErrorText,
   type ClearExtras, type DeathMark, type SegmentRow, type ShellUI, type VersusView, type YesterdayInfo,
 } from '../../src/client/scenes.js';
 import { ENDING_LINES, type EndingView, type TierCardView } from '../../src/client/ui/ceremony.js';
 import { ENDING_TRACK } from '../../src/client/audio/music.js';
 import type { StingerKind } from '../../src/client/audio/sfx.js';
 import { ShotScript, parseShotQuery } from '../../src/client/shot.js';
-import { checkpointRoom, flatRoom, openRoom, pitRoom, shaftRoom, spikeRoom, tideRoom } from '../fixtures/levels.js';
+import { bubbleRoom, checkpointRoom, flatRoom, openRoom, pitRoom, shaftRoom, spikeRoom, tideRoom } from '../fixtures/levels.js';
 
 const BINDS: Binds = {
   left: ['ArrowLeft', 'KeyA'], right: ['ArrowRight', 'KeyD'], up: ['ArrowUp', 'KeyW'], down: ['ArrowDown', 'KeyS'],
@@ -1271,6 +1271,23 @@ describe('Scenes', () => {
     runFrames(spikes.scenes, () => ++k > (HINT_DELAY + 0.2) * 60, 1000);
     expect(spikes.ui.hints.filter((h) => h === REHINT_HAZARD)).toHaveLength(1);
     expect(spikes.ui.hints.filter((h) => h === REHINT_PIT)).toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------- P5-5 bubble death → toast + first-death re-hint
+  it('the FIRST bubble death toasts 거품에 닿았다 and brings the bubble rule back', () => {
+    expect(REHINT_NEED.bubble).toBe(1);
+    const { scenes, ui, input, renderer } = makeScenes([bubbleRoom()]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 'bubble' });
+    input.heldMask = IN.RIGHT;
+    const deaths = () => renderer.events.filter((e) => e.type === 'death' && e.cause === 'bubble').length;
+    runFrames(scenes, () => deaths() >= 1, 6000);
+    expect(deaths()).toBe(1);
+    let n = 0;
+    runFrames(scenes, () => ++n > (HINT_DELAY + 0.2) * 60, 1000);
+    expect(ui.hints.filter((h) => h === REHINT_BUBBLE)).toHaveLength(1);
+    expect(ui.toasts).toContain(DEATH_LINE_BUBBLE);
+    expect(ui.hints.filter((h) => h === REHINT_PIT)).toHaveLength(0);
   });
 
   // ---------------------------------------------------------------- P1-4 first clear → the tower
