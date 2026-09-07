@@ -2,8 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SimEvent, SimState } from '../../src/sim/types.js';
 import type { Settings, UiSound } from '../../src/client/contracts.js';
 import { AudioEngine } from '../../src/client/audio/engine.js';
-import { EVENT_SFX, SFX, SILENT_EVENTS, UI_SFX, eventSfx, midi } from '../../src/client/audio/sfx.js';
-import { SCALES, TRACKS, planStep, planWindow } from '../../src/client/audio/music.js';
+import {
+  BIOME_STING, CHECKPOINT_PITCH_CAP, EVENT_SFX, SFX, SHARD_LADDER, SHARD_SHIMMER_AT, SILENT_EVENTS, STINGERS, UI_SFX, eventSfx, midi, stingFor,
+} from '../../src/client/audio/sfx.js';
+import type { StingerKind } from '../../src/client/audio/sfx.js';
+import { ENDING_TRACK, SCALES, TRACKS, planStep, planWindow } from '../../src/client/audio/music.js';
+import { BIOME_ORDER } from '../../src/shared/biomes.js';
 
 // ------------------------------------------------------------------ fake WebAudio
 interface ParamEvent { type: 'set' | 'linear' | 'exp' | 'target'; value: number; time: number }
@@ -590,5 +594,127 @@ describe('unlock()', () => {
     const before = ctx.resumed;
     engine.unlock();
     expect(ctx.resumed).toBe(before);
+  });
+});
+
+// ================================================================ audio pass (P3-9)
+describe('audio pass (P3-9)', () => {
+  let engine: AudioEngine;
+  beforeEach(() => { installFake(); engine = new AudioEngine(); engine.init(); });
+  afterEach(() => { engine.dispose(); removeFake(); });
+
+  /** Frequency the first oscillator of a call starts at (the clock is advanced first so no gate swallows the call). */
+  const firstFreq = (fn: () => void): number => {
+    const ctx = ctxOf();
+    ctx.currentTime += 1;
+    const before = ctx.nodes.length;
+    fn();
+    const osc = ctx.nodes.slice(before).find((n) => n.kind === 'osc') as FakeOsc | undefined;
+    expect(osc).toBeDefined();
+    return osc!.frequency.events[0].value;
+  };
+  const voicesOf = (fn: () => void): number => {
+    const ctx = ctxOf();
+    ctx.currentTime += 1;
+    const before = sources(ctx).length;
+    fn();
+    return sources(ctx).length - before;
+  };
+
+  it('every biome key has its own clear sting, and a goal on that biome track plays it instead of the generic fanfare', () => {
+    const openings = new Set<number>();
+    for (const b of BIOME_ORDER) {
+      const name = BIOME_STING[b];
+      expect(SFX[name]).toBeDefined();
+      expect(stingFor(b)).toBe(name);
+      engine.setTrack(b);
+      const direct = voicesOf(() => engine.play(name, { vol: 1, pan: 0 }));
+      expect(direct).toBeGreaterThan(0);
+      expect(voicesOf(() => engine.onEvent(sampleEvent('goal'), fakeSim() as never))).toBe(direct);
+      openings.add(firstFreq(() => engine.onEvent(sampleEvent('goal'), fakeSim() as never)));
+    }
+    // three keys, three different openings
+    expect(openings.size).toBe(BIOME_ORDER.length);
+    expect(stingFor('title')).toBeNull();
+    expect(stingFor(null)).toBeNull();
+    // the title track keeps the generic goal fanfare
+    engine.setTrack('title');
+    const generic = voicesOf(() => engine.play('goal', { vol: 1, pan: 0 }));
+    expect(voicesOf(() => engine.onEvent(sampleEvent('goal'), fakeSim() as never))).toBe(generic);
+  });
+
+  it('checkpoint chimes rise a step per new pillar, a pillar touched again keeps its pitch, and a new run starts over', () => {
+    engine.setTrack('tidepool');
+    const cp = (x: number) => () => engine.onEvent({ type: 'checkpoint', x, y: 100 }, fakeSim() as never);
+    const f0 = firstFreq(cp(100));
+    const f1 = firstFreq(cp(300));
+    const f2 = firstFreq(cp(500));
+    expect(f1).toBeGreaterThan(f0);
+    expect(f2).toBeGreaterThan(f1);
+    expect(firstFreq(cp(100))).toBe(f0);
+    expect(engine.checkpointIndex(300, 100)).toBe(1);
+    // the ladder caps instead of climbing forever
+    for (let i = 0; i < CHECKPOINT_PITCH_CAP + 3; i++) firstFreq(cp(1000 + i * 50));
+    expect(firstFreq(cp(5000))).toBe(firstFreq(cp(6000)));
+    // a restart of the same zone sets the biome track again: the ladder starts over
+    engine.setTrack('tidepool');
+    expect(firstFreq(cp(300))).toBe(f0);
+    // the goal ends the run: the next pillar is the first again
+    engine.onEvent(sampleEvent('goal'), fakeSim() as never);
+    expect(firstFreq(cp(900))).toBe(f0);
+  });
+
+  it('the shard ladder is a pentatonic climb up to the cap that shimmers with a fifth from combo 8', () => {
+    for (let i = 1; i < SHARD_LADDER.length; i++) expect(SHARD_LADDER[i]).toBeGreaterThan(SHARD_LADDER[i - 1]);
+    for (const iv of SHARD_LADDER) expect([0, 2, 4, 7, 9]).toContain(iv % 12);
+    const voices = (combo: number) => voicesOf(() => engine.onEvent({ type: 'shard', x: 0, y: 0, n: 1, total: 20, combo }, fakeSim(0) as never));
+    // eventParams counts the combo from 0, so combo SHARD_SHIMMER_AT + 1 is the first shimmering step
+    expect(voices(SHARD_SHIMMER_AT + 1)).toBe(voices(3) + 1);
+    expect(voices(SHARD_SHIMMER_AT)).toBe(voices(3));
+  });
+
+  it('the hurt sound no longer depends on the hp left (the low-hp danger layer is gone)', () => {
+    const at = (hp: number) => firstFreq(() => engine.onEvent({ type: 'hurt', x: 100, y: 100, hp }, fakeSim() as never));
+    expect(at(1)).toBe(at(3));
+  });
+
+  it('stingers: the tier fanfare, the ending chord, a star per index and a medal all make voices; stars rise by index', () => {
+    const kinds: StingerKind[] = ['tier', 'ending', 'star', 'medal'];
+    for (const k of kinds) {
+      expect(SFX[STINGERS[k]]).toBeDefined();
+      expect(voicesOf(() => engine.stinger(k))).toBeGreaterThan(0);
+    }
+    const star = (i: number) => firstFreq(() => engine.stinger('star', i));
+    expect(star(1)).toBeGreaterThan(star(0));
+    expect(star(2)).toBeGreaterThan(star(1));
+    // the fanfare is a phrase, not a blip: its last voice ends more than two seconds out
+    const ctx = ctxOf();
+    ctx.currentTime += 1;
+    const before = sources(ctx).length;
+    engine.stinger('tier');
+    const made = sources(ctx).slice(before);
+    expect(Math.max(...made.map((s) => s.stopped[0] ?? 0)) - ctx.currentTime).toBeGreaterThan(2);
+    // unlock and medal are distinct UI recipes
+    expect(UI_SFX.unlock).toBe('uiUnlock');
+    expect(STINGERS.medal).toBe('uiMedal');
+    expect(STINGERS.medal).not.toBe(UI_SFX.unlock);
+  });
+
+  it("the ending track is the title theme's variation: the same F lydian, slower, glass instead of saw, no drums; the engine plays it", () => {
+    const t = TRACKS[ENDING_TRACK], title = TRACKS.title;
+    expect(t).toBeDefined();
+    expect(t.root).toBe(title.root);
+    expect(t.scale).toBe('lydian');
+    expect(t.bpm).toBeLessThan(title.bpm);
+    expect(t.mix.drums).toBe(0);
+    expect(t.voice.pad).not.toBe(title.voice.pad);
+    // the bell motif is there in every bar (the bed of the screen), even at rest
+    expect(planWindow(t, 0, 4, 0).filter((n) => n.inst === 'bell').length).toBeGreaterThanOrEqual(4);
+    engine.setTrack(ENDING_TRACK);
+    expect(engine.track).toBe(ENDING_TRACK);
+    const ctx = ctxOf();
+    const before = sources(ctx).length;
+    engine.tick();
+    expect(sources(ctx).length).toBeGreaterThan(before);
   });
 });

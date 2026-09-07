@@ -50,6 +50,23 @@ export function skinById(id: string | undefined): Skin {
   return (id && SKINS[id]) || SKINS.clawd;
 }
 
+// ---------------------------------------------------------------- eye lead (P3-9)
+/** The goal draws Clawd's eyes from this many tiles away. */
+export const GOAL_LOOK_TILES = 6;
+/** How much of the pupil offset the look target takes over from the velocity lead. */
+export const LOOK_WEIGHT = 0.7;
+
+/**
+ * A point of interest the eyes lead toward, as a unit-ish direction (-1..1 per
+ * axis) — the goal within GOAL_LOOK_TILES. Module state on purpose: the rig is
+ * assembled by the player visual (which knows nothing about the level), so the
+ * renderer sets the target right before the live player's draw and clears it
+ * right after; echoes and portraits, drawn outside that window, never see it.
+ */
+let look: { x: number; y: number } | null = null;
+export function setLookTarget(t: { x: number; y: number } | null): void { look = t; }
+export function lookTarget(): { x: number; y: number } | null { return look; }
+
 /** Echo skins: a whole palette derived from one accent colour, cached per colour. */
 const tintCache = new Map<string, Skin>();
 export function tintedSkin(color: string): Skin {
@@ -366,9 +383,13 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
     ctx.fillStyle = sk.eye;
     ctx.beginPath(); ctx.ellipse(ex, eyeY, rx, ry, 0, 0, TAU); ctx.fill();
 
-    // pupil leads the movement — reads as intent
-    const px = clamp(s.vx / 240, -1, 1) * 0.85 + face * 0.5;
-    const py = clamp(s.vy / 340, -1, 1) * 0.7;
+    // pupil leads the movement — reads as intent; near the goal the eyes lead there instead (P3-9)
+    let px = clamp(s.vx / 240, -1, 1) * 0.85 + face * 0.5;
+    let py = clamp(s.vy / 340, -1, 1) * 0.7;
+    if (look && st !== 'dash' && st !== 'hurt') {
+      px = px * (1 - LOOK_WEIGHT) + clamp(look.x, -1, 1) * 1.05 * LOOK_WEIGHT;
+      py = py * (1 - LOOK_WEIGHT) + clamp(look.y, -1, 1) * 0.8 * LOOK_WEIGHT;
+    }
     ctx.fillStyle = sk.pupil;
     ctx.beginPath();
     ctx.ellipse(ex + px, eyeY + py, rx * 0.5, ry * 0.52, 0, 0, TAU);

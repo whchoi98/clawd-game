@@ -34,6 +34,13 @@ import { SettingsPanel, type PortraitPainter } from './settings.js';
 import { TRANSFER_KR, TransferPanel, normalizeCode, type TransferStatusKind } from './transfer.js';
 import { TouchControls, wantsRotatePrompt } from './touch.js';
 import { renderLeaderboard, type LbStatus } from './leaderboard.js';
+import {
+  CLEAR_TIMELINE, MEDAL_KR, SUMMIT, TITLE_HOOK, Timeline, drawEndingSky, endingTimeline, endingView, medalsOf, prefersReducedMotion,
+  tierCardView, tierTimeline,
+  type ClearStage, type EndingStage, type EndingView, type TierCardView, type TierStage,
+} from './ceremony.js';
+import type { StingerKind } from '../audio/sfx.js';
+import { isShotHarness } from '../pwa.js';
 
 /** Seconds the restart bind must stay held during play to restart the whole zone (a tap is a checkpoint retry inside the sim). */
 export const RESTART_HOLD_S = 0.6;
@@ -52,13 +59,18 @@ export const INSTALL_CARD_KR = {
   ios: '공유 → 홈 화면에 추가 하면 오프라인에서도 바로 이어진다',
 } as const;
 
+/** UI sounds, the first-gesture unlock and — when the engine offers them — the ceremony stingers (P3-9). */
+export interface UiAudio extends Pick<AudioPort, 'ui' | 'init'> {
+  stinger?(kind: StingerKind, idx?: number): void;
+}
+
 export interface UIOptions {
   /** Defaults to the global document. */
   document?: Document;
   /** The input layer; also picked up from every `frame()` call. */
   input?: InputPort | null;
   /** UI sounds and the first-gesture AudioContext unlock. */
-  audio?: Pick<AudioPort, 'ui' | 'init'> | null;
+  audio?: UiAudio | null;
   /** Skins for the character picker (RendererPort.skins). */
   skins?: Record<string, { name: string; kr: string }>;
   /** DEFAULT_BINDS from the input layer, for the "reset controls" button. */
@@ -175,7 +187,7 @@ export class UI implements UIPort {
   /** 다른 기기로 옮기기 widgets of the data pane (P3-5). */
   private readonly transferPanel: TransferPanel;
   private readonly touchCtl: TouchControls;
-  private readonly audio: Pick<AudioPort, 'ui' | 'init'> | null;
+  private readonly audio: UiAudio | null;
   private readonly skins: Record<string, { name: string; kr: string }>;
   private readonly defaultBinds: Binds;
   private readonly now: () => number;
@@ -236,6 +248,16 @@ export class UI implements UIPort {
   /** Whether the pad was last shown / previewed, so frame() only touches the DOM on a change. */
   private padShown = false;
   private padPreview = false;
+  /** The result modal's staged reveal (P3-9) while it runs. */
+  private clearCeremony: Timeline<ClearStage> | null = null;
+  /** The 층 돌파 card while it is up, and the shell's callback for when it ends. */
+  private tierTimeline: Timeline<TierStage> | null = null;
+  private tierDone: (() => void) | null = null;
+  /** The ending overlay while it is up: its reveal, the sky clock and the redraw accumulator. */
+  private endingOpen = false;
+  private endingTimeline: Timeline<EndingStage> | null = null;
+  private endingT = 0;
+  private endingAcc = 0;
 
   constructor(opts: UIOptions = {}) {
     this.doc = opts.document ?? document;
@@ -298,13 +320,24 @@ export class UI implements UIPort {
   // ================================================================ UIPort
   on(cb: (a: UIAction) => void): void { this.listeners.push(cb); }
 
-  get screen(): Screen { return this.dataOpen ? 'data' : this.screens.top; }
+  get screen(): Screen {
+    if (this.dataOpen) return 'data';
+    const top = this.screens.top;
+    // The ending overlay stands in for the last zone's result (Screen has no name of its own for it, P3-9).
+    if (this.endingOpen && !MODAL_SCREENS.has(top)) return 'result';
+    return top;
+  }
 
   show(screen: Screen): void {
     // The data notice lives outside the screen stack (ScreenStack does not
     // register it): it is an overlay opened here and closed by any other show().
     if (screen === 'data') { this.openData(); return; }
+    // QA only: the `?shot=title&ui=tier|ending` harness previews the ceremony surfaces with sample data (Screen has no names for them).
+    if ((screen as string) === 'tier' || (screen as string) === 'ending') { this.previewCeremony(screen as unknown as 'tier' | 'ending'); return; }
     if (this.dataOpen) this.closeData();
+    // A base screen ends the ceremony overlays (P3-9); a modal — the credits over the ending — stacks above them.
+    if (!MODAL_SCREENS.has(screen)) { this.closeEnding(); this.endTierCard(); }
+    if (screen !== 'result') this.clearCeremony = null;
     const baseChanged = this.screens.show(screen);
     if (screen === 'play' && baseChanged) { this.hudCtl.reset(); this.hintTemplate = null; }
     this.restartHold = 0;
@@ -325,6 +358,10 @@ export class UI implements UIPort {
     if (this.settingsPanel.capturing) return;
     const top = this.screens.top;
     if (top === 'boot') return;
+    // Ceremony overlays (P3-9) own the frame: the tier card skips on any edge; the ending reveal skips, then its menu takes the edges.
+    if (this.tierTimeline) { this.tickTierCard(step, edges.length > 0); return; }
+    if (this.endingOpen && !MODAL_SCREENS.has(top)) { this.tickEnding(step, edges, input); return; }
+    if (this.clearCeremony) this.tickClearCeremony(step, top);
     // The inline name field has focus: Enter confirms, Escape skips, up / down leave the field for the buttons.
     const inline = this.inlineName;
     if (inline && this.doc.activeElement === inline.input) {
@@ -363,7 +400,243 @@ export class UI implements UIPort {
       else if (actions.has('confirm')) this.submitName();
       return;
     }
+    // The result reveal still running: the first press completes it instead of acting on a menu that is not up yet.
+    if (this.clearCeremony && top === 'result' && edges.length) { this.skipClearCeremony(); return; }
     this.nav.update(step, edges, input);
+  }
+
+  // ================================================================ ceremonies (P3-9)
+  /** The result reveal's current stage, or null while none runs (tests). */
+  get clearStage(): ClearStage | null { return this.clearCeremony?.stage ?? null; }
+  /** The 층 돌파 card is up. */
+  get tierCardOpen(): boolean { return this.tierTimeline !== null; }
+  /** The ending overlay is up. */
+  get endingShown(): boolean { return this.endingOpen; }
+
+  /** Reduced motion, or the capture harness (no frames run there): every timeline jumps straight to its end. */
+  private instantMotion(): boolean {
+    return prefersReducedMotion(this.win) || isShotHarness(this.win);
+  }
+
+  /** The record's medals as chips (hidden without any); the reveal shows the row at its 'medals' stage. */
+  private paintMedals(view: ResultView): void {
+    const host = this.doc.getElementById('res-medals');
+    if (!host) return;
+    const medals = medalsOf(this.progress?.levels[view.summary.levelId]);
+    host.replaceChildren(...medals.map((m) => el(this.doc, 'span', { class: `medal medal--${m}`, role: 'listitem' }, MEDAL_KR[m])));
+    host.hidden = medals.length === 0;
+  }
+
+  /** Start the staged reveal of the result modal: rank → stars → medals → board (data-stage on the modal drives the CSS). */
+  private startClearCeremony(): void {
+    const modal = this.doc.querySelector<HTMLElement>('#scr-result .modal');
+    if (!modal) return;
+    const tl = new Timeline(CLEAR_TIMELINE, (stage) => this.applyClearStage(modal, stage), this.instantMotion());
+    this.clearCeremony = tl;
+    tl.start();
+    if (tl.done) this.clearCeremony = null;
+  }
+
+  private applyClearStage(modal: HTMLElement, stage: ClearStage): void {
+    modal.dataset.stage = stage;
+    if (stage === 'stars') {
+      const n = this.result?.stars ?? 0;
+      for (let i = 0; i < n; i++) this.audio?.stinger?.('star', i);
+    } else if (stage === 'medals') {
+      const medals = this.doc.getElementById('res-medals');
+      if (medals && !medals.hidden) this.audio?.stinger?.('medal');
+    }
+  }
+
+  private tickClearCeremony(step: number, top: Screen): void {
+    const tl = this.clearCeremony;
+    if (!tl) return;
+    if (top !== 'result') { this.clearCeremony = null; return; }
+    tl.update(step);
+    if (tl.done) this.clearCeremony = null;
+  }
+
+  private skipClearCeremony(): void {
+    const tl = this.clearCeremony;
+    if (!tl) return;
+    tl.skip();
+    this.clearCeremony = null;
+  }
+
+  /**
+   * 층 돌파: the vista card for a completed tier, over the finished run. Ends
+   * on its own after TIER_CARD_S or on any key / tap; `done` fires exactly once
+   * either way (also when a base screen replaces the card). Not part of UIPort.
+   */
+  tierBreak(card: TierCardView, done: () => void, opts: { hold?: boolean } = {}): void {
+    this.endTierCard();
+    const sec = this.doc.getElementById('scr-tier');
+    if (!sec) { done(); return; }
+    const d = this.doc;
+    const set = (id: string, text: string): void => { const e = d.getElementById(id); if (e) e.textContent = text; };
+    set('tier-num', card.roman);
+    set('tier-floor', `${card.floor}층`);
+    set('tier-name', card.kr);
+    set('tier-line', card.line);
+    set('tier-next', card.next);
+    sec.style.setProperty('--tier-a', card.sky[0]);
+    sec.style.setProperty('--tier-b', card.sky[2]);
+    sec.style.setProperty('--tier-d', card.ridge);
+    sec.style.setProperty('--tier-c', card.accent);
+    delete sec.dataset.stage;
+    sec.classList.remove('is-leaving');
+    sec.classList.add('is-active');
+    this.tierDone = done;
+    // `hold` (the QA preview): everything is up at once and the card never dismisses itself — only a key or a tap ends it.
+    const steps = opts.hold ? tierTimeline(true).filter((s) => s.stage !== 'out' && s.stage !== 'done') : tierTimeline(prefersReducedMotion(this.win));
+    const tl = new Timeline(steps, (stage) => {
+      sec.dataset.stage = stage;
+      if (stage === 'done') this.endTierCard();
+    }, !opts.hold && isShotHarness(this.win));
+    this.tierTimeline = tl;
+    this.nav.refresh(null);
+    this.updateTouchVisibility();
+    // the 'done' stage (also what an instant start jumps to) ends the card from its handler; a held preview waits for a key
+    tl.start();
+  }
+
+  private tickTierCard(step: number, pressed: boolean): void {
+    const tl = this.tierTimeline;
+    if (!tl) return;
+    if (pressed) { this.sound('confirm'); tl.skip(); this.endTierCard(); return; }
+    tl.update(step);
+  }
+
+  /** Take the card down (leave animation) and tell the shell once. */
+  private endTierCard(): void {
+    const tl = this.tierTimeline;
+    const done = this.tierDone;
+    this.tierTimeline = null;
+    this.tierDone = null;
+    if (!tl) return;
+    this.leave(this.doc.getElementById('scr-tier'));
+    this.updateTouchVisibility();
+    done?.();
+  }
+
+  /**
+   * 엔딩: shown once in place of the last zone's result. The night sky is drawn
+   * on the overlay's own canvas with Clawd on the summit; the three lines and
+   * the tower totals reveal on a timeline (any key / tap skips), then the menu:
+   * 다시 오르기 (quit → the tower), 공유, 만든 것들. The last clear's submission
+   * line rides along and updateResult keeps it current. Not part of UIPort.
+   */
+  showEnding(view: EndingView): void {
+    const sec = this.doc.getElementById('scr-ending');
+    const body = this.doc.getElementById('ending-body');
+    if (!sec || !body) { this.showResult(view.result); return; }
+    this.closeEnding();
+    this.result = view.result;
+    const d = this.doc;
+    const lines = d.getElementById('ending-lines');
+    if (lines) lines.replaceChildren(...view.lines.map((t) => el(d, 'p', {}, t)));
+    const totals = d.getElementById('ending-totals');
+    if (totals) {
+      const t = view.totals;
+      const cell = (label: string, value: string): HTMLElement => el(d, 'div', {}, el(d, 'dt', {}, label), el(d, 'dd', {}, value));
+      totals.replaceChildren(
+        cell('구역', `${t.zones}`), cell('별', `${t.stars} / ${t.maxStars}`), cell('유물', `${t.relics} / ${t.maxRelics}`),
+        cell('쓰러진 횟수', String(t.deaths)), cell('최고 기록 합', fmtTicks(t.ticks)),
+      );
+    }
+    this.paintSubmission('end-submit', 'end-lb', view.result);
+    this.endingOpen = true;
+    this.endingT = 0;
+    this.endingAcc = 0;
+    delete body.dataset.stage;
+    sec.classList.remove('is-leaving');
+    sec.classList.add('is-active');
+    this.drawEnding();
+    const tl = new Timeline(endingTimeline(prefersReducedMotion(this.win)), (stage) => {
+      body.dataset.stage = stage;
+      if (stage === 'done') this.nav.refresh(sec);
+    }, isShotHarness(this.win));
+    this.endingTimeline = tl;
+    this.nav.refresh(sec);
+    this.updateTouchVisibility();
+    this.syncUpdateBar();
+    tl.start();
+  }
+
+  private tickEnding(step: number, edges: readonly MenuAction[], input: InputPort): void {
+    this.endingT += step;
+    this.endingAcc += step;
+    if (this.endingAcc >= 1 / 30) { this.endingAcc = 0; this.drawEnding(); }
+    const tl = this.endingTimeline;
+    if (tl && !tl.done) {
+      if (edges.length) { this.sound('confirm'); tl.skip(); } else tl.update(step);
+      return;
+    }
+    this.nav.update(step, edges, input);
+  }
+
+  /** The ending's sky on its own canvas (device pixels), then Clawd on the summit through the portrait painter. */
+  private drawEnding(): void {
+    const canvas = this.doc.getElementById('ending-sky') as HTMLCanvasElement | null;
+    if (!canvas || typeof canvas.getContext !== 'function') return;
+    const w = Math.max(1, Math.round(canvas.clientWidth || this.win?.innerWidth || 960));
+    const h = Math.max(1, Math.round(canvas.clientHeight || this.win?.innerHeight || 540));
+    const dpr = Math.min(2, this.win?.devicePixelRatio || 1);
+    const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+    if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
+    let ctx: CanvasRenderingContext2D | null = null;
+    try { ctx = canvas.getContext('2d'); } catch { ctx = null; }
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawEndingSky(ctx, w, h, this.endingT);
+    if (!this.portrait) return;
+    const size = Math.max(40, Math.round(h * 0.16));
+    ctx.save();
+    ctx.translate(w * SUMMIT.x - size / 2, h * SUMMIT.y - size * 0.82);
+    try { this.portrait(ctx, this.settings?.skin ?? 'clawd', size, this.endingT); } catch { /* the portrait is decoration */ }
+    ctx.restore();
+  }
+
+  private closeEnding(): void {
+    if (!this.endingOpen) return;
+    this.endingOpen = false;
+    this.endingTimeline = null;
+    this.leave(this.doc.getElementById('scr-ending'));
+  }
+
+  /** Deactivate an overlay section with the leave animation (the same beat as ScreenStack.deactivate). */
+  private leave(e: HTMLElement | null): void {
+    if (!e || !e.classList.contains('is-active')) return;
+    e.classList.remove('is-active');
+    e.classList.add('is-leaving');
+    const timer = this.win?.setTimeout ?? setTimeout;
+    timer(() => e.classList.remove('is-leaving'), LEAVE_MS);
+  }
+
+  /** `?shot=title&ui=tier|ending`: the surfaces with sample data, so the QA harness can capture them and read the console. */
+  private previewCeremony(kind: 'tier' | 'ending'): void {
+    if (kind === 'tier') { this.tierBreak(tierCardView('tidepool'), () => undefined, { hold: true }); return; }
+    const last = this.levels[this.levels.length - 1];
+    const summary: RunSummary = {
+      levelId: last?.id ?? 'v3', cleared: true, ticks: 4166, time: 34.72, shards: 23, totalShards: 25, relics: 1, totalRelics: 1,
+      deaths: 1, par: last?.par ?? 60, rank: 'A', height: 0,
+    };
+    const result: ResultView = { summary, levelName: last?.name ?? '메아리의 정점', personalBest: true, stars: 2, submit: { state: 'accepted', rank: 12, total: 340 } };
+    this.showEnding(endingView({ levels: this.progress?.levels ?? {} }, this.levels, result));
+  }
+
+  /** A tap on a ceremony surface: the tier card ends, the ending reveal jumps to its menu, the result reveal completes. */
+  private skipCeremony(): void {
+    const tier = this.tierTimeline;
+    if (tier) {
+      this.sound('confirm');
+      tier.skip();
+      this.endTierCard();
+      return;
+    }
+    const ending = this.endingTimeline;
+    if (this.endingOpen && ending && !ending.done) { this.sound('confirm'); ending.skip(); return; }
+    this.skipClearCeremony();
   }
 
   hud(h: HudState): void {
@@ -556,16 +829,21 @@ export class UI implements UIPort {
     }
     const next = d.querySelector<HTMLElement>('#scr-result [data-act="next"]');
     if (next) next.hidden = !view.nextLevelId;
+    this.paintMedals(view);
     this.paintVersus();
     this.paintSubmission('res-submit', 'res-lb', view);
     this.paintInstallCard();
     this.show('result');
     // the rank letter pops once the modal has landed (CSS keyframes; reduced motion disables them)
     if (rank) replay(rank, 'pop');
+    // then the staged reveal: stars → medals → board (P3-9; instant under reduced motion)
+    this.startClearCeremony();
   }
 
   updateResult(view: ResultView): void {
     this.result = view;
+    // The ending stands in for the result: its own submission line is the one to keep current (P3-9).
+    if (this.endingOpen) { this.paintSubmission('end-submit', 'end-lb', view); return; }
     const top = this.screens.top;
     const over = top === 'over' || this.screens.isActive('over');
     if (over) this.paintSubmission('over-submit', 'over-lb', view);
@@ -931,7 +1209,9 @@ export class UI implements UIPort {
     }
     this.updateTouchVisibility();
     this.syncUpdateBar();
-    const root = this.dataOpen ? this.doc.getElementById('scr-data') : top === 'play' || top === 'boot' ? null : this.screens.el(top);
+    const root = this.dataOpen ? this.doc.getElementById('scr-data')
+      : this.endingOpen && !MODAL_SCREENS.has(top) ? this.doc.getElementById('scr-ending')
+        : top === 'play' || top === 'boot' ? null : this.screens.el(top);
     this.nav.refresh(root);
     if (top !== 'name' && this.doc.activeElement === this.nameInput()) this.nameInput()?.blur();
   }
@@ -979,7 +1259,8 @@ export class UI implements UIPort {
   }
 
   private pause(): void {
-    if (this.screens.top !== 'play') return;
+    // A ceremony over the finished run (the tier card, the ending) is not play: nothing to pause.
+    if (this.screens.top !== 'play' || this.endingOpen || this.tierTimeline) return;
     this.sound('toggle');
     this.show('pause');
   }
@@ -1128,6 +1409,8 @@ export class UI implements UIPort {
         this.hideInstallCard();
         this.emit({ type: 'installCardDismiss' });
         break;
+      // A tap on a ceremony surface (P3-9): skip the tier card / the ending reveal / the result reveal.
+      case 'skipCeremony': this.skipCeremony(); break;
       default: break;
     }
   }
@@ -1225,7 +1508,7 @@ export class UI implements UIPort {
    */
   private updateTouchVisibility(): void {
     const coarse = this.touchCtl.coarse;
-    const inPlay = this.screens.top === 'play' && !this.dataOpen;
+    const inPlay = this.screens.top === 'play' && !this.dataOpen && !this.endingOpen && this.tierTimeline === null;
     const preview = coarse && !inPlay && this.previewT > 0;
     const show = (coarse && inPlay && this.gamepadHideT <= 0) || preview;
     if (show !== this.padShown) { this.padShown = show; this.touchCtl.setVisible(show); }
@@ -1287,6 +1570,13 @@ export class UI implements UIPort {
     }
     const chip = this.doc.getElementById('title-name');
     if (chip) chip.textContent = this.playerName || '—';
+    // The one-line story hook once the ending has played (P3-9).
+    const hook = this.doc.getElementById('title-hook');
+    if (hook) {
+      const seen = prog?.endingSeen === true;
+      hook.hidden = !seen;
+      hook.textContent = seen ? TITLE_HOOK : '';
+    }
     this.refreshDailyNote();
     if (this.screens.top === 'title') this.nav.refresh(this.screens.el('title'), true);
   }
@@ -1449,8 +1739,8 @@ export class UI implements UIPort {
       }
       submit.hidden = sub.state === 'idle';
     }
-    // '메아리 링크 공유' (P3-3): only an accepted submission has a run id a friend can race.
-    const modal = submit?.closest('.modal') ?? null;
+    // '메아리 링크 공유' (P3-3): only an accepted submission has a run id a friend can race (the ending card has the entry too).
+    const modal = submit?.closest('.modal, .ending') ?? null;
     const share = modal?.querySelector<HTMLElement>('[data-act="shareEcho"]') ?? null;
     if (share) {
       const on = sub.state === 'accepted';

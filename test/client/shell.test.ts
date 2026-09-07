@@ -51,10 +51,13 @@ import { defaultProgress, repairProgress } from '../../src/client/save.js';
 import { fmtTime } from '../../src/client/ui/hud.js';
 import { echoWorldMode, segmentBests, setEchoWorldMode } from '../../src/client/save.js';
 import {
-  ASSIST_OFFER_DEATHS, DEATH_MARKS_MAX, NAME_ASKED_KEY, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, assistSeenKey,
-  transferErrorText,
+  ASSIST_OFFER_DEATHS, DEATH_MARKS_MAX, NAME_ASKED_KEY, Scenes, HINT_DELAY, MENU_FRAME_DT, REHINT_DEATHS, RESULT_DELAY, TIER_RESULT_GAP,
+  assistSeenKey, starsFor, transferErrorText,
   type DeathMark, type SegmentRow, type ShellUI, type VersusView, type YesterdayInfo,
 } from '../../src/client/scenes.js';
+import { ENDING_LINES, type EndingView, type TierCardView } from '../../src/client/ui/ceremony.js';
+import { ENDING_TRACK } from '../../src/client/audio/music.js';
+import type { StingerKind } from '../../src/client/audio/sfx.js';
 import { ShotScript, parseShotQuery } from '../../src/client/shot.js';
 import { checkpointRoom, flatRoom, openRoom, pitRoom, shaftRoom, spikeRoom, tideRoom } from '../fixtures/levels.js';
 
@@ -117,10 +120,16 @@ function fakeRenderer(): FakeRenderer {
   return r;
 }
 
-interface FakeAudio extends AudioPort { events: SimEvent[]; track: string | null; intensity: number; muffled: boolean; inits: number }
-function fakeAudio(): FakeAudio & { setMuffle(on: boolean): void } {
+interface FakeAudio extends AudioPort {
+  events: SimEvent[]; track: string | null; intensity: number; muffled: boolean; inits: number;
+  /** Every ceremony stinger the shell asked for (P3-9). */
+  stingers: StingerKind[];
+}
+function fakeAudio(): FakeAudio & { setMuffle(on: boolean): void; stinger(kind: StingerKind): void } {
   const a = {
     events: [] as SimEvent[], track: null as string | null, intensity: 0, muffled: false, inits: 0, ready: true, running: true,
+    stingers: [] as StingerKind[],
+    stinger(kind: StingerKind) { a.stingers.push(kind); },
     init() { a.inits++; },
     unlock() { a.inits++; },
     applySettings() {},
@@ -368,7 +377,8 @@ function makeScenes(
     origin: opts.origin ?? 'https://clawd.test',
     ...(opts.share ? { share: opts.share } : {}),
     ...(opts.card ? { card: opts.card } : {}),
-    ...(opts.now ? { now: opts.now } : {}),
+    // The fixtures live on 2026-09-06 (the fake daily expires at midnight after it): a fixed clock keeps them valid on any real date.
+    now: opts.now ?? (() => Date.parse('2026-09-06T12:00:00.000Z')),
     ...(opts.makeDaily ? { makeDaily: opts.makeDaily } : {}),
   });
   return { scenes, renderer, audio, ui, input, api, save, timers, storage, tele, newer };
@@ -918,6 +928,8 @@ describe('Scenes', () => {
     const s2 = new Scenes({
       renderer: fakeRenderer(), audio: fakeAudio(), ui, input, api, save, levels: [flatRoom()], build: 'test',
       makeDaily: () => ({ ...tide, id: 'daily' }), randomSeed: () => 1,
+      // the fake daily is dated 2026-09-06 and expires at midnight after it: a fixed clock inside that day
+      now: () => Date.parse('2026-09-06T12:00:00.000Z'),
     });
     api.levels.daily = { ...tide, id: 'daily' };
     s2.bootSync();
@@ -3216,5 +3228,165 @@ describe('Scenes · share card, install card and ?go= deep links (P3-4)', () => 
     expect(s2.scenes.go('daily')).toBe(false);   // mid-run: nothing changes
     expect(s2.scenes.run?.mode).toBe('endless');
     expect(s2.ui.screen).toBe('play');
+  });
+});
+
+// ================================================================ tier break · ending (P3-9)
+describe('tier break · ending ceremonies (P3-9)', () => {
+  /** Nine flat rooms in three tiers, ids and biomes like the real tower. */
+  const TOWER: LevelDef[] = ([
+    ['t1', 'tidepool'], ['t2', 'tidepool'], ['t3', 'tidepool'], ['s1', 'stormspire'], ['s2', 'stormspire'], ['s3', 'stormspire'],
+    ['v1', 'voidreef'], ['v2', 'voidreef'], ['v3', 'voidreef'],
+  ] as [string, LevelDef['biome']][]).map(([id, biome], i) => ({ ...flatRoom(), id, biome, seed: 100 + i }));
+
+  /** Give the fake UI the ceremony surfaces (the plain fake has none, so every other test sees the plain result). */
+  function withCeremonies(ui: FakeUI) {
+    const cer = { tiers: [] as TierCardView[], done: [] as (() => void)[], endings: [] as EndingView[] };
+    const u = ui as FakeUI & { tierBreak: NonNullable<ShellUI['tierBreak']>; showEnding: NonNullable<ShellUI['showEnding']> };
+    u.tierBreak = (card, done) => { cer.tiers.push(card); cer.done.push(done); };
+    u.showEnding = (view) => { cer.endings.push(view); ui.result = view.result; ui.setScreen('result'); ui.shown.push('result'); };
+    return cer;
+  }
+  function markDone(save: Save, ids: string[]): void {
+    for (const id of ids) { const r = save.levelRecord(id); r.done = true; r.bestTicks = 6000; r.stars = 2; r.relics = 0; r.deaths = 1; }
+  }
+  function clear(s: ReturnType<typeof makeScenes>, id: string): void {
+    s.scenes.startLevel(id);
+    s.input.heldMask = IN.RIGHT;
+    runFrames(s.scenes, () => s.scenes.run!.sim.finished);
+    s.input.heldMask = 0;
+  }
+
+  it('the last zone of a tier, cleared for the first time, shows the 층 돌파 card before the result and records the tier', () => {
+    const s = makeScenes(TOWER);
+    const cer = withCeremonies(s.ui);
+    markDone(s.save, ['t1', 't2']);
+    clear(s, 't3');
+    // RESULT_DELAY later: the fanfare and the card, not the result
+    const waited = runFrames(s.scenes, () => cer.tiers.length > 0, 200);
+    expect(waited).toBeGreaterThan(RESULT_DELAY * 60 - 5);
+    expect(cer.tiers).toHaveLength(1);
+    expect(cer.tiers[0].biome).toBe('tidepool');
+    expect(cer.tiers[0].roman).toBe('I');
+    expect(cer.tiers[0].next).toContain('폭풍 첨탑');
+    expect(s.audio.stingers).toEqual(['tier']);
+    expect(s.ui.result).toBeNull();
+    expect(s.ui.screen).toBe('play');
+    // the shell waits for the card, however long the player lets it run
+    runFrames(s.scenes, () => false, 240);
+    expect(s.ui.result).toBeNull();
+    cer.done[0]();
+    const gap = runFrames(s.scenes, () => s.ui.screen === 'result', 60);
+    expect(s.ui.screen).toBe('result');
+    expect(gap).toBeGreaterThanOrEqual(Math.floor(TIER_RESULT_GAP * 60));
+    expect(s.ui.result?.summary.levelId).toBe('t3');
+    expect(s.save.progress.tiersBroken).toEqual(['tidepool']);
+    expect(s.save.progress.endingSeen).toBeUndefined();
+    s.timers.fire();
+    expect(JSON.parse(s.storage.map.get(PROGRESS_KEY)!).tiersBroken).toEqual(['tidepool']);
+    // a second done() from the same card changes nothing
+    cer.done[0]();
+    runFrames(s.scenes, () => false, 30);
+    expect(s.ui.shown.filter((x) => x === 'result')).toHaveLength(1);
+    // the second clear of the same zone goes straight to the result
+    s.ui.emit({ type: 'retry' });
+    s.input.heldMask = IN.RIGHT;
+    runFrames(s.scenes, () => s.scenes.run!.sim.finished);
+    s.input.heldMask = 0;
+    runFrames(s.scenes, () => s.ui.screen === 'result', 200);
+    expect(s.ui.screen).toBe('result');
+    expect(cer.tiers).toHaveLength(1);
+    expect(s.audio.stingers).toEqual(['tier']);
+  });
+
+  it('a zone in the middle of a tier earns no card, and a tier already recorded earns none either', () => {
+    const s = makeScenes(TOWER);
+    const cer = withCeremonies(s.ui);
+    markDone(s.save, ['t1']);
+    clear(s, 't2');
+    runFrames(s.scenes, () => s.ui.screen === 'result', 200);
+    expect(s.ui.screen).toBe('result');
+    expect(cer.tiers).toEqual([]);
+    expect(s.save.progress.tiersBroken).toBeUndefined();
+    // a save that already saw the card (an earlier session, an import)
+    const again = makeScenes(TOWER);
+    const cer2 = withCeremonies(again.ui);
+    markDone(again.save, ['t1', 't2']);
+    again.save.progress.tiersBroken = ['tidepool'];
+    clear(again, 't3');
+    runFrames(again.scenes, () => again.ui.screen === 'result', 200);
+    expect(again.ui.screen).toBe('result');
+    expect(cer2.tiers).toEqual([]);
+    expect(again.audio.stingers).toEqual([]);
+  });
+
+  it('the last zone of the tower, cleared for the first time, shows the ending instead of the result and plays the ending theme', async () => {
+    const s = makeScenes(TOWER);
+    const cer = withCeremonies(s.ui);
+    markDone(s.save, TOWER.slice(0, -1).map((l) => l.id));
+    s.save.progress.tiersBroken = ['tidepool', 'stormspire'];
+    clear(s, 'v3');
+    runFrames(s.scenes, () => s.ui.screen === 'result', 200);
+    expect(cer.endings).toHaveLength(1);
+    expect(cer.tiers).toEqual([]);                        // the ending outranks the last tier's card
+    const e = cer.endings[0];
+    expect(e.lines).toEqual(ENDING_LINES);
+    expect(e.totals.zones).toBe(9);
+    expect(e.totals.stars).toBe(2 * 8 + starsFor(s.scenes.run!.summary!));
+    expect(e.totals.deaths).toBe(8 + s.scenes.run!.summary!.deaths);
+    expect(e.result.summary.levelId).toBe('v3');
+    expect(s.audio.stingers).toEqual(['ending']);
+    expect(s.audio.track).toBe(ENDING_TRACK);
+    expect(s.save.progress.endingSeen).toBe(true);
+    expect(s.save.progress.tiersBroken).toEqual(['tidepool', 'stormspire', 'voidreef']);
+    s.scenes.frame(1 / 60);                              // the screen change is reported on the next frame
+    expect(s.tele.screens).toContain('result');          // the ending reports under an existing screen name
+    expect(s.tele.names()).toContain('result_shown');
+    // the submission settles onto the ending's line through updateResult
+    s.timers.fire();
+    await s.scenes.settle();
+    expect(s.ui.result?.submit.state).toBe('accepted');
+    expect(JSON.parse(s.storage.map.get(PROGRESS_KEY)!).endingSeen).toBe(true);
+    // 다시 오르기 = quit: back to the tower, the title theme returns
+    s.ui.emit({ type: 'quit' });
+    expect(s.ui.screen).toBe('select');
+    expect(s.audio.track).toBe('title');
+    // the ending plays once: a second clear of v3 is a plain result
+    clear(s, 'v3');
+    runFrames(s.scenes, () => s.ui.screen === 'result', 200);
+    expect(s.ui.screen).toBe('result');
+    expect(cer.endings).toHaveLength(1);
+    expect(s.audio.stingers).toEqual(['ending']);
+  });
+
+  it('a UI without the ceremony surfaces gets the plain result while the flags are still recorded', () => {
+    const s = makeScenes(TOWER);
+    markDone(s.save, TOWER.slice(0, -1).map((l) => l.id));
+    clear(s, 'v3');
+    runFrames(s.scenes, () => s.ui.screen === 'result', 200);
+    expect(s.ui.screen).toBe('result');
+    expect(s.ui.result?.summary.levelId).toBe('v3');
+    expect(s.save.progress.endingSeen).toBe(true);
+    expect(s.save.progress.tiersBroken).toEqual(['voidreef']);
+    expect(s.audio.stingers).toEqual([]);
+    expect(s.audio.track).toBe('voidreef');
+  });
+
+  it('a wiped save earns its ceremonies again', () => {
+    const s = makeScenes(TOWER);
+    const cer = withCeremonies(s.ui);
+    markDone(s.save, ['t1', 't2']);
+    clear(s, 't3');
+    runFrames(s.scenes, () => cer.tiers.length > 0, 200);
+    expect(cer.tiers).toHaveLength(1);
+    cer.done[0]();
+    runFrames(s.scenes, () => s.ui.screen === 'result', 60);
+    s.ui.emit({ type: 'quit' });
+    s.ui.emit({ type: 'resetProgress' });
+    expect(s.save.progress.tiersBroken).toBeUndefined();
+    markDone(s.save, ['t1', 't2']);
+    clear(s, 't3');
+    runFrames(s.scenes, () => cer.tiers.length > 1, 200);
+    expect(cer.tiers).toHaveLength(2);
   });
 });

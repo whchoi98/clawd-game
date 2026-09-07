@@ -578,3 +578,35 @@ describe('P3-4 · social metadata, manifest shortcuts / screenshots, install car
     expect(css).toMatch(/\.install__btn\.is-cursor/);
   });
 });
+
+describe('ceremony surfaces (P3-9)', () => {
+  it('has the tier-break card and the ending screen with live regions, the medals row and the title hook', () => {
+    expect(html).toMatch(/<section class="screen screen--ceremony screen--tier" id="scr-tier"/);
+    expect(html).toMatch(/<section class="screen screen--ceremony screen--ending" id="scr-ending"/);
+    const tier = html.slice(html.indexOf('id="scr-tier"'), html.indexOf('id="scr-ending"'));
+    expect(tier).toMatch(/aria-live="polite"/);
+    expect(tier).toContain('data-act="skipCeremony"');
+    for (const id of ['tier-num', 'tier-floor', 'tier-name', 'tier-line', 'tier-next']) expect(tier).toContain(`id="${id}"`);
+    const ending = html.slice(html.indexOf('id="scr-ending"'), html.indexOf('<!-- PAUSE'));
+    expect(ending).toMatch(/aria-live="polite"/);
+    expect(ending).toContain('<canvas class="ending__sky" id="ending-sky"');
+    for (const act of ['quit', 'shareCard', 'shareEcho', 'openCredits']) expect(ending).toContain(`data-act="${act}"`);
+    expect(ending).toContain('다시 오르기');
+    expect(html).toContain('id="res-medals"');
+    expect(html).toContain('id="title-hook"');
+    // the ceremony sections come before the modals, so a pause or the credits stack above them
+    expect(html.indexOf('id="scr-tier"')).toBeLessThan(html.indexOf('id="scr-pause"'));
+    expect(html.indexOf('id="scr-ending"')).toBeLessThan(html.indexOf('id="scr-pause"'));
+  });
+
+  it('styles the staged reveal, the tier card and the ending, and keeps them static under reduced motion', () => {
+    expect(css).toMatch(/#scr-result \.modal\[data-stage="rank"\]/);
+    expect(css).toMatch(/\.tier-card__num\{/);
+    expect(css).toMatch(/\.ending__sky\{/);
+    expect(css).toMatch(/\.ending\[data-stage="done"\]/);
+    expect(css).toMatch(/\.medal\{/);
+    expect(css).toMatch(/\.title__hook\{/);
+    const rm = css.slice(css.indexOf('prefers-reduced-motion'));
+    expect(rm).toMatch(/\.tier-card__line,\.tier-card__next,\.ending__kicker/);
+  });
+});

@@ -475,6 +475,13 @@ export function repairProgress(raw: unknown, defaults: Progress): Progress {
   // Install card dismissals (P3-4): a whole count, absent until the first 나중에.
   const dismissed = int(p.installCardDismissed);
   if (dismissed > 0) p.installCardDismissed = dismissed; else delete p.installCardDismissed;
+  // Ceremony flags (P3-9): the tiers whose one-time 층 돌파 card was shown (unique biome ids) and whether the ending played.
+  const rawCeremony = p as unknown as Record<string, unknown>;
+  const tiers = Array.isArray(rawCeremony.tiersBroken)
+    ? [...new Set((rawCeremony.tiersBroken as unknown[]).filter((t): t is string => typeof t === 'string' && t.length > 0 && t.length <= 32))]
+    : [];
+  if (tiers.length) p.tiersBroken = tiers; else delete p.tiersBroken;
+  if (rawCeremony.endingSeen === true) p.endingSeen = true; else delete p.endingSeen;
   // The best endless run's replay (self echo on 같은 탑 다시) survives only with the SIM_VERSION that recorded it.
   const e = (isObj(p.endless) ? p.endless : {}) as Record<string, unknown>;
   const bestMasks = typeof e.bestMasks === 'string' && e.bestMasks && e.bestSim === SIM_VERSION && e.bestGen === GEN_VERSION && typeof e.bestSeed === 'number'
@@ -613,6 +620,9 @@ export class Save {
   resetProgress(): void {
     const fresh = defaultProgress(this.progress.player.id, this.progress.player.name);
     Object.assign(this.progress, fresh);
+    // Optional flags are not in the defaults, so Object.assign leaves them: a wiped save must earn its ceremonies again (P3-9).
+    delete this.progress.tiersBroken;
+    delete this.progress.endingSeen;
     if (this.prgTimer !== null) { this.cancel(this.prgTimer); this.prgTimer = null; }
     this.write(PROGRESS_KEY, this.progress);
   }
@@ -694,6 +704,9 @@ export function snapshotProgress(p: Progress, maxBytes = MAX_TRANSFER_BYTES - TR
     ...(typeof p.firstSeen === 'number' && p.firstSeen > 0 ? { firstSeen: Math.floor(p.firstSeen) } : {}),
     ...(int(p.playDays) > 0 ? { playDays: int(p.playDays) } : {}),
     ...(typeof p.lastPlayDay === 'string' ? { lastPlayDay: p.lastPlayDay } : {}),
+    // Ceremonies seen (P3-9) travel too: the other device must not replay the 층 돌파 card or the ending.
+    ...(Array.isArray(p.tiersBroken) && p.tiersBroken.length ? { tiersBroken: p.tiersBroken.filter((t) => typeof t === 'string') } : {}),
+    ...(p.endingSeen === true ? { endingSeen: true } : {}),
   };
   // Daily history is the only unbounded part: shed the oldest dates until the document fits.
   let keep = dailyDates.length;
@@ -781,6 +794,9 @@ export function mergeProgress(local: Progress, snap: TransferGetResponse): Progr
   if (typeof remote.firstSeen === 'number') local.firstSeen = typeof local.firstSeen === 'number' ? Math.min(local.firstSeen, remote.firstSeen) : remote.firstSeen;
   if ((remote.playDays ?? 0) > (local.playDays ?? 0)) local.playDays = remote.playDays;
   if (remote.lastPlayDay && (!local.lastPlayDay || remote.lastPlayDay > local.lastPlayDay)) local.lastPlayDay = remote.lastPlayDay;
+  // Ceremonies already seen on either device stay seen (P3-9): no second 층 돌파 card or ending after an import.
+  if (remote.tiersBroken?.length) local.tiersBroken = [...new Set([...(local.tiersBroken ?? []), ...remote.tiersBroken])];
+  if (remote.endingSeen) local.endingSeen = true;
   local.player = { id, name };
   return local;
 }

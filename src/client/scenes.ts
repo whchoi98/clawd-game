@@ -53,6 +53,9 @@ import { REHINT_HAZARD, REHINT_PIT } from './ui/hints.js';
 import { fmtTime } from './ui/hud.js';
 import { CARD_KR, defaultCardEnv, shareCard, type CardEnv, type ShareCardView } from './share/card.js';
 import type { GoTarget } from './share/go.js';
+import { endingView, tierCardView, tierComplete, towerComplete, type EndingView, type TierCardView } from './ui/ceremony.js';
+import type { StingerKind } from './audio/sfx.js';
+import { ENDING_TRACK } from './audio/music.js';
 
 export type RunMode = 'story' | 'daily' | 'endless';
 
@@ -152,10 +155,20 @@ export interface ShellUI extends UIPort {
    * shows it only when the browser can install (prompt captured / iOS Safari).
    */
   installCard?(on: boolean): void;
+  /**
+   * 층 돌파 (P3-9): the one-time vista card for a completed tier, shown over
+   * the finished run before its result; the UI calls `done` once the card ends
+   * or is skipped, and the shell then shows the result.
+   */
+  tierBreak?(card: TierCardView, done: () => void): void;
+  /** 엔딩 (P3-9): the ending screen in place of the last zone's result (the result view rides along for its submission line). */
+  showEnding?(view: EndingView): void;
 }
-/** AudioPort plus the pause-menu muffle the concrete engine offers. */
+/** AudioPort plus the pause-menu muffle and the ceremony stingers the concrete engine offers. */
 export interface ShellAudio extends AudioPort {
   setMuffle?(on: boolean): void;
+  /** Tier fanfare / ending chord / star / medal, outside the sim event stream (P3-9). */
+  stinger?(kind: StingerKind, idx?: number): void;
 }
 /** RendererPort plus the death X marks the concrete renderer draws (the shell keeps the list). */
 export interface ShellRenderer extends RendererPort {
@@ -213,6 +226,8 @@ export interface ScenesDeps {
 
 /** Seconds of clear animation before the result screen. */
 export const RESULT_DELAY = 1.25;
+/** Seconds between the 층 돌파 card ending and the result screen (P3-9). */
+export const TIER_RESULT_GAP = 0.2;
 /** Menu screens redraw the title backdrop at most this often (30 fps). */
 export const MENU_FRAME_DT = 1 / 30;
 /** Seconds after the tide swallows the player before the game-over screen. */
@@ -321,6 +336,10 @@ export interface Run {
   resultKind: 'clear' | 'over' | null;
   resultTimer: number;
   resultShown: boolean;
+  /** The 층 돌파 card this clear earned, until it has been shown (P3-9). */
+  tierCard: TierCardView | null;
+  /** This clear completed the tower for the first time: the ending stands in for the result (P3-9). */
+  ending: boolean;
   /** Best height before this run (tide modes), for the 신기록 label. */
   prevBestHeight: number;
   hintTimer: number;
@@ -911,6 +930,7 @@ export class Scenes {
       encoded: null,
       pendingSubmit: null,
       summary: null, view: null, resultKind: null, resultTimer: -1, resultShown: false,
+      tierCard: null, ending: false,
       // Stored heights are whole tiles; floor defensively for saves written before that rule.
       prevBestHeight: Math.floor(mode === 'daily' && daily ? (this.save.progress.daily[daily.date]?.height ?? 0)
         : mode === 'endless' ? this.save.progress.endless.bestHeight : 0),
@@ -1285,11 +1305,54 @@ export class Scenes {
     }
   }
 
-  /** The clear / game-over countdown; runs whether or not the play screen is up. */
+  /** The clear / game-over countdown; runs whether or not the play screen is up. A pending 층 돌파 card comes before the result. */
   private resultTick(run: Run, dt: number): void {
     if (run.resultTimer < 0) return;
     run.resultTimer -= dt;
-    if (run.resultTimer < 0) this.showResult(run);
+    if (run.resultTimer >= 0) return;
+    if (run.tierCard) this.showTierCard(run);
+    else this.showResult(run);
+  }
+
+  /**
+   * The one-time 층 돌파 card (P3-9): the fanfare, then the UI's vista card;
+   * the result follows TIER_RESULT_GAP after the card ends or is skipped. A
+   * UI without the card goes straight to the result.
+   */
+  private showTierCard(run: Run): void {
+    run.resultTimer = -1;
+    const card = run.tierCard;
+    run.tierCard = null;
+    if (!card || !this.ui.tierBreak) { this.showResult(run); return; }
+    this.audio.stinger?.('tier');
+    this.ui.tierBreak(card, () => {
+      if (this.run === run && !run.resultShown && run.resultTimer < 0) run.resultTimer = TIER_RESULT_GAP;
+    });
+  }
+
+  /**
+   * Ceremonies (P3-9) a story clear earns, decided once its record is written:
+   * the tier's 층 돌파 card the first time every zone of the tier is done, and
+   * the ending the first time every zone of the tower is — recorded in
+   * Progress.tiersBroken / endingSeen so neither plays twice. A locked race
+   * (no record) earns nothing; the ending outranks the last tier's card.
+   */
+  private planCeremonies(run: Run, s: RunSummary): void {
+    if (run.mode !== 'story' || run.raceLocked || !s.cleared) return;
+    const p = this.save.progress;
+    let changed = false;
+    if (!p.endingSeen && towerComplete(this.levels, p)) {
+      p.endingSeen = true;
+      run.ending = true;
+      changed = true;
+    }
+    const broken = p.tiersBroken ?? [];
+    if (!broken.includes(run.def.biome) && tierComplete(this.levels, p, run.def.biome)) {
+      p.tiersBroken = [...broken, run.def.biome];
+      if (!run.ending) run.tierCard = tierCardView(run.def.biome);
+      changed = true;
+    }
+    if (changed) this.save.saveProgress();
   }
 
   /**
@@ -1549,6 +1612,7 @@ export class Scenes {
       nextLevelId,
       ...(nextLevelId && justUnlocked.has(nextLevelId) ? { unlocked: { levelId: nextLevelId, name: this.levelById[nextLevelId].name } } : {}),
     };
+    this.planCeremonies(run, summary);
     this.ui.refreshSelect(this.save.progress, this.levels, justUnlocked);
     if (run.eligible && encoded) {
       // The first eligible record of an install still carrying the default name
@@ -1642,7 +1706,13 @@ export class Scenes {
     run.resultTimer = -1;
     run.resultShown = true;
     if (!run.view || !run.summary) return;
-    if (run.resultKind === 'clear') {
+    if (run.resultKind === 'clear' && run.ending && this.ui.showEnding) {
+      // The ending stands in for the last zone's result (P3-9): the tower's totals, the three lines, this clear's submission line.
+      this.ui.installCard?.(false);
+      this.ui.showEnding(endingView(this.save.progress, this.levels, run.view));
+      this.audio.stinger?.('ending');
+      this.audio.setTrack(ENDING_TRACK);
+    } else if (run.resultKind === 'clear') {
       // "<친구>보다 / 라이벌보다 0.62s 빠름": our play ticks against the raced echo's (both the board's score).
       const r = run.rival;
       this.ui.setVersus?.(this.raceVersus(run) ?? (r && run.summary.cleared

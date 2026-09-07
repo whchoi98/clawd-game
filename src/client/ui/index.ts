@@ -4,7 +4,13 @@
 export {
   UI, fmtDateKr, reasonKr, REASON_KR, NAG_DISMISSED_KEY, IOS_HINT_DISMISSED_KEY, GAMEPAD_HIDE_S, TOUCH_PREVIEW_S, MUTE_KR,
 } from './ui.js';
-export type { UIOptions } from './ui.js';
+export type { UIOptions, UiAudio } from './ui.js';
+export {
+  Timeline, CLEAR_TIMELINE, CLEAR_STAGES, TIER_TIMELINE, TIER_CARD_S, TIER_LINES, ENDING_TIMELINE, ENDING_LINES, TITLE_HOOK, MEDAL_KR, MEDAL_ORDER,
+  SUMMIT, drawEndingSky, endingTimeline, endingTotals, endingView, medalsOf, prefersReducedMotion, stageAtLeast, tierCardView, tierComplete,
+  tierTimeline, towerComplete,
+} from './ceremony.js';
+export type { ClearStage, EndingStage, EndingTotals, EndingView, MedalId, TierCardView, TierStage, TimelineStep } from './ceremony.js';
 export {
   SCREENS, MODAL_SCREENS, ScreenStack, Navigator, el, starSvg, lockSvg, isVisible, validateName, NAME_MAX,
   REPEAT_DELAY, REPEAT_INTERVAL,

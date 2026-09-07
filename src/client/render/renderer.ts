@@ -11,7 +11,7 @@
  * fog band → composite (bloom, vignette, grain, flash, fade, letterbox).
  */
 import { TILE } from '../../sim/types.js';
-import type { BiomeId, SimEvent, SimState } from '../../sim/types.js';
+import type { BiomeId, PlayerState, SimEvent, SimState } from '../../sim/types.js';
 import type { Level } from '../../sim/level.js';
 import { makeRng } from '../../sim/rng.js';
 import { BIOMES, C, type Biome } from '../../shared/biomes.js';
@@ -23,7 +23,7 @@ import {
 import { Sky } from './sky.js';
 import { Terrain } from './tiles.js';
 import { Particles } from './particles.js';
-import { SKINS, drawClawd, drawClawdPortrait, skinById, type Skin } from './clawd.js';
+import { GOAL_LOOK_TILES, SKINS, drawClawd, drawClawdPortrait, setLookTarget, skinById, type Skin } from './clawd.js';
 import { Actors, PlayerVisual, drawDeathMarks, drawGhost, type DeathMarkView } from './actors.js';
 
 /**
@@ -43,6 +43,8 @@ const TITLE_SEEDS: Record<BiomeId, number> = { tidepool: 3, stormspire: 12, void
 const GOAL_EDGE_MARGIN = 10;
 /** Distance of the edge beacon's centre from the rendered box's edge, in world units. */
 const BEACON_INSET = 20;
+/** World units the player travels between two dash after-images (P3-9). */
+export const AFTER_IMAGE_SPACING = 10;
 
 /** Monotonic milliseconds for the render-cost sample; -1 when the platform has no clock (the scaler then ignores cost). */
 function nowMs(): number {
@@ -78,6 +80,10 @@ export class Renderer implements RendererPort {
   private readonly ghostVis: PlayerVisual[] = [];
   /** Death X marks of the current zone session, as the shell last set them (render only). */
   private deathMarks: readonly DeathMarkView[] = [];
+  /** The level's goal orb (world units), for the eye lead; null without a goal. */
+  private goal: { x: number; y: number } | null = null;
+  /** Where the last dash after-image was stamped; null when the player is not dashing. */
+  private afterAt: { x: number; y: number } | null = null;
 
   // title vista
   private titleBiome: BiomeId | null = null;
@@ -118,6 +124,32 @@ export class Renderer implements RendererPort {
     this.switchFlash = 0;
     this.t = 0;
     this.goalScreen = null;
+    const goal = sim.state.entities.find((e) => e.kind === 'goal');
+    this.goal = goal ? { x: goal.x, y: goal.y } : null;
+    this.afterAt = null;
+  }
+
+  /**
+   * Eye lead (P3-9): the direction from the player's centre to the goal orb
+   * when it lies within GOAL_LOOK_TILES, as a -1..1 vector; null otherwise.
+   */
+  goalLook(p: PlayerState): { x: number; y: number } | null {
+    const g = this.goal;
+    if (!g || p.dead) return null;
+    const dx = g.x - (p.x + p.w / 2), dy = (g.y - 8) - (p.y + p.h / 2);
+    const d = Math.hypot(dx, dy);
+    if (d < 1 || d > GOAL_LOOK_TILES * TILE) return null;
+    return { x: dx / d, y: dy / d };
+  }
+
+  /** Dash after-images (P3-9): a skin-coloured silhouette every AFTER_IMAGE_SPACING units while the dash lasts. */
+  private dashAfterImages(p: PlayerState, skin: Skin): void {
+    if (!(p.dashT > 0) || p.dead) { this.afterAt = null; return; }
+    const cx = p.x + p.w / 2, cy = p.y + p.h;
+    const last = this.afterAt;
+    if (last && Math.hypot(cx - last.x, cy - last.y) < AFTER_IMAGE_SPACING) return;
+    this.afterAt = { x: cx, y: cy };
+    this.particles.afterImage(cx, cy, p.facing, skin.shell, 0.6);
   }
 
   resize(): void { this.stage.resize(); }
@@ -156,6 +188,7 @@ export class Renderer implements RendererPort {
     this.sky.update(dt, view.camX, view.camY);
     this.particles.update(dt, (x, y) => level.solid(Math.floor(x / TILE), Math.floor(y / TILE)));
     this.playerVis.update(dt, state.player);
+    this.dashAfterImages(state.player, this.skin());
     while (this.ghostVis.length < ghosts.length) this.ghostVis.push(new PlayerVisual());
     for (let i = 0; i < ghosts.length; i++) this.ghostVis[i].update(dt, ghosts[i].player);
     this.actors.update(dt, state);
@@ -176,7 +209,10 @@ export class Renderer implements RendererPort {
 
     for (let i = 0; i < ghosts.length; i++) drawGhost(st, ghosts[i], this.ghostVis[i]);
 
+    // the live player alone gets the eye lead toward a near goal (set → draw → clear, see clawd.ts)
+    setLookTarget(this.goalLook(state.player));
     this.playerVis.draw(st, level, state.player, this.skin());
+    setLookTarget(null);
     this.particles.draw(UI_FONT);
 
     if (state.tide) this.actors.drawTide(state.tide, this.t);
@@ -301,7 +337,7 @@ export class Renderer implements RendererPort {
       case 'land': {
         const impact = clamp01(ev.impact);
         this.playerVis.land(impact);
-        P.dust(ev.x, ev.y, 4 + Math.round(impact * 12), 0, b.crustHi, 40 + impact * 110);
+        P.landDust(ev.x, ev.y, impact, b.crustHi);
         if (impact > 0.55) P.ring(ev.x, ev.y, 2, 22 + impact * 18, 0.3, b.crustHi, 1.8, 0.7);
         break;
       }
@@ -321,6 +357,7 @@ export class Renderer implements RendererPort {
       }
       case 'wallSlide':
         P.dust(ev.x, ev.y, 1, ev.dir > 0 ? Math.PI : 0, b.crustHi, 26);
+        P.slideSparks(ev.x, ev.y, ev.dir, b.crustHi);
         break;
       case 'stomp':
         P.spark(ev.x, ev.y, 5, C.shardHi, 90, Math.PI / 2, 1.1, 0.7);
@@ -378,12 +415,17 @@ export class Renderer implements RendererPort {
         P.clear();
         this.actors.resetStreaks();
         P.ring(ev.x, ev.y - 8, 2, 34, 0.4, skin.glow, 2, 1.2);
+        // the respawn pop: a tall stretch that settles, and glowing motes flung out of the arrival point
+        this.playerVis.squash = -0.5;
+        P.pop(ev.x, ev.y - 8, skin.glow);
         break;
       case 'goal':
         for (let i = 0; i < 5; i++) {
           P.ring(ev.x, ev.y - 18, 3 + i * 6, 70 + i * 18, 0.7 + i * 0.1, i % 2 ? C.goal : C.relicHi, 2.2, 1.2);
         }
         P.spark(ev.x, ev.y - 18, 40, C.goal, 260, null, TAU, 1.4);
+        // goal-touch burst: confetti in the goal, relic, biome accent and skin colours
+        P.confetti(ev.x, ev.y - 18, 36, [C.goal, C.relicHi, b.accent, skin.shell]);
         break;
       case 'foeHit':
         P.spark(ev.x, ev.y, 6, C.enemyHi, 130, null, TAU, 0.8);

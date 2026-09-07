@@ -111,7 +111,7 @@ export class FxBus implements TimeControl {
         this.stop(0.11); this.shake(0.7); this.flash(0.3, C.relicHi); this.slowMo(0.35);
         break;
       case 'checkpoint':
-        this.flash(0.14, C.checkpoint);
+        this.flash(0.14, C.checkpoint); this.zoomPulse(0.012);
         break;
       case 'crystal':
         this.flash(0.1, C.crystalHi); this.zoomPulse(0.015);
@@ -120,7 +120,8 @@ export class FxBus implements TimeControl {
         this.flash(0.12, ev.switchA ? C.switchA : C.switchB); this.shake(0.25);
         break;
       case 'goal':
-        this.slowMo(0.3); this.flash(0.4, C.goal); this.shake(0.8);
+        // the goal touch punches in: slow-mo, a gold flash, a shake and a zoom pulse (P3-9)
+        this.slowMo(0.3); this.flash(0.4, C.goal); this.shake(0.8); this.zoomPulse(0.06);
         break;
       case 'hurt':
         this.stop(0.09); this.shake(1.1); this.flash(0.22, C.danger);
