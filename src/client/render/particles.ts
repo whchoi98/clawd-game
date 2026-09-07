@@ -245,6 +245,46 @@ export class Particles {
     }
   }
 
+  // ------------------------------------------------------------ bubble foe (P5-5)
+  /**
+   * Bubble pop: `n` droplets (8–12 at full budget) thrown outward with an upward
+   * bias, falling under gravity and shrinking as they go — water, not sparks.
+   * The ring that reads as the film letting go is the caller's (`ring`).
+   */
+  droplets(x: number, y: number, n: number, col: string, spd = 120): void {
+    n = Math.max(2, Math.round(n * this.budget()));
+    for (let i = 0; i < n; i++) {
+      const p = this.take();
+      const a = (i / n) * TAU + (Math.random() - 0.5) * 0.5;
+      const s = spd * (0.5 + Math.random() * 0.8);
+      p.kind = Kind.Dot; p.life = p.max = 0.32 + Math.random() * 0.26;
+      p.x = x; p.y = y;
+      p.vx = Math.cos(a) * s; p.vy = Math.sin(a) * s - 40;
+      p.r = 1.1 + Math.random() * 1.3; p.grav = 420; p.drag = 0.94;
+      p.col = col; p.glow = 0.6; p.a0 = 0.9;
+    }
+  }
+
+  /**
+   * Bubble re-form: a ring closing inward (`ring` interpolates r0 → r1 either
+   * way, so r0 > r1 shrinks) and a few motes flying into the centre, timed to
+   * arrive as the ring lands.
+   */
+  shimmerIn(x: number, y: number, col: string, r0 = 22, dur = 0.3): void {
+    this.ring(x, y, r0, 4, dur, col, 1.2, 0.8);
+    const n = Math.max(2, Math.round(6 * this.budget()));
+    for (let i = 0; i < n; i++) {
+      const p = this.take();
+      const a = (i / n) * TAU + Math.random() * 0.4;
+      const R = r0 * (0.8 + Math.random() * 0.4);
+      p.kind = Kind.Dot; p.life = p.max = dur;
+      p.x = x + Math.cos(a) * R; p.y = y + Math.sin(a) * R;
+      p.vx = (-Math.cos(a) * R) / dur; p.vy = (-Math.sin(a) * R) / dur;
+      p.r = 0.9 + Math.random() * 0.6; p.grav = 0; p.drag = 1;
+      p.col = col; p.glow = 0.8; p.a0 = 0.8;
+    }
+  }
+
   // ------------------------------------------------------------ update
   update(dt: number, solidAt: SolidAt | null = null): void {
     for (let i = 0; i < CAP; i++) {

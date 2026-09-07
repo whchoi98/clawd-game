@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### Added (Phase 5 C)
+- P5-5 거품 적의 클라이언트 표현(`src/client/render/{actors,particles,renderer}.ts`, `src/client/audio/sfx.ts`, `src/client/ui/hints.ts` — 렌더·오디오 전용, sim·리플레이 무관). **드로잉** — 살아 있는 거품은 히트박스 위에 정확히 얹힌(rx = w/2 · ry = h/2, `f.x`/`f.y`에 오프셋 없음 — 위아래 흔들림은 sim의 것) 반투명 홍채빛 구체: 바이옴 `accent`가 림에 모이는 비누막 그라디언트, 얇은 흰 림과 그 위를 도는 홍채 아크 3개(핑크·시안·연금색), 좌상단 광택·우하단 핀 글린트, 위쪽 크라운 하이라이트(워커·호퍼·포탑과 같은 '밟아라' 신호), 아랫 림의 희미한 위험색(옆·아래 접촉은 즉사), ±3.5 % 표면 웨이블(`bubbleWobble`, 면적 보존); 글로 버퍼는 힌트 수준(alpha 0.08). **재생성 예고** — 비활성(`dead`) 거품은 아무것도 그리지 않다가 카운트다운(`state`) 마지막 0.5 s(`BUBBLE_SHIMMER_T`, `bubbleShimmer`)에 홈 위치로 좁혀 드는 링(2.4 r → r)과 모트 4개가 밝아진다 — P5-2 예고 포즈(호퍼 웅크림·포탑 조준선)와 같은 문법. **파티클** — `bubblePop`은 새 이미터 `Particles.droplets`(accent 물방울 10개, 위로 튀어 중력 낙하) + 흰 링, `bubbleBack`은 `Particles.shimmerIn`(안쪽으로 닫히는 링 + 중심으로 모여드는 모트 6개); `renderer.onEvent`에 두 케이스 추가(햅틱은 이미 매핑). **사운드** — 플레이스홀더를 교체: `bubblePop`은 밴드패스 버스트(2100→800 Hz, 70 ms) + 상승 사인 처프(460→1180 Hz) + 물방울 틱, 피크 게인 0.11(`foeKilled` 0.18보다 조용 — 터뜨림은 처치가 아니라 바운스); `bubbleBack`은 5도 간격 사인 2성부의 느린 어택 글래스 시머 + 하이패스 숨, 피크 0.045. 둘 다 이벤트 필드(vol·pan)만 쓰고 난수 없음. **힌트** — `REHINT_BUBBLE` '거품은 위에서 밟아라 · 옆에서 닿으면 죽는다', 사망 토스트 `DEATH_LINE_BUBBLE` '거품에 닿았다', 사망 원인 → 힌트 가족 순수 매핑 `rehintKind`/`deathHint`(pit·hazard 기존 규칙 유지, `bubble` 추가; 셸 `scenes.ts`의 `rehint`/`deathLine` 연결은 통합 시). 테스트: 새 `test/client/bubble-render.test.ts`(순수 함수, 히트박스 충실성, 비활성 2.0 s = 호출 0 / 0.3 s = 시머 링·모트, 4바이옴 전체 draw, 이벤트별 파티클 수), `audio.test`(recording Synth로 피크 게인 비교·결정론·엔진 재생), 새 `test/client/hints.test.ts`.
+
 ## [0.4.1] - 2026-09-07
 
 배포: https://clawd-game.whchoi.net/ — 데일리·끝없는 등반이 밴드마다 배경·지형 팔레트를 실제로 바꾸는 Phase 5 2차 파동(정점 밴드 포함). SIM_VERSION 3·GEN_VERSION 2 유지, 다이제스트 18개 불변. 컨테이너 QA: 스모크 23/23(새 `shot:daily-band` 단계), 판독성 10/10, 격자 PASS, 모바일 54/54. 라이브 점검(2026-09-07 05:55 UTC, CloudFormation UPDATE_COMPLETE): 배포 후 점검 13/13, 스모크 23/23(자가진단 18/18), 모바일 54/54, 데일리 기록 제출 E2E, 알람 10 OK.

@@ -68,6 +68,26 @@ export function walkerBlink(t: number, id: number): number {
   return ph < 0.05 ? 1 : 0;
 }
 
+// ============================================================ bubble foe (P5-5, pure)
+/**
+ * Seconds before an inactive bubble re-forms during which the shimmer ring gathers at its home.
+ * The sim counts `FoeState.state` down to 0 while the bubble is `dead`; the renderer only reads it.
+ */
+export const BUBBLE_SHIMMER_T = 0.5;
+/** 0 → 1 as the re-form countdown runs out; 0 while more than BUBBLE_SHIMMER_T is left or the timer is not running. */
+export function bubbleShimmer(state: number): number {
+  return state > 0 && state < BUBBLE_SHIMMER_T ? clamp01(1 - state / BUBBLE_SHIMMER_T) : 0;
+}
+/**
+ * Surface wobble of a live bubble: a slow ±3.5 % breathe of the horizontal radius (the vertical radius
+ * takes the inverse so the area — what the eye reads as the hitbox — holds). Staggered by id.
+ */
+export function bubbleWobble(t: number, id: number): number {
+  return 1 + 0.035 * Math.sin(t * 3.1 + id * 1.7);
+}
+/** Soap-film hues that drift around the rim: pink · cyan · pale gold. */
+const BUBBLE_IRIDESCENCE: readonly string[] = ['#FFB6E6', '#B6F0FF', '#FFF3B0'];
+
 /**
  * Rising streaks emitted per second per visible updraft column (halved on the
  * low tier). Each streak travels the whole column, so the live population is
@@ -668,8 +688,12 @@ export class Actors {
   drawFoes(state: SimState, t: number): void {
     const st = this.stage;
     for (const f of state.foes) {
-      if (f.dead) continue;
       if (!st.visible(f.x - 20, f.y - 20, 40, 40)) continue;
+      if (f.dead) {
+        // an inactive bubble draws nothing but the re-form shimmer at its home, over the last BUBBLE_SHIMMER_T of its countdown (P5-5)
+        if (f.kind === 'bubble') this.bubbleShimmer(f, t);
+        continue;
+      }
       switch (f.kind) {
         case 'walker': this.walker(f, t, false); break;
         case 'spiker': this.walker(f, t, true); break;
@@ -677,6 +701,7 @@ export class Actors {
         case 'flyer': this.flyer(f); break;
         case 'turret': this.turret(f, t); break;
         case 'chaser': this.chaser(f); break;
+        case 'bubble': this.bubble(f, t); break;
       }
     }
   }
@@ -935,6 +960,96 @@ export class Actors {
     if (this.stage.settings.bloom) {
       gctx.fillStyle = alpha(charging ? C.danger : C.enemyHi, (0.2 + (charging ? 0.4 : 0) + f.flash * 0.4) * d.alpha);
       gctx.beginPath(); gctx.arc(f.x, f.y, 13, 0, TAU); gctx.fill();
+    }
+  }
+
+  /**
+   * Bubble foe (P5-5): a translucent iridescent sphere the sim bobs in place.
+   * The body sits on the hitbox exactly (rx = w/2, ry = h/2, drawn at f.x/f.y
+   * with no offset — the sim's bob is the only motion); the one liberty is the
+   * slow surface wobble that trades a few percent between the axes. The crown
+   * highlight on top is the same "land on me" cue the walker, hopper and
+   * turret carry; the lower rim takes a faint danger tint because side and
+   * underside contact kills. The glow buffer gets a hint only — it is mostly air.
+   */
+  private bubble(f: FoeState, t: number): void {
+    const ctx = this.stage.ctx, gctx = this.stage.gctx;
+    const d = this.dieK(f);
+    const accent = this.biome.accent;
+    const wob = bubbleWobble(f.t, f.id);
+    const rx = (f.w / 2) * wob, ry = (f.h / 2) / wob;
+    const r = Math.min(rx, ry);
+    const flash = f.flash > 0.1;
+    ctx.save();
+    ctx.globalAlpha *= d.alpha;
+    ctx.translate(f.x, f.y);
+    ctx.scale(d.scale, d.scale);
+    // body: nearly clear in the middle, the accent gathers toward the rim like a soap film
+    const g = ctx.createRadialGradient(-rx * 0.3, -ry * 0.35, r * 0.1, 0, 0, r);
+    g.addColorStop(0, alpha('#FFFFFF', flash ? 0.55 : 0.16));
+    g.addColorStop(0.55, alpha(accent, flash ? 0.35 : 0.07));
+    g.addColorStop(0.88, alpha(accent, flash ? 0.5 : 0.2));
+    g.addColorStop(1, alpha('#FFFFFF', flash ? 0.7 : 0.34));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, TAU); ctx.fill();
+    // rim: a thin white line, then the iridescent arcs drifting around it
+    ctx.lineWidth = 0.9;
+    ctx.strokeStyle = alpha('#FFFFFF', 0.55);
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, TAU); ctx.stroke();
+    ctx.lineWidth = 1.3;
+    for (let i = 0; i < BUBBLE_IRIDESCENCE.length; i++) {
+      const a0 = f.t * 0.9 + (i / BUBBLE_IRIDESCENCE.length) * TAU;
+      ctx.strokeStyle = alpha(BUBBLE_IRIDESCENCE[i], 0.42);
+      ctx.beginPath(); ctx.ellipse(0, 0, rx - 0.6, ry - 0.6, 0, a0, a0 + 1.1); ctx.stroke();
+    }
+    // lower rim: side and underside contact kills — a faint danger tint, never loud enough to read as a hazard
+    ctx.strokeStyle = alpha(C.danger, 0.22);
+    ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx - 0.4, ry - 0.4, 0, Math.PI * 0.2, Math.PI * 0.8); ctx.stroke();
+    // stompable crown highlight, pulsing on the same clock as the walker's and the hopper's
+    ctx.strokeStyle = alpha('#FFE9A8', 0.55 + 0.25 * Math.sin(t * 4));
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx * 0.72, ry * 0.72, 0, Math.PI * 1.12, Math.PI * 1.88); ctx.stroke();
+    // glints: a soft oval up-left, a pin-point down-right
+    ctx.fillStyle = alpha('#FFFFFF', 0.75);
+    ctx.beginPath(); ctx.ellipse(-rx * 0.38, -ry * 0.42, r * 0.22, r * 0.13, -0.7, 0, TAU); ctx.fill();
+    ctx.fillStyle = alpha('#FFFFFF', 0.35);
+    ctx.beginPath(); ctx.arc(rx * 0.42, ry * 0.4, r * 0.08, 0, TAU); ctx.fill();
+    ctx.restore();
+    if (this.stage.settings.bloom) {
+      gctx.fillStyle = alpha(accent, (0.08 + f.flash * 0.3) * d.alpha);
+      gctx.beginPath(); gctx.arc(f.x, f.y, r * 0.9, 0, TAU); gctx.fill();
+    }
+  }
+
+  /**
+   * The last BUBBLE_SHIMMER_T of an inactive bubble's countdown: a ring closes
+   * in on the home position and brightens while four motes spiral in, so the
+   * re-form is telegraphed the way the hopper's crouch and the turret's aim
+   * line are (P5-2). Nothing else is drawn while the bubble is inactive.
+   */
+  private bubbleShimmer(f: FoeState, t: number): void {
+    const k = bubbleShimmer(f.state);
+    if (k <= 0) return;
+    const ctx = this.stage.ctx, gctx = this.stage.gctx;
+    const accent = this.biome.accent;
+    const r = Math.min(f.w, f.h) / 2;
+    const ring = r * (2.4 - 1.4 * easeOutCubic(k));   // closes in: 2.4 r → r
+    ctx.save();
+    ctx.translate(f.x, f.y);
+    ctx.strokeStyle = alpha(mixHex(accent, '#FFFFFF', 0.5), 0.15 + 0.45 * k);
+    ctx.lineWidth = 0.7 + 0.8 * k;
+    ctx.beginPath(); ctx.arc(0, 0, ring, 0, TAU); ctx.stroke();
+    ctx.fillStyle = alpha('#FFFFFF', 0.3 + 0.5 * k);
+    for (let i = 0; i < 4; i++) {
+      const a = t * 3 + i * (TAU / 4) + k * 2.2;
+      const rr = ring * (1.05 + 0.25 * (1 - k));
+      ctx.beginPath(); ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, 0.7 + 0.5 * k, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+    if (this.stage.settings.bloom) {
+      gctx.fillStyle = alpha(accent, 0.12 * k);
+      gctx.beginPath(); gctx.arc(f.x, f.y, r, 0, TAU); gctx.fill();
     }
   }
 

@@ -226,13 +226,18 @@ export const SFX: Record<SfxName, Recipe> = {
     s.tone(500, 140, 0.2, { type: 'triangle', gain: 0.14 * p.vol, fx: 0.25, pan: p.pan });
   },
   bubblePop(s, p) {
-    // Placeholder (P5-5 audio pass refines): a wet pop — short bandpass burst plus a rising sine chirp.
-    s.noise(0.09, { gain: 0.16 * p.vol, type: 'bandpass', freq: 1600, q: 1.2, pan: p.pan });
-    s.tone(520, 980, 0.16, { type: 'sine', gain: 0.12 * p.vol, fx: 0.3, pan: p.pan });
+    // A wet pop (P5-5): a short bandpass burst sweeping down, a rising sine chirp and a droplet tick on top.
+    // Softer than foeKilled on purpose — the pop is a bounce, not a kill (no combo, no counter). Every
+    // parameter comes from the event fields (vol, pan): no randomness, so a replay sounds the same twice.
+    s.noise(0.07, { gain: 0.11 * p.vol, type: 'bandpass', freq: 2100, freqEnd: 800, q: 1.6, pan: p.pan });
+    s.tone(460, 1180, 0.13, { type: 'sine', gain: 0.085 * p.vol, curve: 'exp', fx: 0.25, pan: p.pan });
+    s.tone(1900, 2600, 0.05, { type: 'sine', gain: 0.035 * p.vol, at: 0.035, pan: p.pan });
   },
   bubbleBack(s, p) {
-    // Placeholder: a soft glassy shimmer as the bubble re-forms.
-    s.tone(880, 1320, 0.28, { type: 'sine', gain: 0.05 * p.vol, attack: 0.08, fx: 0.6, pan: p.pan });
+    // The film re-forms: a soft glassy shimmer — two sines a fifth apart swelling in, a breath of highpass air.
+    s.tone(1320, 1760, 0.3, { type: 'sine', gain: 0.045 * p.vol, attack: 0.07, fx: 0.6, pan: p.pan });
+    s.tone(1980, 2640, 0.26, { type: 'sine', gain: 0.028 * p.vol, at: 0.05, attack: 0.08, fx: 0.7, pan: p.pan });
+    s.noise(0.22, { gain: 0.018 * p.vol, type: 'highpass', freq: 5200, attack: 0.06, fx: 0.4, pan: p.pan });
   },
   bolt(s, p) {
     s.tone(720, 260, 0.13, { type: 'square', gain: 0.09 * p.vol, pan: p.pan, filter: { type: 'lowpass', freq: 3200 } });
