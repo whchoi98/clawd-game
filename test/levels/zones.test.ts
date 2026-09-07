@@ -414,13 +414,14 @@ describe('the sixteen zones', () => {
       for (let y = 7; y <= 18; y++) expect(m3.rows[y][36], `shelf 2 face at row ${y}`).toBe('#');
       expect(m3.rows[6][36]).toBe('.');
       expect(m3.rows[16].slice(17, 31)).toBe('#'.repeat(14));   // shelf 1 still ends at column 30
-      // the bubbles: the yard perch and the well ladder, columns 33 → 35 → 33 three rows apart (two columns between
-      // consecutive rungs, every rung a tile clear of the updraft at 31), under the lintel and over the spikes
+      // the bubbles: the yard perch and the two-rung well ladder, (33,15) and (35,12) — two columns and three rows apart,
+      // each a tile clear of the updraft at 31, under the lintel and over the spikes; nothing hangs over either rung
       const F = 26;
-      expectBubbles(m3, [[10, F - 6], [33, 15], [35, 12], [33, 9]]);
+      expectBubbles(m3, [[10, F - 6], [33, 15], [35, 12]]);
       expect(m3.rows[F - 11][10]).toBe('o');
       const ladder = bubbles(m3).filter(([x]) => x >= 32).sort((a, b) => b[1] - a[1]);
-      expect(ladder).toEqual([[33, 15], [35, 12], [33, 9]]);
+      expect(ladder).toEqual([[33, 15], [35, 12]]);
+      for (const [x, y] of ladder) for (let yy = 4; yy < y; yy++) expect(m3.rows[yy][x], `open air over the rung at (${x},${y}), row ${yy}`).toBe('.');
       for (let i = 1; i < ladder.length; i++) {
         expect(Math.abs(ladder[i][0] - ladder[i - 1][0]), 'rungs two columns apart').toBe(2);
         expect(ladder[i - 1][1] - ladder[i][1], 'rungs three rows apart').toBe(3);

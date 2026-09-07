@@ -12,29 +12,33 @@
  * over the floor and wakes only for whoever climbs to the relic perch · Act 4 a
  * third updraft to the goal shelf.
  *
- * Rev 1 (P5-5): four bubbles ('b'). One hangs over the start yard a tile right
+ * Rev 1 (P5-5): three bubbles ('b'). One hangs over the start yard a tile right
  * of the dash-up perch, five rows over the floor — walk off the perch onto it
  * (or double-jump beside it and hold {stomp}) and the launch passes a shard
- * five rows up; a miss drops you back onto the yard. Three more zig-zag up the
+ * five rows up; a miss drops you back onto the yard. Two more hang up the
  * spiked side of the second column's well — widened from three spike columns
  * to four (32..35) to make room for them — the bubble ladder between the
- * updrafts: columns 33 → 35 → 33, three rows apart, so consecutive bubbles are
- * TWO columns apart and a launch rises past the next bubble's side with a clear
- * tile between before the rider drifts over onto it. The column lifts anyone
- * who jumps off shelf 1 into the well: come down onto the lowest bubble from
- * that lift (or ride the column and step off onto it), keep {jump} held through
- * each launch — the held launch (≈ 72 units) clears the next bubble three rows
- * up with room, the released one (≈ 55) barely — and the top launch steps onto
- * shelf 2, an alternative to riding the column all the way. Straight down is
- * still the spikes; a tile left is the column; the top bubble hangs over the
- * lowest, so a launch straight up from the lowest meets it — steer toward the
- * middle one at the pop. The lintel caps every launch, so the ladder never
- * reaches the roof, no bubble hangs over shelf 1 (a launch plus two air jumps
+ * updrafts: (33,15) and (35,12), two columns and three rows apart, so the
+ * launch off the lower one rises past the upper one's side with a clear tile
+ * between before the rider drifts over onto it. The column lifts anyone who
+ * jumps off shelf 1 into the well: come down onto the lower bubble from that
+ * lift (or ride the column and step off onto it) and keep {jump} held through
+ * the launch — held it rises ≈ 72 units and clears the upper bubble with room,
+ * released ≈ 55 and barely. The launch off the upper bubble alone stops short
+ * of shelf 2 (feet ≈ 114..132 against the floor top at 112): the bounce refills
+ * the air jump, so {jump} again near the apex (feet ≈ 82, the head three units
+ * under the lintel) or a dash-up carries you onto the shelf at column 36.
+ * Straight down is still the spikes; a tile left is the column; nothing hangs
+ * over either bubble, so a launch straight up meets only air and falls back
+ * onto the spikes. No bubble hangs over shelf 1 (a launch plus two air jumps
  * and a dash-up from there would), every bubble stays a tile clear of the
  * column (a rider's box never touches one) and out of the phone spawn frame.
  * Probed on the sim (Phase 5 C, task 1-B): the ride up the column exits onto
- * shelf 2 without touching a bubble, the ladder chains with {jump} held, and a
- * full-speed jump off shelf 1 into the well ends on the spikes, not a bubble.
+ * shelf 2 without touching a bubble, the ladder chains with {jump} held and an
+ * air jump off the upper launch, and a full-speed jump off shelf 1 into the
+ * well ends on the spikes, not a bubble — only a {jump} tap of four ticks or
+ * less (≤ 33 ms) from a tile before the edge arcs low enough to meet the upper
+ * bubble's underside.
  *
  * The well of the second column is capped by a rock lintel and the roof runs
  * over the whole shelf, so no dash-up climb gets above the corridor. Shards are
@@ -77,15 +81,14 @@ m.spikes(32, 35, 18);
 m.ent('z', 31, 18);
 m.block(31, 35, 0, 3);
 m.shards([[30, 4], [29, 3]]);
-//     the well ladder (P5-5): three bubbles zig-zag up the spiked side of the well, three rows apart and TWO columns
-//     apart (33 → 35 → 33), so a launch rises past the next bubble's side with a clear tile between and the rider drifts
-//     over onto it; every bubble is at least a tile clear of the column at 31. The column lifts a jump off shelf 1 —
-//     come down onto the lowest from that lift, or ride the column and step off onto it — and the top launch steps onto
-//     shelf 2. The lintel caps every launch, so nothing here reaches the roof; a miss falls onto the spikes, or drifts
-//     left into the column. The top bubble hangs over the lowest: steer toward the middle one at the first pop.
+//     the well ladder (P5-5): two bubbles up the spiked side of the well, (33,15) and (35,12) — three rows apart and TWO
+//     columns apart, so the launch off the lower one rises past the upper one's side with a clear tile between and the
+//     rider drifts over onto it; both a tile clear of the column at 31. The column lifts a jump off shelf 1 — come down
+//     onto the lower bubble from that lift, or ride the column and step off onto it. The launch off the upper bubble
+//     stops just short of shelf 2: the refilled air jump (or a dash-up) near the apex steps onto it. A miss falls onto
+//     the spikes or drifts left into the column; nothing hangs over either bubble, and the lintel caps the well.
 m.ent('b', 33, 15);
 m.ent('b', 35, 12);
-m.ent('b', 33, 9);
 
 // --- act 2: shelf 2 and the switch corridor under one roof (rows 1..6 open): k → '%' gate → '&' ledge → k → '&' gate → turret
 m.ground(36, 80, 7);
