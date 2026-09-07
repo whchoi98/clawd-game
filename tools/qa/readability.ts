@@ -33,10 +33,10 @@
  *            backdrop brighter than the ledges would invert the depth cue and
  *            drown the terrain edge.
  *   tier4-*  the updraft / spike / beacon probes once more on the summit zones.
- *            Until the P5-1 zones (m1..m4) merge, SUMMIT_* point at existing
- *            zones so the steps run; the integrator switches them to m1 (spike
- *            bed in view from the start) and m3 (an updraft column, parking
- *            Clawd with `at=`) and drops the "provisional" note.
+ *            SUMMIT_* target the P5-1 zones: m1 (spike bed in view from the
+ *            start, goal off screen for the beacon) and m3 (an updraft column,
+ *            Clawd parked with `at=`). Pointing them back at a shipped zone
+ *            re-adds the "[provisional target]" note automatically.
  *
  * Geometry is read from the live page (`window.__clawd`: entities, level grid,
  * the renderer's stage transform), never re-derived from level sources, so a
@@ -75,16 +75,16 @@ const UPDRAFT_SHOT = 'shot=v2&frames=60&at=248,384';
 const SPIKE_SHOT = 'shot=v1&frames=60';
 const BEACON_SHOT = 'shot=v2&frames=60';
 /** Zones whose backdrop the backdrop-band step probes: the first zone of every shipped tier. */
-const BACKDROP_ZONES = ['t1', 's1', 'v1'];
+const BACKDROP_ZONES = ['t1', 's1', 'v1', 'm1'];
 /**
  * Tier-4 (summit) shots — PROVISIONAL: the summit zones m1..m4 land with P5-1,
  * so these point at existing zones until the integrator flips them, e.g. to
  * 'shot=m1&frames=60' (spikes), 'shot=m3&frames=60&at=<x>,<y>' (an updraft
  * column in view, nobody inside it) and 'shot=m1&frames=60' (goal off right).
  */
-const SUMMIT_SPIKE_SHOT = SPIKE_SHOT;
-const SUMMIT_UPDRAFT_SHOT = UPDRAFT_SHOT;
-const SUMMIT_BEACON_SHOT = BEACON_SHOT;
+const SUMMIT_SPIKE_SHOT = 'shot=m1&frames=60&at=1440,304';
+const SUMMIT_UPDRAFT_SHOT = 'shot=m3&frames=60&at=160,400';
+const SUMMIT_BEACON_SHOT = 'shot=m1&frames=60';
 
 interface Row { step: string; ok: boolean; ms: number; note: string }
 interface Issue { step: string; kind: 'console' | 'pageerror' | 'http' | 'assert'; text: string }
@@ -477,7 +477,7 @@ async function run(browser: Browser): Promise<number> {
   for (const zone of BACKDROP_ZONES) await step(`backdrop:${zone}`, () => backdropStep(page, zone));
 
   // Tier 4 (summit) — the same three probes on the SUMMIT_* shots (provisional targets, see the header).
-  const provisional = SUMMIT_SPIKE_SHOT === SPIKE_SHOT ? ' [provisional target]' : '';
+  const provisional = (SUMMIT_SPIKE_SHOT as string) === SPIKE_SHOT ? ' [provisional target]' : '';
   await step('tier4-updraft', async () => (await updraftStep(page, SUMMIT_UPDRAFT_SHOT, 'tier4-updraft')) + provisional);
   await step('tier4-spike', async () => (await spikeStep(page, SUMMIT_SPIKE_SHOT, 'tier4-spike')) + provisional);
   await step('tier4-beacon', async () => (await beaconStep(page, SUMMIT_BEACON_SHOT, 'tier4-beacon')) + provisional);
