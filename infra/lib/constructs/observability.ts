@@ -195,7 +195,7 @@ export class Observability extends Construct {
     });
     const memory = props.service.metricMemoryUtilization({ period: fiveMinutes, statistic: 'Average' });
     alarm('EcsMemory', 'ecs-memory', {
-      alarmDescription: `ECS service memory above ${ALARM_THRESHOLDS.ecsMemoryPercent}% for 5 minutes (task limit 512 MiB)`,
+      alarmDescription: `ECS service memory above ${ALARM_THRESHOLDS.ecsMemoryPercent}% for 5 minutes (task memory limit: cdk.json taskMemory)`,
       metric: memory,
       threshold: ALARM_THRESHOLDS.ecsMemoryPercent,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,

@@ -54,7 +54,7 @@ const PLAY_PROFILES: Profile[] = [
 ];
 const PHONE_PORTRAIT: Profile = { id: 'iphone-portrait', label: 'iPhone portrait', viewport: { width: 390, height: 664 }, dpr: 3 };
 /** Story zones in tower order, for the spawn-frame checks. */
-const ZONE_IDS = ['t1', 't2', 't3', 's1', 's2', 's3', 'v1', 'v2', 'v3'];
+const ZONE_IDS = ['t1', 't2', 't3', 't4', 's1', 's2', 's3', 's4', 'v1', 'v2', 'v3', 'v4'];
 /** Touch buttons rest at this computed opacity so the world reads through them. */
 const TBTN_IDLE_OPACITY = 0.35;
 /** On a landscape phone the touch hint plate must end inside the top 35% of the viewport. */
