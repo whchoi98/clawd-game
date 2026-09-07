@@ -3,7 +3,7 @@
  * and talks to it through `RendererPort`; the building blocks are exported for
  * the QA harness and tests.
  */
-export { Renderer, AFTER_IMAGE_SPACING } from './renderer.js';
+export { Renderer, AFTER_IMAGE_SPACING, BAND_FADE_S, BAND_SNAP_ROWS } from './renderer.js';
 export type { RendererOptions, SimView } from './renderer.js';
 export {
   Stage, VIEW_W, VIEW_H, UI_FONT,

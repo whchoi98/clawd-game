@@ -110,11 +110,21 @@ export class Actors {
   }
 
   setLevel(biome: Biome): void {
-    this.biome = biome;
     this.ent.clear();
     this.foe.clear();
-    scene.wind = WIND_BY_WEATHER[biome.weather] ?? 0;
+    this.setBiome(biome);
     scene.pickup = 0;
+  }
+
+  /**
+   * Switch the palette and the wind only (P5-4b: a tide level's band changed
+   * under the player). Unlike `setLevel` this keeps every entity's visual
+   * memory — lit checkpoints, observed platform rails, pickup pops — so the
+   * band crossfade never makes the actors blink.
+   */
+  setBiome(biome: Biome): void {
+    this.biome = biome;
+    scene.wind = WIND_BY_WEATHER[biome.weather] ?? 0;
   }
 
   /** After the particle pool was wiped (respawn, intro): refill every updraft column on its next draw. */
