@@ -51,8 +51,8 @@ const HAZARDS: Hazard[] = [
 ];
 
 describe('SIM_VERSION 3 — instant death in normal mode', () => {
-  it('is sim version 3', () => {
-    expect(SIM_VERSION).toBe(3);
+  it('is sim version 4 (P5-5 bubble foe; instant death since 3)', () => {
+    expect(SIM_VERSION).toBe(4);
   });
 
   for (const h of HAZARDS) {

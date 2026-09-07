@@ -41,7 +41,7 @@ export interface GuideLog {
 }
 
 export const GUIDE_T1: GuideLog = {
-  v: 3,
+  v: 4,
   levelId: 't1',
   rev: 1,
   seed: 5,

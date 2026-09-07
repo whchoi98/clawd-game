@@ -70,6 +70,8 @@ export type SfxName =
   | 'shard' | 'relic' | 'crystal' | 'toggle' | 'checkpoint' | 'spring'
   | 'hurt' | 'death' | 'respawn' | 'goal'
   | 'foeHit' | 'foeKilled' | 'bolt' | 'crumble' | 'splash' | 'tideOver'
+  /** Bubble foe (P5-5): the pop under a stomp and the re-form shimmer. */
+  | 'bubblePop' | 'bubbleBack'
   /** Clear stings, one per biome, written in that biome track's key (P3-9). */
   | 'stingTidepool' | 'stingStormspire' | 'stingVoidreef' | 'stingSummit'
   /** Ceremony stingers (P3-9): the tier-break fanfare and the ending chord. */
@@ -223,6 +225,15 @@ export const SFX: Record<SfxName, Recipe> = {
     s.noise(0.22, { gain: 0.18 * p.vol, type: 'bandpass', freq: 900, q: 0.8, pan: p.pan });
     s.tone(500, 140, 0.2, { type: 'triangle', gain: 0.14 * p.vol, fx: 0.25, pan: p.pan });
   },
+  bubblePop(s, p) {
+    // Placeholder (P5-5 audio pass refines): a wet pop — short bandpass burst plus a rising sine chirp.
+    s.noise(0.09, { gain: 0.16 * p.vol, type: 'bandpass', freq: 1600, q: 1.2, pan: p.pan });
+    s.tone(520, 980, 0.16, { type: 'sine', gain: 0.12 * p.vol, fx: 0.3, pan: p.pan });
+  },
+  bubbleBack(s, p) {
+    // Placeholder: a soft glassy shimmer as the bubble re-forms.
+    s.tone(880, 1320, 0.28, { type: 'sine', gain: 0.05 * p.vol, attack: 0.08, fx: 0.6, pan: p.pan });
+  },
   bolt(s, p) {
     s.tone(720, 260, 0.13, { type: 'square', gain: 0.09 * p.vol, pan: p.pan, filter: { type: 'lowpass', freq: 3200 } });
   },
@@ -370,6 +381,7 @@ export const EVENT_SFX: Record<SoundedEvent, SfxName> = {
   stomp: 'stomp', stompLand: 'stompLand', shard: 'shard', relic: 'relic', crystal: 'crystal',
   toggle: 'toggle', checkpoint: 'checkpoint', spring: 'spring', hurt: 'hurt', death: 'death',
   respawn: 'respawn', goal: 'goal', foeHit: 'foeHit', foeKilled: 'foeKilled', bolt: 'bolt',
+  bubblePop: 'bubblePop', bubbleBack: 'bubbleBack',
   crumble: 'crumble', splash: 'splash', tideOver: 'tideOver',
 };
 

@@ -183,9 +183,9 @@ describe('board seeding at boot', () => {
     const report = await seedBoards(repo, { levels, echoes, now: () => FIXED_NOW, log: (l) => lines.push(l) });
     expect(report.seeded).toEqual(['t1']);
     expect(report.occupied).toEqual(['t2']);
-    expect(report.skipped).toEqual([{ id: 't3', reason: 'goal echo is for sim v99, this build is v3' }]);
+    expect(report.skipped).toEqual([{ id: 't3', reason: 'goal echo is for sim v99, this build is v4' }]);
     expect(lines.filter((l) => l.includes('←'))).toHaveLength(1);
-    expect(lines[0]).toMatch(/^seed: t1#s3r1 ← 개발자 \d+ ticks/);
+    expect(lines[0]).toMatch(/^seed: t1#s4r1 ← 개발자 \d+ ticks/);
     expect(lines.some((l) => l.includes('t3 skipped'))).toBe(true);
   });
 });

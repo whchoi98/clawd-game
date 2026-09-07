@@ -18,7 +18,7 @@ export const TICK_HZ = 120;
  * v3 = instant death (hazard contact kills outside assist mode), checkpoint
  * density (respawns keep the switch polarity of the checkpoint).
  */
-export const SIM_VERSION = 3;
+export const SIM_VERSION = 4;
 /**
  * Bumped when the daily / endless tower generators change their output.
  * v1 = launch · v2 = authored chunks spliced into every band (levels/chunks).
@@ -137,7 +137,7 @@ export interface EntityState {
   span?: number; dir?: 1 | -1;
 }
 
-export type FoeKind = 'walker' | 'hopper' | 'flyer' | 'turret' | 'chaser' | 'spiker';
+export type FoeKind = 'walker' | 'hopper' | 'flyer' | 'turret' | 'chaser' | 'spiker' | 'bubble';
 
 export interface FoeState {
   id: number;
@@ -238,6 +238,9 @@ export type SimEvent =
   | { type: 'goal'; x: number; y: number; summary: RunSummary }
   | { type: 'foeHit'; x: number; y: number; kind: FoeKind }
   | { type: 'foeKilled'; x: number; y: number; kind: FoeKind }
+  /** A bubble foe popped under a stomp (P5-5): the player gets PHYS.bubbleBounce; it re-forms after PHYS.bubbleRespawn. */
+  | { type: 'bubblePop'; x: number; y: number }
+  | { type: 'bubbleBack'; x: number; y: number }
   | { type: 'bolt'; x: number; y: number }
   | { type: 'crumble'; tx: number; ty: number }
   | { type: 'splash'; x: number; y: number; enter: boolean }

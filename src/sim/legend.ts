@@ -18,10 +18,10 @@ export const CRUMBLE = 'X';
 export const WATER_SURFACE = '~';
 export const WATER_BODY = 'W';
 export const SPIKES = '^V{}';
-export const SPAWN_CH = 'PGCoRSDkwhftcmMsz';
+export const SPAWN_CH = 'PGCoRSDkwhftcmMszb';
 
 export const FOE_CH: Record<string, import('./types.js').FoeKind> = {
-  w: 'walker', h: 'hopper', f: 'flyer', t: 'turret', c: 'chaser',
+  w: 'walker', h: 'hopper', f: 'flyer', t: 'turret', c: 'chaser', b: 'bubble',
 };
 
 export const ENTITY_CH: Record<string, import('./types.js').EntityKind> = {

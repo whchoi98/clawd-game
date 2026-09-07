@@ -44,6 +44,8 @@ export const EVENT_HAPTIC: Readonly<Record<SimEvent['type'], HapticPattern | nul
   goal: [20, 60, 20, 60, 80],
   foeHit: [8],
   foeKilled: [12],
+  bubblePop: [10],
+  bubbleBack: null,
   bolt: null,
   crumble: [6],
   splash: [8],

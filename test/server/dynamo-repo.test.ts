@@ -49,21 +49,21 @@ describe('key builders', () => {
   });
 
   it('builds the spec §2.4 keys with the shard tiebreak in the LB sort key, plus HASH / SNAPSHOT / CODE', () => {
-    expect(KEY.lbPk('story', 't1')).toBe('LB#story#t1#s3r1');
+    expect(KEY.lbPk('story', 't1')).toBe('LB#story#t1#s4r1');
     expect(KEY.lbPk('daily', '2026-09-06')).toBe('LB#daily#2026-09-06');
     expect(KEY.lbSk(45, 7, 'abc')).toBe('000000000045#99992#abc');
     expect(KEY.runPk('abc')).toBe('RUN#abc');
     expect(KEY.RUN_SK).toBe('META');
     expect(KEY.playerPk('p1')).toBe('PLAYER#p1');
     expect(KEY.bestSk('daily', '2026-09-06')).toBe('BEST#daily#2026-09-06');
-    expect(KEY.hashPk('story', 't1', HASH)).toBe(`HASH#story#t1#s3r1#${HASH}`);
+    expect(KEY.hashPk('story', 't1', HASH)).toBe(`HASH#story#t1#s4r1#${HASH}`);
     expect(KEY.hashPk('daily', '2026-09-06', HASH)).toBe(`HASH#daily#2026-09-06#${HASH}`);
     expect(KEY.HASH_SK).toBe('META');
     expect(KEY.SNAPSHOT_SK).toBe('SNAPSHOT');
     expect(KEY.codePk('ABCDEFGH')).toBe('CODE#ABCDEFGH');
     expect(KEY.CODE_SK).toBe('META');
     // P3-12 counters
-    expect(KEY.boardPk('story', 't1')).toBe('BOARD#story#t1#s3r1');
+    expect(KEY.boardPk('story', 't1')).toBe('BOARD#story#t1#s4r1');
     expect(KEY.boardPk('daily', '2026-09-06')).toBe('BOARD#daily#2026-09-06');
     expect(KEY.BOARD_SK).toBe('META');
     expect(KEY.ratePk('203.0.113.7', 29_800_000)).toBe('RL#203.0.113.7#29800000');
@@ -133,7 +133,7 @@ describe('DynamoRepo', () => {
     const { client, repo } = setup();
     await repo.saveBest(run({ mode: 'story', board: 't1', levelId: 't1', ttl: undefined, hash: HASH }));
     const items = client.sent[0].input.TransactItems as TxItem[];
-    expect(items[3].Put!.Item).toEqual({ pk: `HASH#story#t1#s3r1#${HASH}`, sk: 'META', runId: 'run-new', playerId: 'p1', createdAt: '2026-09-06T12:00:00.000Z' });
+    expect(items[3].Put!.Item).toEqual({ pk: `HASH#story#t1#s4r1#${HASH}`, sk: 'META', runId: 'run-new', playerId: 'p1', createdAt: '2026-09-06T12:00:00.000Z' });
   });
 
   it('saveBest without a previous best guards the PLAYER item with attribute_not_exists(runId)', async () => {
@@ -168,7 +168,7 @@ describe('DynamoRepo', () => {
     // a story board counter never expires
     expect(items[3].Update).toEqual({
       TableName: TABLE,
-      Key: { pk: 'BOARD#story#t1#s3r1', sk: 'META' },
+      Key: { pk: 'BOARD#story#t1#s4r1', sk: 'META' },
       UpdateExpression: 'ADD #n :d',
       ExpressionAttributeNames: { '#n': COUNTER_ATTR },
       ExpressionAttributeValues: { ':d': 1 },
@@ -202,7 +202,7 @@ describe('DynamoRepo', () => {
     await repo.saveBest(run({ ...story, hash: HASH }), 'run-old');
     const items = client.sent[1].input.TransactItems as TxItem[];
     expect(items).toHaveLength(6);
-    expect(items[4].Delete!.Key).toEqual({ pk: 'LB#story#t1#s3r1', sk: '000000005000#99992#run-old' });
+    expect(items[4].Delete!.Key).toEqual({ pk: 'LB#story#t1#s4r1', sk: '000000005000#99992#run-old' });
     expect(items[5].Update).toEqual({
       TableName: TABLE,
       Key: { pk: 'RUN#run-old', sk: 'META' },
@@ -263,8 +263,8 @@ describe('DynamoRepo', () => {
   it('topRuns queries the board partition ascending with the limit', async () => {
     const { client, repo } = setup();
     client.responses.push({ Items: [
-      { pk: 'LB#story#t1#s3r1', sk: '000000000500#99992#a', ...run({ runId: 'a', mode: 'story', board: 't1', score: 500, masks: undefined as never }) },
-      { pk: 'LB#story#t1#s3r1', sk: '000000000600#99992#b', ...run({ runId: 'b', mode: 'story', board: 't1', score: 600, masks: undefined as never }) },
+      { pk: 'LB#story#t1#s4r1', sk: '000000000500#99992#a', ...run({ runId: 'a', mode: 'story', board: 't1', score: 500, masks: undefined as never }) },
+      { pk: 'LB#story#t1#s4r1', sk: '000000000600#99992#b', ...run({ runId: 'b', mode: 'story', board: 't1', score: 600, masks: undefined as never }) },
     ] });
     const top = await repo.topRuns('story', 't1', 20);
     expect(client.sent[0].name).toBe(QueryCommand.name);
@@ -274,7 +274,7 @@ describe('DynamoRepo', () => {
     expect(input.Limit).toBe(20);
     // bounded below the seeding sentinel ('SEED' sorts after every digit-prefixed entry key)
     expect(input.KeyConditionExpression).toBe('pk = :pk AND sk < :end');
-    expect(input.ExpressionAttributeValues).toEqual({ ':pk': 'LB#story#t1#s3r1', ':end': SEED_SK });
+    expect(input.ExpressionAttributeValues).toEqual({ ':pk': 'LB#story#t1#s4r1', ':end': SEED_SK });
     expect(KEY.lbSk(999_999_999_999, 0, 'zzz') < SEED_SK).toBe(true);
     expect(top.map((r) => r.runId)).toEqual(['a', 'b']);
     expect(top[0]).not.toHaveProperty('pk');
@@ -292,21 +292,21 @@ describe('DynamoRepo', () => {
     expect(client.sent.map((s) => s.name)).toEqual([QueryCommand.name, QueryCommand.name, QueryCommand.name]);
     expect(client.sent[0].input).toMatchObject({
       TableName: TABLE, Select: 'COUNT', KeyConditionExpression: 'pk = :pk AND sk < :sk',
-      ExpressionAttributeValues: { ':pk': 'LB#story#t1#s3r1', ':sk': '000000000700' },
+      ExpressionAttributeValues: { ':pk': 'LB#story#t1#s4r1', ':sk': '000000000700' },
     });
     expect(client.sent[1].input.ExclusiveStartKey).toEqual({ pk: 'x', sk: 'y' });
     expect(client.sent[2].input).toMatchObject({
-      Select: 'COUNT', KeyConditionExpression: 'pk = :pk AND sk < :end', ExpressionAttributeValues: { ':pk': 'LB#story#t1#s3r1', ':end': SEED_SK },
+      Select: 'COUNT', KeyConditionExpression: 'pk = :pk AND sk < :end', ExpressionAttributeValues: { ':pk': 'LB#story#t1#s4r1', ':end': SEED_SK },
     });
   });
 
   describe('P3-12 extras', () => {
     it('boardTotal reads the BOARD counter with one GetItem (clamped at zero)', async () => {
       const { client, repo } = setup();
-      client.responses.push({ Item: { pk: 'BOARD#story#t1#s3r1', sk: 'META', n: 42 } });
+      client.responses.push({ Item: { pk: 'BOARD#story#t1#s4r1', sk: 'META', n: 42 } });
       expect(await repo.boardTotal('story', 't1')).toBe(42);
       expect(client.sent.map((s) => s.name)).toEqual([GetCommand.name]);
-      expect(client.sent[0].input).toEqual({ TableName: TABLE, Key: { pk: 'BOARD#story#t1#s3r1', sk: 'META' } });
+      expect(client.sent[0].input).toEqual({ TableName: TABLE, Key: { pk: 'BOARD#story#t1#s4r1', sk: 'META' } });
       client.responses.push({ Item: { n: -3 } });
       expect(await repo.boardTotal('story', 't1')).toBe(0);
     });
@@ -327,7 +327,7 @@ describe('DynamoRepo', () => {
       // story counters have no ttl; a concurrent first entry that created the item first wins the race silently
       client.responses.push({}, { Count: 3 }, conditionFailed());
       expect(await repo.boardTotal('story', 't1')).toBe(3);
-      expect(client.sent[6].input).toEqual({ TableName: TABLE, Item: { pk: 'BOARD#story#t1#s3r1', sk: 'META', n: 3 }, ConditionExpression: 'attribute_not_exists(pk)' });
+      expect(client.sent[6].input).toEqual({ TableName: TABLE, Item: { pk: 'BOARD#story#t1#s4r1', sk: 'META', n: 3 }, ConditionExpression: 'attribute_not_exists(pk)' });
       // other write errors surface
       client.responses.push({}, { Count: 3 }, Object.assign(new Error('boom'), { name: 'InternalServerError' }));
       await expect(repo.boardTotal('story', 't1')).rejects.toThrow('boom');
@@ -339,7 +339,7 @@ describe('DynamoRepo', () => {
       expect(await repo.rankBounded('story', 't1', 700, 1000)).toEqual({ better: 12, capped: false });
       expect(client.sent[0].input).toMatchObject({
         TableName: TABLE, Select: 'COUNT', Limit: 1000, KeyConditionExpression: 'pk = :pk AND sk < :sk',
-        ExpressionAttributeValues: { ':pk': 'LB#story#t1#s3r1', ':sk': '000000000700' },
+        ExpressionAttributeValues: { ':pk': 'LB#story#t1#s4r1', ':sk': '000000000700' },
       });
       client.responses.push({ Count: 1000, LastEvaluatedKey: { pk: 'x', sk: 'y' } });
       expect(await repo.rankBounded('story', 't1', 700, 1000)).toEqual({ better: 1000, capped: true });
@@ -366,7 +366,7 @@ describe('DynamoRepo', () => {
   });
 
   describe('putIfBoardEmpty (board seeding)', () => {
-    const seed = (over: Partial<StoredRun> = {}) => run({ runId: 'goal-t1-s3r1', mode: 'story', board: 't1', levelId: 't1', playerId: 'developer-goal-echo-0001', name: '개발자', score: 857, ticks: 857, shards: 8, deaths: 0, ttl: undefined, ...over });
+    const seed = (over: Partial<StoredRun> = {}) => run({ runId: 'goal-t1-s4r1', mode: 'story', board: 't1', levelId: 't1', playerId: 'developer-goal-echo-0001', name: '개발자', score: 857, ticks: 857, shards: 8, deaths: 0, ttl: undefined, ...over });
 
     it('counts the board first and writes nothing when it has entries', async () => {
       const { client, repo } = setup();
@@ -375,7 +375,7 @@ describe('DynamoRepo', () => {
       expect(client.sent.map((s) => s.name)).toEqual([QueryCommand.name]);
       expect(client.sent[0].input).toMatchObject({
         TableName: TABLE, Select: 'COUNT', KeyConditionExpression: 'pk = :pk AND sk < :end',
-        ExpressionAttributeValues: { ':pk': 'LB#story#t1#s3r1', ':end': SEED_SK },
+        ExpressionAttributeValues: { ':pk': 'LB#story#t1#s4r1', ':end': SEED_SK },
       });
     });
 
@@ -386,17 +386,17 @@ describe('DynamoRepo', () => {
       expect(client.sent.map((s) => s.name)).toEqual([QueryCommand.name, TransactWriteCommand.name]);
       const items = client.sent[1].input.TransactItems as TxItem[];
       expect(items).toHaveLength(5);
-      expect(items[4].Update).toMatchObject({ Key: { pk: 'BOARD#story#t1#s3r1', sk: 'META' }, UpdateExpression: 'ADD #n :d', ExpressionAttributeValues: { ':d': 1 } });
+      expect(items[4].Update).toMatchObject({ Key: { pk: 'BOARD#story#t1#s4r1', sk: 'META' }, UpdateExpression: 'ADD #n :d', ExpressionAttributeValues: { ':d': 1 } });
       const [sentinel, runItem, lbItem, playerItem] = items.slice(0, 4).map((i) => i.Put!);
       expect(sentinel.TableName).toBe(TABLE);
-      expect(sentinel.Item).toMatchObject({ pk: 'LB#story#t1#s3r1', sk: SEED_SK, runId: 'goal-t1-s3r1', playerId: 'developer-goal-echo-0001' });
+      expect(sentinel.Item).toMatchObject({ pk: 'LB#story#t1#s4r1', sk: SEED_SK, runId: 'goal-t1-s4r1', playerId: 'developer-goal-echo-0001' });
       expect(sentinel.Item).not.toHaveProperty('masks');
       expect(sentinel.ConditionExpression).toBe('attribute_not_exists(pk)');
-      expect(runItem.Item).toMatchObject({ pk: 'RUN#goal-t1-s3r1', sk: 'META', masks: 'QUJD', name: '개발자', score: 857 });
-      expect(lbItem.Item).toMatchObject({ pk: 'LB#story#t1#s3r1', sk: '000000000857#99991#goal-t1-s3r1', runId: 'goal-t1-s3r1' });
+      expect(runItem.Item).toMatchObject({ pk: 'RUN#goal-t1-s4r1', sk: 'META', masks: 'QUJD', name: '개발자', score: 857 });
+      expect(lbItem.Item).toMatchObject({ pk: 'LB#story#t1#s4r1', sk: '000000000857#99991#goal-t1-s4r1', runId: 'goal-t1-s4r1' });
       expect(lbItem.Item).not.toHaveProperty('masks');
       expect(lbItem.Item!.sk as string < SEED_SK).toBe(true);
-      expect(playerItem.Item).toMatchObject({ pk: 'PLAYER#developer-goal-echo-0001', sk: 'BEST#story#t1#s3r1', runId: 'goal-t1-s3r1' });
+      expect(playerItem.Item).toMatchObject({ pk: 'PLAYER#developer-goal-echo-0001', sk: 'BEST#story#t1#s4r1', runId: 'goal-t1-s4r1' });
       expect(playerItem.ConditionExpression).toBe('attribute_not_exists(runId)');
       for (const { Put } of items.slice(0, 4)) expect(Object.values(Put!.Item!).some((v) => v === undefined)).toBe(false);
     });
@@ -408,7 +408,7 @@ describe('DynamoRepo', () => {
       const items = client.sent[1].input.TransactItems as TxItem[];
       expect(items).toHaveLength(6);
       expect(items[4].Put!.ConditionExpression).toBe('attribute_not_exists(pk)');
-      expect(items[4].Put!.Item).toEqual({ pk: `HASH#story#t1#s3r1#${HASH}`, sk: 'META', runId: 'goal-t1-s3r1', playerId: 'developer-goal-echo-0001', createdAt: '2026-09-06T12:00:00.000Z' });
+      expect(items[4].Put!.Item).toEqual({ pk: `HASH#story#t1#s4r1#${HASH}`, sk: 'META', runId: 'goal-t1-s4r1', playerId: 'developer-goal-echo-0001', createdAt: '2026-09-06T12:00:00.000Z' });
     });
 
     it('returns false when another task won the race (the sentinel condition cancels the transaction)', async () => {
@@ -501,12 +501,12 @@ describe('DynamoRepo', () => {
 
     it('delistRun flags the RUN, deletes the LB row and the PLAYER best (when it is this run) in one transaction, then steps the BOARD counter down', async () => {
       const { client, repo } = setup();
-      client.responses.push({ Item: { pk: 'RUN#run-x', sk: 'META', ...story } }, { Item: { pk: 'PLAYER#p1', sk: 'BEST#story#t1#s3r1', ...story, masks: undefined as never } }, {}, {});
+      client.responses.push({ Item: { pk: 'RUN#run-x', sk: 'META', ...story } }, { Item: { pk: 'PLAYER#p1', sk: 'BEST#story#t1#s4r1', ...story, masks: undefined as never } }, {}, {});
       expect(await repo.delistRun('run-x')).toBe(true);
       expect(client.sent.map((s) => s.name)).toEqual([GetCommand.name, GetCommand.name, TransactWriteCommand.name, UpdateCommand.name]);
       // the decrement never creates the counter or takes it below zero (a board without one stays on the COUNT fallback)
       expect(client.sent[3].input).toEqual({
-        TableName: TABLE, Key: { pk: 'BOARD#story#t1#s3r1', sk: 'META' }, UpdateExpression: 'ADD #n :d',
+        TableName: TABLE, Key: { pk: 'BOARD#story#t1#s4r1', sk: 'META' }, UpdateExpression: 'ADD #n :d',
         ConditionExpression: 'attribute_exists(pk) AND #n > :zero', ExpressionAttributeNames: { '#n': COUNTER_ATTR }, ExpressionAttributeValues: { ':d': -1, ':zero': 0 },
       });
       const items = client.sent[2].input.TransactItems as TxItem[];
@@ -515,9 +515,9 @@ describe('DynamoRepo', () => {
         TableName: TABLE, Key: { pk: 'RUN#run-x', sk: 'META' }, UpdateExpression: 'SET flagged = :t',
         ConditionExpression: 'attribute_exists(pk)', ExpressionAttributeValues: { ':t': true },
       });
-      expect(items[1].Delete).toEqual({ TableName: TABLE, Key: { pk: 'LB#story#t1#s3r1', sk: KEY.lbSk(700, 3, 'run-x') } });
+      expect(items[1].Delete).toEqual({ TableName: TABLE, Key: { pk: 'LB#story#t1#s4r1', sk: KEY.lbSk(700, 3, 'run-x') } });
       expect(items[2].Delete).toEqual({
-        TableName: TABLE, Key: { pk: 'PLAYER#p1', sk: 'BEST#story#t1#s3r1' }, ConditionExpression: 'runId = :rid', ExpressionAttributeValues: { ':rid': 'run-x' },
+        TableName: TABLE, Key: { pk: 'PLAYER#p1', sk: 'BEST#story#t1#s4r1' }, ConditionExpression: 'runId = :rid', ExpressionAttributeValues: { ':rid': 'run-x' },
       });
     });
 
@@ -554,8 +554,8 @@ describe('DynamoRepo', () => {
       }
       expect(items.map((i) => i.Update!.Key)).toEqual([
         { pk: 'RUN#run-x', sk: 'META' },
-        { pk: 'LB#story#t1#s3r1', sk: KEY.lbSk(700, 3, 'run-x') },
-        { pk: 'PLAYER#p1', sk: 'BEST#story#t1#s3r1' },
+        { pk: 'LB#story#t1#s4r1', sk: KEY.lbSk(700, 3, 'run-x') },
+        { pk: 'PLAYER#p1', sk: 'BEST#story#t1#s4r1' },
       ]);
       // off the board (replaced): only the RUN is renamed
       client.responses.push({ Item: { pk: 'RUN#run-x', sk: 'META', ...story } }, { Item: { ...story, runId: 'run-newer' } }, {});

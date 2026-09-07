@@ -58,6 +58,13 @@ export const PHYS = {
 
   // new in Echo Tower
   crystalRespawn: 2.0,   // seconds before a dash crystal returns
+  // bubble foe (P5-5, SIM_VERSION 4): stomping it pops it and launches the player harder than a
+  // stomp bounce but softer than a spring; it re-forms in place after bubbleRespawn seconds and
+  // bobs vertically by bubbleBobAmp units over bubbleBobPeriod seconds. Side / underside contact kills.
+  bubbleBounce: -352,
+  bubbleRespawn: 2.5,
+  bubbleBobAmp: 10,
+  bubbleBobPeriod: 1.6,
   crumbleDelay: 0.42,
   tideSpeed0: 11,        // tide base speed (units/s)
   tideAccel: 0.42,       // + per second of play

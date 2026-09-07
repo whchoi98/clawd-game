@@ -112,7 +112,7 @@ function makeSettings(o: Partial<Settings> = {}): Settings {
 const EVENT_TYPES = [
   'phase', 'jump', 'land', 'dash', 'dashEnd', 'wallJump', 'wallSlide', 'stomp', 'stompLand', 'shard', 'relic',
   'crystal', 'toggle', 'checkpoint', 'spring', 'hurt', 'death', 'respawn', 'goal', 'foeHit', 'foeKilled', 'bolt',
-  'crumble', 'splash', 'tideOver',
+  'crumble', 'splash', 'tideOver', 'bubblePop', 'bubbleBack',
 ] as const;
 type EvType = (typeof EVENT_TYPES)[number];
 // Both directions: every SimEvent type is listed, and nothing extra is listed.
@@ -154,6 +154,8 @@ function sampleEvent(type: EvType): SimEvent {
     case 'crumble': return { type, tx: 4, ty: 5 };
     case 'splash': return { type, ...p, enter: true };
     case 'tideOver': return { type, summary: { ...summary, cleared: false, height: 40 } };
+    case 'bubblePop': return { type, ...p };
+    case 'bubbleBack': return { type, ...p };
   }
 }
 
