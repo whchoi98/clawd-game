@@ -1,0 +1,77 @@
+{
+  "levelId": "m4",
+  "name": "정점 승강",
+  "sim": 3,
+  "rev": 0,
+  "seed": 271,
+  "par": 130,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 0,
+  "clearRate": 0,
+  "gaveUp": 300,
+  "deaths": 0,
+  "deathsPerEpisode": 0,
+  "medianClearSec": null,
+  "causes": {},
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 8,
+      "ty": 47,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 1,
+      "tx": 18,
+      "ty": 59,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 2,
+      "tx": 22,
+      "ty": 34,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 3,
+      "tx": 26,
+      "ty": 8,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 4,
+      "tx": 30,
+      "ty": 59,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 5,
+      "tx": 34,
+      "ty": 21,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 6,
+      "tx": 40,
+      "ty": 62,
+      "reached": 0,
+      "rate": 0
+    }
+  ],
+  "cells": [],
+  "hotspots": []
+}

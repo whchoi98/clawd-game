@@ -32,7 +32,7 @@ describe('levels/build.ts', () => {
 
 describe('src/sim/levels.generated.ts', () => {
   it('exports LEVELS in tower order, each equal to its zone source', () => {
-    expect(LEVELS.map((l) => l.id)).toEqual(['t1', 't2', 't3', 't4', 's1', 's2', 's3', 's4', 'v1', 'v2', 'v3', 'v4']);
+    expect(LEVELS.map((l) => l.id)).toEqual(['t1', 't2', 't3', 't4', 's1', 's2', 's3', 's4', 'v1', 'v2', 'v3', 'v4', 'm1', 'm2', 'm3', 'm4']);
     for (const z of ZONES) expect(LEVELS.find((l) => l.id === z.id)).toEqual(z);
   });
 
@@ -41,8 +41,10 @@ describe('src/sim/levels.generated.ts', () => {
     expect(Object.keys(LEVEL_BY_ID).sort()).toEqual(LEVELS.map((l) => l.id).sort());
   });
 
-  it('exports CHAPTERS per biome with the shared names and four zone ids each, the fourth the tier\'s vertical zone (P2-10)', () => {
+  it('exports CHAPTERS per biome with the shared names and four zone ids each, the fourth the tier\'s vertical zone (P2-10) — four tiers since P5-1', () => {
     expect(CHAPTERS.map((c) => c.id)).toEqual(BIOME_ORDER);
+    expect(CHAPTERS.map((c) => c.id)).toEqual(['tidepool', 'stormspire', 'voidreef', 'summit']);
+    expect(CHAPTERS).toHaveLength(4);
     for (const c of CHAPTERS) {
       expect(c.name).toBe(BIOMES[c.id].name);
       expect(c.kr).toBe(BIOMES[c.id].kr);
@@ -51,7 +53,8 @@ describe('src/sim/levels.generated.ts', () => {
       const last = LEVEL_BY_ID[c.levels[3]];
       expect(last.rows.length, `${c.id}: ${last.id} should be the vertical zone`).toBeGreaterThan(last.rows[0].length);
     }
-    expect(CHAPTERS.map((c) => c.levels[3])).toEqual(['t4', 's4', 'v4']);
+    expect(CHAPTERS.map((c) => c.levels[3])).toEqual(['t4', 's4', 'v4', 'm4']);
+    expect(CHAPTERS[3]).toMatchObject({ id: 'summit', name: 'AURORA SUMMIT', kr: '오로라 정점', levels: ['m1', 'm2', 'm3', 'm4'] });
     expect(CHAPTERS.flatMap((c) => c.levels)).toEqual(LEVELS.map((l) => l.id));
   });
 

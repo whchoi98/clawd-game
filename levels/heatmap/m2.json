@@ -1,0 +1,186 @@
+{
+  "levelId": "m2",
+  "name": "오로라 다리",
+  "sim": 3,
+  "rev": 0,
+  "seed": 229,
+  "par": 95,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 256,
+  "clearRate": 0.8533333333333334,
+  "gaveUp": 44,
+  "deaths": 2580,
+  "deathsPerEpisode": 8.6,
+  "medianClearSec": 22.31,
+  "causes": {
+    "spike": 2580
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 18,
+      "ty": 19,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 1,
+      "tx": 40,
+      "ty": 19,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 2,
+      "tx": 52,
+      "ty": 19,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 3,
+      "tx": 70,
+      "ty": 19,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 4,
+      "tx": 90,
+      "ty": 19,
+      "reached": 209,
+      "rate": 0.6966666666666667
+    },
+    {
+      "index": 5,
+      "tx": 102,
+      "ty": 9,
+      "reached": 221,
+      "rate": 0.7366666666666667
+    }
+  ],
+  "cells": [
+    {
+      "tx": 79,
+      "ty": 21,
+      "deaths": 477,
+      "causes": {
+        "spike": 477
+      }
+    },
+    {
+      "tx": 78,
+      "ty": 21,
+      "deaths": 412,
+      "causes": {
+        "spike": 412
+      }
+    },
+    {
+      "tx": 80,
+      "ty": 21,
+      "deaths": 348,
+      "causes": {
+        "spike": 348
+      }
+    },
+    {
+      "tx": 77,
+      "ty": 21,
+      "deaths": 255,
+      "causes": {
+        "spike": 255
+      }
+    },
+    {
+      "tx": 87,
+      "ty": 21,
+      "deaths": 214,
+      "causes": {
+        "spike": 214
+      }
+    },
+    {
+      "tx": 85,
+      "ty": 21,
+      "deaths": 188,
+      "causes": {
+        "spike": 188
+      }
+    },
+    {
+      "tx": 86,
+      "ty": 21,
+      "deaths": 188,
+      "causes": {
+        "spike": 188
+      }
+    },
+    {
+      "tx": 88,
+      "ty": 21,
+      "deaths": 187,
+      "causes": {
+        "spike": 187
+      }
+    },
+    {
+      "tx": 84,
+      "ty": 21,
+      "deaths": 141,
+      "causes": {
+        "spike": 141
+      }
+    },
+    {
+      "tx": 81,
+      "ty": 21,
+      "deaths": 139,
+      "causes": {
+        "spike": 139
+      }
+    },
+    {
+      "tx": 76,
+      "ty": 21,
+      "deaths": 21,
+      "causes": {
+        "spike": 21
+      }
+    },
+    {
+      "tx": 83,
+      "ty": 21,
+      "deaths": 8,
+      "causes": {
+        "spike": 8
+      }
+    },
+    {
+      "tx": 82,
+      "ty": 21,
+      "deaths": 2,
+      "causes": {
+        "spike": 2
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 76,
+      "x1": 88,
+      "ty": 21,
+      "deaths": 2580,
+      "share": 1,
+      "cause": "spike"
+    }
+  ]
+}

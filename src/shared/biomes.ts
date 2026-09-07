@@ -73,7 +73,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
   },
 };
 
-export const BIOME_ORDER: BiomeId[] = ['tidepool', 'stormspire', 'voidreef'];
+export const BIOME_ORDER: BiomeId[] = ['tidepool', 'stormspire', 'voidreef', 'summit'];
 
 /** Shared colours (character, pickups, hazards). */
 export const C = {

@@ -1,0 +1,145 @@
+{
+  "levelId": "m3",
+  "name": "바람의 첨탑",
+  "sim": 3,
+  "rev": 0,
+  "seed": 251,
+  "par": 110,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 71,
+  "clearRate": 0.23666666666666666,
+  "gaveUp": 229,
+  "deaths": 5,
+  "deathsPerEpisode": 0.016666666666666666,
+  "medianClearSec": 16.38,
+  "causes": {
+    "foe": 5
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 11,
+      "ty": 25,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 1,
+      "tx": 19,
+      "ty": 15,
+      "reached": 298,
+      "rate": 0.9933333333333333
+    },
+    {
+      "index": 2,
+      "tx": 37,
+      "ty": 6,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 3,
+      "tx": 51,
+      "ty": 6,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 4,
+      "tx": 70,
+      "ty": 6,
+      "reached": 71,
+      "rate": 0.23666666666666666
+    },
+    {
+      "index": 5,
+      "tx": 91,
+      "ty": 25,
+      "reached": 60,
+      "rate": 0.2
+    },
+    {
+      "index": 6,
+      "tx": 104,
+      "ty": 16,
+      "reached": 68,
+      "rate": 0.22666666666666666
+    }
+  ],
+  "cells": [
+    {
+      "tx": 92,
+      "ty": 12,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 92,
+      "ty": 14,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 93,
+      "ty": 12,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 101,
+      "ty": 15,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 103,
+      "ty": 14,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 92,
+      "x1": 93,
+      "ty": 12,
+      "deaths": 3,
+      "share": 0.6,
+      "cause": "foe"
+    },
+    {
+      "x0": 101,
+      "x1": 101,
+      "ty": 15,
+      "deaths": 1,
+      "share": 0.2,
+      "cause": "foe"
+    },
+    {
+      "x0": 103,
+      "x1": 103,
+      "ty": 14,
+      "deaths": 1,
+      "share": 0.2,
+      "cause": "foe"
+    }
+  ]
+}

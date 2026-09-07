@@ -8,15 +8,20 @@ import { Level } from '../../src/sim/level.js';
 import type { LevelDef } from '../../src/sim/types.js';
 import { hasRawKeyName, hintFor } from '../../src/client/ui/hints.js';
 
-const ORDER = ['t1', 't2', 't3', 't4', 's1', 's2', 's3', 's4', 'v1', 'v2', 'v3', 'v4'];
-const PAR: Record<string, number> = { t1: 45, t2: 55, t3: 70, t4: 90, s1: 60, s2: 75, s3: 90, s4: 110, v1: 70, v2: 85, v3: 120, v4: 120 };
+const ORDER = ['t1', 't2', 't3', 't4', 's1', 's2', 's3', 's4', 'v1', 'v2', 'v3', 'v4', 'm1', 'm2', 'm3', 'm4'];
+const PAR: Record<string, number> = {
+  t1: 45, t2: 55, t3: 70, t4: 90, s1: 60, s2: 75, s3: 90, s4: 110, v1: 70, v2: 85, v3: 120, v4: 120, m1: 80, m2: 95, m3: 110, m4: 130,
+};
 const BIOME: Record<string, string> = {
   t1: 'tidepool', t2: 'tidepool', t3: 'tidepool', t4: 'tidepool',
   s1: 'stormspire', s2: 'stormspire', s3: 'stormspire', s4: 'stormspire',
   v1: 'voidreef', v2: 'voidreef', v3: 'voidreef', v4: 'voidreef',
+  m1: 'summit', m2: 'summit', m3: 'summit', m4: 'summit',
 };
-/** The vertical zone of each tier (P2-10): a 44-wide tower climbed bottom to top. */
-const VERTICAL = ['t4', 's4', 'v4'];
+/** The vertical zone of each tier (P2-10 / P5-1): a 44-wide tower climbed bottom to top. */
+const VERTICAL = ['t4', 's4', 'v4', 'm4'];
+/** The fourth tier (P5-1): shipped fresh at geometry revision 0. */
+const SUMMIT = ['m1', 'm2', 'm3', 'm4'];
 const HANGUL = /[가-힣]/;
 
 const byId: Record<string, LevelDef> = Object.fromEntries(ZONES.map((z) => [z.id, z]));
@@ -74,9 +79,15 @@ function fourWideShafts(rows: readonly string[], minRows: number): number {
   return n;
 }
 
-describe('the twelve zones', () => {
-  it('are exactly t1..v4 in tower order — four per tier, the fourth vertical — with the planned biomes and pars', () => {
+describe('the sixteen zones', () => {
+  it('are exactly t1..m4 in tower order — four tiers of four, the fourth of each vertical — with the planned biomes and pars', () => {
     expect(ZONES.map((z) => z.id)).toEqual(ORDER);
+    expect(ZONES).toHaveLength(16);
+    for (let i = 0; i < ORDER.length; i += 4) {
+      const tier = ZONES.slice(i, i + 4);
+      expect(new Set(tier.map((z) => z.biome)).size, `tier ${i / 4 + 1} shares one biome`).toBe(1);
+      expect(isVerticalZone(tier[3]), `${tier[3].id} closes tier ${i / 4 + 1} as its vertical zone`).toBe(true);
+    }
     for (const z of ZONES) {
       expect(z.biome).toBe(BIOME[z.id]);
       expect(z.par).toBe(PAR[z.id]);
@@ -113,11 +124,17 @@ describe('the twelve zones', () => {
     expect(byId.t4.hint).toMatch(/\{jump\}/);
     expect(byId.s4.hint).toMatch(/\{dash\}/);
     expect(byId.v4.hint).toMatch(/\{dash\}/);
+    expect(byId.m1.hint).toMatch(/\{jump\}/);
+    expect(byId.m1.hint).toMatch(/\{dash\}/);
+    expect(byId.m2.hint).toMatch(/\{stomp\}/);
+    expect(byId.m3.hint).toMatch(/\{dash\}/);
+    expect(byId.m4.hint).toMatch(/\{jump\}/);
+    expect(byId.m4.hint).toMatch(/\{dash\}/);
   });
 
-  it('the nine original zones are at geometry revision 1 (P2-8 tune-up); the vertical zones ship fresh at rev 0', () => {
+  it('the nine original zones are at geometry revision 1 (P2-8 tune-up); the vertical zones and the summit tier ship fresh at rev 0', () => {
     for (const z of ZONES) {
-      if (VERTICAL.includes(z.id)) expect(z.rev ?? 0, z.id).toBe(0);
+      if (VERTICAL.includes(z.id) || SUMMIT.includes(z.id)) expect(z.rev ?? 0, z.id).toBe(0);
       else expect(z.rev, z.id).toBe(1);
     }
   });
@@ -282,6 +299,120 @@ describe('the twelve zones', () => {
     expect(c.toggles).toBeGreaterThanOrEqual(1);
     const flat = byId.v3.rows.join('');
     for (const ch of ['X', '=', '%', '&', 'S', 'z', 's', 't']) expect(flat, `v3 lacks '${ch}'`).toContain(ch);
+  });
+
+  describe('the summit tier (P5-1)', () => {
+    it('m1..m4 are the fourth tier: biome summit, pars 80 / 95 / 110 / 130, three horizontal rooms and the vertical m4', () => {
+      expect(ZONES.slice(12).map((z) => z.id)).toEqual(SUMMIT);
+      for (const id of SUMMIT) expect(byId[id].biome).toBe('summit');
+      expect(SUMMIT.map((id) => byId[id].par)).toEqual([80, 95, 110, 130]);
+      expect(SUMMIT.map((id) => isVerticalZone(byId[id]))).toEqual([false, false, false, true]);
+      // pars climb through the tier and its vertical zone carries the tower's longest par
+      for (let i = 1; i < 4; i++) expect(byId[SUMMIT[i]].par).toBeGreaterThan(byId[SUMMIT[i - 1]].par);
+      expect(byId.m4.par).toBe(Math.max(...ZONES.map((z) => z.par)));
+    });
+
+    it('m1 roofs its hall with one-way ice shelves, climbs a two-crystal ladder and steps down three one-way shelves over the only spike bed', () => {
+      const m1 = byId.m1;
+      const flat = m1.rows.join('');
+      const F = 22;
+      // the hall ceiling: one continuous one-way row three above the floor, joined to a three-tile rock step
+      expect(m1.rows[F - 3].slice(17, 43)).toBe('='.repeat(26));
+      expect(m1.rows[F - 3].slice(43, 45)).toBe('##');
+      expect(m1.rows[F - 1].slice(43, 45)).toBe('##');
+      expect(m1.rows[F].slice(13, 45)).toBe('#'.repeat(32));
+      // the ladder: two crystals against the cliff face
+      expect(census(m1).crystals).toBe(2);
+      expect(m1.rows[F - 8][58]).toBe('D');
+      expect(m1.rows[F - 13][58]).toBe('D');
+      for (let y = F - 14; y <= F - 4; y++) expect(m1.rows[y][59], `cliff face at row ${y}`).toBe('#');
+      // the descent: three one-way shelves, and spikes only on the bed under them
+      expect(flat.split('=').length - 1).toBe(26 + 3 * 3 + 2);
+      const spikeRows = m1.rows.map((r, y) => (/[\^V{}]/.test(r) ? y : -1)).filter((y) => y >= 0);
+      expect(spikeRows).toEqual([F - 1]);
+      expect(m1.rows[F - 1].slice(73, 89)).toBe('^'.repeat(16));
+      for (const ch of ['w', 's', 'f']) expect(flat, `m1 lacks '${ch}'`).toContain(ch);
+      expect(flat).not.toMatch(/[%&kzmMt]/);
+    });
+
+    it('m2 crosses four crumble spans on rock piers, rides a horizontal and a vertical platform and fields three turrets', () => {
+      const m2 = byId.m2;
+      const flat = m2.rows.join('');
+      const F = 20;
+      // the bridge: X X X X X # # X X X X X # # ... from column 13 to 38
+      expect(m2.rows[F].slice(13, 39)).toBe('XXXXX##XXXXX##XXXXX##XXXXX');
+      expect(flat.split('X').length - 1).toBe(4 * 5 + 4);
+      expect(flat.split('m').length - 1).toBe(1);
+      expect(flat.split('M').length - 1).toBe(1);
+      expect(flat.split('t').length - 1).toBe(3);
+      // the platform's bed is spiked from end to end, with rock under it (never a bottomless pit under a ride)
+      expect(m2.rows[F + 2].slice(73, 89)).toBe('^'.repeat(16));
+      expect(m2.rows[F + 3].slice(73, 89)).toBe('#'.repeat(16));
+      const lv = new Level(m2);
+      for (const p of lv.spawns.filter((s) => s.ch === 'm' || s.ch === 'M')) {
+        const span = p.ch === 'M' ? lv.patrolSpan(p.tx, p.ty, 0, 1, 8) : lv.patrolSpan(p.tx, p.ty, 1, 0, 8);
+        expect(span, `m2: ${p.ch} at (${p.tx},${p.ty}) has a full ride`).toBe(8 * 16);
+      }
+      expect(flat).not.toMatch(/[%&kzDS]/);
+    });
+
+    it('m3 climbs three updrafts, runs a roofed switch corridor with two toggles and both gate kinds, and hides one chaser', () => {
+      const m3 = byId.m3;
+      const flat = m3.rows.join('');
+      expect(flat.split('z').length - 1).toBe(3);
+      expect(census(m3).toggles).toBe(2);
+      expect(flat).toMatch(/%/);
+      expect(flat).toMatch(/&/);
+      expect(flat.split('c').length - 1).toBe(1);
+      expect(flat).toContain('t');
+      // the roof runs from the second column's lintel to the corridor exit, so the gates are the only way through
+      expect(m3.rows[0].slice(31, 81)).toBe('#'.repeat(50));
+      for (let y = 1; y <= 3; y++) expect(m3.rows[y].slice(31, 35), `lintel row ${y}`).toBe('####');
+      for (let y = 1; y <= 6; y++) {
+        expect(m3.rows[y].slice(57, 59), `gate 1 row ${y}`).toBe('%%');
+        expect(m3.rows[y].slice(67, 69), `gate 2 row ${y}`).toBe('&&');
+      }
+      // every updraft column is a full twelve tiles and stands flush with a bank edge, spikes only beyond it
+      const lv = new Level(m3);
+      for (const z of lv.spawns.filter((s) => s.ch === 'z')) {
+        expect(lv.solid(z.tx, z.ty + 1), `m3: z at (${z.tx},${z.ty}) floats`).toBe(true);
+        expect(lv.patrolSpan(z.tx, z.ty, 0, -1, 12)).toBe(12 * 16);
+        expect(m3.rows[z.ty][z.tx - 1], `bank edge left of the column at (${z.tx},${z.ty})`).toBe('#');
+        expect(m3.rows[z.ty][z.tx + 1], `spikes right of the column at (${z.tx},${z.ty})`).toBe('^');
+      }
+      // the chaser floats out of wake range (130 units) of anyone on the room floor (row 26 is the floor top, 25 the standing row),
+      // and within it of anyone on the relic perch (x 96..98, standing row 17)
+      const chaser = lv.spawns.find((s) => s.ch === 'c')!;
+      expect(m3.rows[26].slice(81, 99)).toBe('#'.repeat(18));
+      expect((25 - chaser.ty) * 16).toBeGreaterThan(130);
+      expect(Math.hypot((97 - chaser.tx) * 16, (17 - chaser.ty) * 16)).toBeLessThan(130);
+    });
+
+    it('m4 is the summit: a shaft with a spring and two rest ledges, one lift, three updrafts, a two-crystal chain, no spikes, the goal on the top deck', () => {
+      const m4 = byId.m4;
+      const flat = m4.rows.join('');
+      expect(fourWideShafts(m4.rows, 8)).toBe(1);
+      expect(flat.split('S').length - 1).toBe(1);
+      expect(flat.split('=').length - 1).toBe(2 * 4);
+      expect(flat.split('M').length - 1).toBe(1);
+      expect(flat.split('z').length - 1).toBe(3);
+      expect(census(m4).crystals).toBe(2);
+      expect(flat).not.toMatch(/[\^V{}~WX%&k]/);
+      const lv = new Level(m4);
+      for (const z of lv.spawns.filter((s) => s.ch === 'z')) {
+        expect(lv.solid(z.tx, z.ty + 1), `m4: z at (${z.tx},${z.ty}) floats`).toBe(true);
+        expect(lv.patrolSpan(z.tx, z.ty, 0, -1, 12)).toBe(12 * 16);
+      }
+      const lift = lv.spawns.find((s) => s.ch === 'M')!;
+      expect(lv.patrolSpan(lift.tx, lift.ty, 0, 1, 8)).toBe(8 * 16);
+      // the goal deck is the highest floor in the tower and the goal stands on it
+      const route = climbOrder(markers(m4));
+      const goal = route[route.length - 1];
+      expect(goal.ch).toBe('G');
+      expect(goal.y).toBe(2);
+      expect(m4.rows[3].slice(2, 12)).toBe('#'.repeat(10));
+      expect(m4.rows.slice(0, 3).join('')).not.toMatch(/#{3,}/.source.replace('3', '11'));
+    });
   });
 
   describe('the vertical zones (P2-10)', () => {

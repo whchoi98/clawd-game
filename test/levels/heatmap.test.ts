@@ -82,8 +82,8 @@ describe('levels/heatmap — one novice heat map per zone, current and self-cons
     }
   });
 
-  it('the vertical zones (P2-10) carry a heat map too, and it is honest: the right-holding novice policy never climbs a tower, so it records no clear and no death rather than an invented one', () => {
-    for (const id of ['t4', 's4', 'v4']) {
+  it('the vertical zones (P2-10 / P5-1) carry a heat map too, and it is honest: the right-holding novice policy never climbs a tower, so it records no clear and no death rather than an invented one', () => {
+    for (const id of ['t4', 's4', 'v4', 'm4']) {
       const def = byId[id];
       expect(isVerticalZone(def)).toBe(true);
       const h = JSON.parse(readFileSync(heatmapPath(id), 'utf8')) as ZoneHeat;
