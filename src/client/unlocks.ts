@@ -12,12 +12,16 @@
  *
  * Skins: 'clawd' is always there; 'azure' (AMAZONI / 아마조니) opens at
  * AZURE_STARS stars across the tower, 'ember' when the storm tier is reached
- * (any stormspire zone unlocked), 'void' at the first S rank. A skin already
- * selected in the settings stays available whatever the rules say
- * (grandfathering: a save that predates the rules keeps its look).
+ * (any stormspire zone unlocked), 'void' at the first S rank. Phase 5 (P5-2)
+ * adds 'coral' at CORAL_MEDALS medals, 'frost' when the summit tier is reached
+ * (inert while no summit zone exists), 'gold' when every story zone is done and
+ * 'nova' at NOVA_S_RANKS zones ranked S. A skin already selected in the
+ * settings stays available whatever the rules say (grandfathering: a save that
+ * predates the rules keeps its look).
  */
 import type { LevelDef, Rank, RunSummary } from '../sim/types.js';
 import type { BiomeId } from '../sim/types.js';
+import { BIOME_ORDER } from '../shared/biomes.js';
 import type { LevelRecord, Progress, Settings } from './contracts.js';
 import { bestRankOf, unlockedZones } from './save.js';
 import { MEDAL_ORDER, type MedalId } from './ui/ceremony.js';
@@ -105,26 +109,49 @@ export function tierReached(levels: Levels, progress: Records, biome: BiomeId): 
 
 /** Some zone record holds `rank` or better. */
 export function anyRankAtLeast(progress: Records, rank: Rank): boolean {
+  return countRankAtLeast(progress, rank) > 0;
+}
+
+/** How many zone records hold `rank` or better. */
+export function countRankAtLeast(progress: Records, rank: Rank): number {
   const min = RANK_ORDER.indexOf(rank);
+  let n = 0;
   for (const rec of Object.values(progress.levels)) {
     const r = bestRankOf(rec as LevelRecord);
-    if (r && RANK_ORDER.indexOf(r) >= min) return true;
+    if (r && RANK_ORDER.indexOf(r) >= min) n++;
   }
-  return false;
+  return n;
+}
+
+/** Every story zone is done (false for an empty zone list). */
+export function allZonesDone(progress: Records, levels: Levels): boolean {
+  return levels.length > 0 && levels.every((l) => !!progress.levels[l.id]?.done);
 }
 
 // ---------------------------------------------------------------- skins
-export type SkinId = 'clawd' | 'azure' | 'ember' | 'void';
+export type SkinId = 'clawd' | 'azure' | 'ember' | 'void' | 'coral' | 'frost' | 'gold' | 'nova';
 export const DEFAULT_SKIN: SkinId = 'clawd';
 /** Stars across the tower that open 'azure' (AMAZONI). */
 export const AZURE_STARS = 6;
 /** The tier whose reach opens 'ember'. */
 export const EMBER_TIER: BiomeId = 'stormspire';
+/** Medals across the tower that open 'coral' (P5-2). */
+export const CORAL_MEDALS = 12;
+/**
+ * The tier whose reach opens 'frost' (P5-2): the fourth tier of BIOME_ORDER — the
+ * summit. While no zone carries that biome the rule can never fire (tierReached
+ * needs an open zone of the biome), so it stays inert until the summit zones land.
+ */
+export const FROST_TIER: BiomeId = BIOME_ORDER[3] ?? 'summit';
+/** Zones ranked S that open 'nova' (P5-2). */
+export const NOVA_S_RANKS = 3;
 
 export interface SkinRule {
   id: SkinId;
   /** Korean unlock hint for the locked picker entry ('' for the free skin). */
   hint: string;
+  /** A hint that knows the zone list (the gold rule counts the zones); falls back to `hint`. */
+  hintFor?: (levels: Levels) => string;
   unlocked(progress: Records, levels: Levels): boolean;
 }
 
@@ -133,6 +160,14 @@ export const SKIN_RULES: readonly SkinRule[] = [
   { id: 'azure', hint: `별 ${AZURE_STARS}개`, unlocked: (p, levels) => totalStars(p, levels) >= AZURE_STARS },
   { id: 'ember', hint: '2층 진입', unlocked: (p, levels) => tierReached(levels, p, EMBER_TIER) },
   { id: 'void', hint: '첫 S 등급', unlocked: (p) => anyRankAtLeast(p, 'S') },
+  // ---- Phase 5 (P5-2)
+  { id: 'coral', hint: `메달 ${CORAL_MEDALS}개`, unlocked: (p, levels) => totalMedals(p, levels) >= CORAL_MEDALS },
+  { id: 'frost', hint: '4층 진입', unlocked: (p, levels) => tierReached(levels, p, FROST_TIER) },
+  {
+    id: 'gold', hint: '모든 구역 클리어', hintFor: (levels) => `${levels.length}구역 전부 클리어`,
+    unlocked: (p, levels) => allZonesDone(p, levels),
+  },
+  { id: 'nova', hint: `S 등급 ${NOVA_S_RANKS}개`, unlocked: (p) => countRankAtLeast(p, 'S') >= NOVA_S_RANKS },
 ];
 
 const SKIN_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -140,10 +175,14 @@ export function isSkinId(v: unknown): v is string {
   return typeof v === 'string' && SKIN_ID_RE.test(v);
 }
 
-/** The unlock hint for a skin id, null for the free skin or an id without a rule. */
-export function skinHint(id: string): string | null {
+/**
+ * The unlock hint for a skin id, null for the free skin or an id without a rule.
+ * With `levels` the hint may count the zones ('16구역 전부 클리어').
+ */
+export function skinHint(id: string, levels?: Levels): string | null {
   const rule = SKIN_RULES.find((r) => r.id === id);
-  return rule && rule.hint ? rule.hint : null;
+  if (!rule || !rule.hint) return null;
+  return rule.hintFor && levels && levels.length > 0 ? rule.hintFor(levels) : rule.hint;
 }
 
 /** Skins whose rule is met right now (rule order). */

@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### Added (Phase 5 A)
+- P5-2 캐릭터 강화(`src/client/render/clawd.ts`·`actors.ts`, `src/client/unlocks.ts`, `src/client/audio/music.ts`·`sfx.ts`): **리그 표정** — 포즈별 눈썹·입(`expressionFor`: 달리기 집중, 낙하 놀람, 대시 이악물기, 피격·사망 X눈), 파편·유물 획득 뒤 0.4 s 미소(`Actors`가 소비 순간을 감지해 라이브 플레이어만 웃는다), 4 s 대기 후 시선 배회와 7 s 주기 기지개. **2차 모션** — 안테나 2개가 감쇠 스프링으로 속도 변화에 뒤따르고(대시·착지에 크게 흔들림), 5점 스카프 체인이 바이옴 바람(spray·rain·spores·snow별 세기)과 속도에 흐른다 — 전부 `PlayerVisual`의 시각 메모리, 리플레이 무관. **액세서리** — `Skin.accessory`(scarf·antenna·crown·fins·hood·halo·goggles)를 리그와 초상(설정 피커·결과·공유 카드)에서 그린다. **스킨 8종** — 기존 4 + 코랄(`coral`, 지느러미, 메달 12개)·프로스트(`frost`, 후드+스카프, 4층 진입 — 정점 구역이 없으면 잠김 유지)·골드(`gold`, 왕관, 구역 전부 클리어 — 힌트가 구역 수를 센다)·노바(`nova`, 후광, S 등급 3개); `SKIN_RULES`·`Progress.unlockedSkins`·그랜드파더링 경로 그대로. 액세서리 없는 기존 4스킨은 이전 프레임과 호출 단위로 동일(`test/fixtures/clawd-baseline.json`). **적 예고 포즈** — 호퍼 점프 전 0.3 s 스쿼시, 포탑 재장전 마지막 0.4 s 조준선, 추격자 와인드업 진동, 플라이어 날갯짓, 워커 깜빡임(모두 `FoeState`만 읽는 시각 전용). **정점 음악** — `summit` 트랙 실제 작곡(F# 리디안 76 bpm, 글라스 벨 4마디 모티프 + 바람 패드 `wind` 악기 + 소프트 베이스·글라스 아르페지오·심장 박동)과 `stingSummit`(F#5에서 떨어지는 글라스 벨 캐스케이드, 다른 세 스팅어와 오프닝이 다름).
+
 ## [0.3.0] - 2026-09-07
 
 배포: https://clawd-game.whchoi.net/ (CloudFront E38DW91AO2DWTB, ECS 롤아웃 완료 242 s, 라이브 QA 통과 — 배포 점검 13/13, 스모크 18/18(12구역 캡처·자가진단), 모바일 46/46, 데일리 기록 제출 E2E, 알람 11/11 OK). SIM_VERSION 3으로 모든 스토리 보드가 `s3r1`(새 세로형 존은 `s3r0`)로 새로 열리고, 이전 클라이언트는 `sim-version` 거절 → 업데이트 바를 받는다. Fargate 태스크는 512 CPU / 1024 MiB로 커졌다.

@@ -13,6 +13,8 @@
  *   voidreef    A aeolian  84 bpm   sparse dark pads, slow glass arpeggio, heartbeat
  *   ending      F lydian   64 bpm   the title theme's variation for the ending screen (P3-9): glass pads,
  *                                  the bell motif inverted, a slow glass arpeggio, no drums
+ *   summit      F# lydian  76 bpm   the fourth tier (P5-2): glass bells over a wind pad (filtered noise
+ *                                  swells), soft bass, a glass arpeggio and a faint heartbeat as it climbs
  */
 import { midi } from './sfx.js';
 import type { Synth } from './sfx.js';
@@ -33,7 +35,9 @@ export const LOOKAHEAD = 0.25;
 
 export type Inst =
   | 'pad' | 'bass' | 'sub' | 'arp' | 'lead' | 'bell' | 'drop'
-  | 'kick' | 'snare' | 'hat' | 'shaker' | 'rim' | 'crash';
+  | 'kick' | 'snare' | 'hat' | 'shaker' | 'rim' | 'crash'
+  /** Unpitched wind: a slow band-passed noise swell (P5-2, the summit track). */
+  | 'wind';
 
 export interface Note {
   inst: Inst;
@@ -289,6 +293,55 @@ const ending: Arrangement = (s, bar, k, c, out) => {
   if (k > 0.45 && s === 12 && bar % 2 === 1) out.push(N('drop', c.ct(9), 1.5, 0.5));
 };
 
+/** Summit glass-bell motif: four bars of [step, chord-tone index] pairs, always on (the bed of the tier). */
+const SUMMIT_BELLS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
+  [[0, 6], [6, 8]],
+  [[2, 7], [10, 9]],
+  [[0, 8], [8, 6]],
+  [[4, 7], [12, 10]],
+];
+const SUMMIT_ARP = [3, 5, 4, 6, 5, 7, 6, 8];
+
+/**
+ * The summit (P5-2): F# lydian, the title's cousin a semitone up and a tier
+ * higher. A glass pad with the 9th on odd bars and the lydian #4 when the climb
+ * is busy, a wind swell every bar (a gust on the back half above 0.5), a soft
+ * bass, the glass-bell motif over four bars, a rising glass arpeggio in eighths
+ * (a counter-line in sixteenths near the top), a water-drop sparkle and a faint
+ * heartbeat. Snow-crunch shakers only at the very top.
+ */
+const summit: Arrangement = (s, bar, k, c, out) => {
+  // glass pad: chord an octave up, the 9th colours odd bars, the lydian #4 joins when busy
+  if (s === 0) {
+    for (const i of [3, 4, 5]) out.push(N('pad', c.ct(i), 16.5, 0.48));
+    if (bar % 2 === 1) out.push(N('pad', c.sn(c.deg + 8), 16.5, 0.26));
+    if (k > 0.6) out.push(N('pad', c.sn(c.deg + 10), 16.5, 0.2));
+  }
+
+  // wind: a swell every bar, a gust on the back half as the climb steepens
+  if (s === 0) out.push(N('wind', 0, 16, 0.35 + 0.45 * k));
+  if (k > 0.5 && s === 8) out.push(N('wind', 0, 8, 0.3 + 0.3 * k));
+
+  // soft bass: the root, a fifth pickup as the intensity rises
+  if (s === 0) out.push(N('bass', c.ct(0) - 12, 8, 0.6));
+  if (k > 0.3 && s === 10) out.push(N('bass', c.ct(2) - 12, 4, 0.45));
+
+  // glass bells: the four-bar motif, always there
+  for (const [step, tone] of SUMMIT_BELLS[bar % 4]) if (s === step) out.push(N('bell', c.ct(tone), 7, 0.45));
+
+  // glass arpeggio: eighths above 0.35, a sixteenth counter-line above 0.7
+  if (k > 0.35 && s % 2 === 1) out.push(N('arp', c.ct(SUMMIT_ARP[(s >> 1) % SUMMIT_ARP.length]), 2, 0.3));
+  if (k > 0.7 && s % 4 === 2) out.push(N('arp', c.ct(6 + (bar % 2)), 1.5, 0.24, 0.5));
+
+  // a water-drop sparkle on odd bars once the screen has settled
+  if (k > 0.5 && s === 14 && bar % 2 === 1) out.push(N('drop', c.ct(9), 1.5, 0.5));
+
+  // heartbeat as the climb takes effort, snow-crunch shakers at the top
+  if (k > 0.45 && s === 0) out.push(N('kick', 0, 1, 0.36));
+  if (k > 0.45 && s === 3) out.push(N('kick', 0, 1, 0.24));
+  if (k > 0.8 && s % 4 === 2) out.push(N('shaker', 0, 0.5, 0.25));
+};
+
 export const TRACKS: Record<string, TrackDef> = {
   title: {
     key: 'title', name: '메아리 탑', root: 53, scale: 'lydian', bpm: 76, prog: [0, 1, 5, 4],
@@ -314,12 +367,12 @@ export const TRACKS: Record<string, TrackDef> = {
     voice: { pad: 'dark', bass: 'sub', arp: 'glass', lead: 'arp', kick: 'heart' }, padCutoff: 500,
     arrange: voidreef,
   },
-  // Phase 5 placeholder so BIOMES.summit.track resolves; the audio pass composes the real track.
+  // Phase 5 (P5-2): the fourth tier — F# lydian, glass bells over a wind pad.
   summit: {
-    key: 'summit', name: '오로라 정점', root: 42, scale: 'lydian', bpm: 76, prog: [0, 4, 5, 3],
-    mix: { pad: 0.34, bass: 0.22, arp: 0.2, lead: 0, bell: 0.26, drums: 0.1 },
-    voice: { pad: 'dark', bass: 'sub', arp: 'glass', lead: 'arp', kick: 'heart' }, padCutoff: 700,
-    arrange: voidreef,
+    key: 'summit', name: '오로라 정점', root: 42, scale: 'lydian', bpm: 76, prog: [0, 4, 1, 5],
+    mix: { pad: 0.3, bass: 0.2, arp: 0.18, lead: 0, bell: 0.26, drums: 0.12 },
+    voice: { pad: 'glass', bass: 'soft', arp: 'glass', lead: 'arp', kick: 'heart' }, padCutoff: 1600,
+    arrange: summit,
   },
   ending: {
     key: 'ending', name: '정점의 메아리', root: 53, scale: 'lydian', bpm: 64, prog: [0, 4, 1, 5],
@@ -469,6 +522,14 @@ export function renderNote(s: Synth, t: TrackDef, n: Note, at: number, stepDur: 
     case 'crash': {
       const g = m.drums * v;
       if (g > 0) s.noise(1.2, { gain: g * 0.5, type: 'lowpass', freq: 400, freqEnd: 150, attack: 0.02, at, dest, fx: 0.5 });
+      return;
+    }
+    case 'wind': {
+      // a band-passed noise swell: slow attack, the band drifting down as it dies, panned by velocity
+      const g = m.pad * v;
+      if (g > 0) {
+        s.noise(dur, { gain: g * 0.16, type: 'bandpass', freq: 520 + v * 900, freqEnd: 260 + v * 400, q: 0.55, attack: dur * 0.45, at, dest, fx: 0.6, pan: (v - 0.5) * 0.6 });
+      }
       return;
     }
     default:

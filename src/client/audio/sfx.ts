@@ -281,13 +281,17 @@ export const SFX: Record<SfxName, Recipe> = {
   },
 
   stingSummit(s, p) {
-    // F# lydian (the summit track): placeholder — three glass bells rising F#–A#–C# with a high shimmer.
-    // The Phase 5 audio pass replaces this with the composed sting.
-    [0, 4, 7].forEach((iv, i) => {
-      const f = midi(66 + iv);
-      s.tone(f, null, 0.8, { type: 'sine', gain: 0.13 * p.vol, at: i * 0.1, fx: 0.9, pan: -0.3 + i * 0.3 });
+    // F# lydian (the summit track): a glass-bell cascade falling from F#5 through the lydian B# to F#4
+    // (F#–E#–D#–C#–B#–A#–F#), a wind swell under it, a low F# blooming and the fifth ringing out on top.
+    // Opens on F#5 — none of the other stings starts there (tidepool E4, stormspire E3, voidreef E5).
+    [78, 77, 75, 73, 72, 70, 66].forEach((m, i) => {
+      const f = midi(m);
+      s.tone(f, null, 0.75, { type: 'sine', gain: 0.12 * p.vol, at: i * 0.07, fx: 0.9, pan: 0.35 - i * 0.1 });
+      s.tone(f * 2.76, null, 0.3, { type: 'sine', gain: 0.03 * p.vol, at: i * 0.07, fx: 0.9 });
     });
-    s.tone(midi(90), null, 1.2, { type: 'triangle', gain: 0.04 * p.vol, at: 0.35, attack: 0.25, fx: 0.95 });
+    s.noise(1.4, { gain: 0.07 * p.vol, type: 'bandpass', freq: 900, freqEnd: 380, q: 0.6, attack: 0.25, at: 0.1, fx: 0.6 });
+    s.tone(midi(54), null, 1.6, { type: 'sine', gain: 0.16 * p.vol, at: 0.4, attack: 0.3, fx: 0.7 });
+    s.tone(midi(85), null, 1.5, { type: 'triangle', gain: 0.05 * p.vol, at: 0.6, attack: 0.2, fx: 0.95 });
   },
 
   // ------------------------------------------------------------ ceremonies

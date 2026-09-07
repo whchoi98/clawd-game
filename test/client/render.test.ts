@@ -23,7 +23,7 @@ import {
 import { TILE } from '../../src/sim/types.js';
 import { MENU_FRAME_DT } from '../../src/client/scenes.js';
 import type { SimView, TierStorage } from '../../src/client/render/index.js';
-import { DEATH_MARK_COLOR } from '../../src/client/render/actors.js';
+import { DEATH_MARK_COLOR, hopperCrouch, walkerBlink } from '../../src/client/render/actors.js';
 
 // ------------------------------------------------------------------ stubs
 class StubPath2D {
@@ -985,5 +985,45 @@ describe('character juice (P3-9)', () => {
     const led = canvas.ctx.__calls.filter((c) => c.name === 'ellipse').map((c) => JSON.stringify(c.args));
     expect(led.length).toBe(plain.length);
     expect(led).not.toEqual(plain);
+  });
+});
+
+// ================================================================ character pass · foe anticipation (P5-2)
+describe('character pass · foe anticipation through the renderer (P5-2)', () => {
+  it('foes in their anticipation windows (hopper crouch, turret aim line, chaser wind-up, flyer flap, walker blink) draw without throwing and add calls', () => {
+    const { r, ctx } = makeRenderer();
+    const sim = fakeSim(fixtureDef('tidepool'));
+    r.setLevel(sim, BIOMES.tidepool);
+    const p = sim.state.player;
+    // park the player within turret range so the aim smoothing runs, and lay the foes out beside it
+    const turret = sim.state.foes.find((f) => f.kind === 'turret')!;
+    p.x = turret.x - 60; p.y = turret.y - p.h / 2;
+    const at = (kind: FoeState['kind'], dx: number, over: Partial<FoeState>): FoeState => ({
+      id: 900 + dx, kind, x: p.x + dx, y: p.y, w: 14, h: 12, vx: 0, vy: 0, face: -1, hp: 1, dying: 0, dead: false, flash: 0, t: 0.3, state: 0, ...over,
+    });
+    turret.state = 1.0;
+    sim.state.foes = [turret, at('hopper', 20, { state: 0.9 }), at('chaser', 40, { state: 0 }), at('flyer', 60, {}), at('walker', 80, { t: 0.5 })];
+    const view: WorldView = { camX: p.x, camY: p.y, zoom: 1 };
+    r.draw(sim, view, FX, [], 1 / 60);
+    const count = (name: string) => ctx.__calls.filter((c) => c.name === name).length;
+    const calmLineTo = count('lineTo'), calmTranslate = count('translate');
+    const calm = JSON.stringify(ctx.__calls);
+    ctx.__calls.length = 0;
+    // now every foe is telegraphing: the hopper about to hop, the turret about to fire, the chaser winding up, a walker mid-blink
+    let blinkT = 0;
+    for (let t = 0; t < 6; t += 1 / 120) if (walkerBlink(t, 980) > 0.5) { blinkT = t; break; }
+    turret.state = 0.15;
+    sim.state.foes = [
+      turret, at('hopper', 20, { state: 0.1 }), at('chaser', 40, { state: 0.2 }), at('flyer', 60, { vx: 80 }), at('walker', 80, { t: blinkT }),
+    ];
+    expect(() => r.draw(sim, view, FX, [], 1 / 60)).not.toThrow();
+    expect(JSON.stringify(ctx.__calls)).not.toBe(calm);
+    // the turret's aim line and the walker's closed eyes are line segments, the chaser's jitter an extra translate
+    expect(count('lineTo')).toBeGreaterThan(calmLineTo);
+    expect(count('translate')).toBeGreaterThan(calmTranslate);
+    // the hopper's telegraph is monotonic in the countdown
+    expect(hopperCrouch(0.25)).toBeLessThan(hopperCrouch(0.1));
+    expect(hopperCrouch(0.1)).toBeLessThan(hopperCrouch(0.02));
+    expect(hopperCrouch(0.5)).toBe(0);
   });
 });

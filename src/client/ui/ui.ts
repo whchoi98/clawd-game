@@ -321,7 +321,7 @@ export class UI implements UIPort {
       onRebuilt: () => { if (this.screens.top === 'settings') this.nav.refresh(this.screens.el('settings'), true); },
       onTouchLayout: (layout) => this.previewTouchLayout(layout),
       // Skin locks (P3-6): the rules over the current save; the selected skin is always available (grandfathering).
-      skinLocked: (id) => (skinAvailable(id, this.progress, this.settings, this.levels) ? null : skinHint(id) ?? '잠김'),
+      skinLocked: (id) => (skinAvailable(id, this.progress, this.settings, this.levels) ? null : skinHint(id, this.levels) ?? '잠김'),
       sound: (n) => this.sound(n),
       portrait: () => this.portrait,
       build: opts.build,

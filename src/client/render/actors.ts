@@ -14,13 +14,59 @@ import type { Level } from '../../sim/level.js';
 import { C, type Biome } from '../../shared/biomes.js';
 import type { GhostView } from '../contracts.js';
 import { Stage, TAU, UI_FONT, alpha, clamp, clamp01, damp, easeOutCubic, lerp, mixHex, sign } from './stage.js';
-import { drawClawd, tintedSkin, type RigPose, type RigState, type Skin } from './clawd.js';
+import { CHAIN_ANCHOR, CHAIN_N, CHAIN_SEG, SMILE_T, drawClawd, tintedSkin, type RigPose, type RigState, type Skin } from './clawd.js';
 import type { Particles } from './particles.js';
 
 const FOE_DIE_T = 0.3;
 const SHARD_POP_T = 0.4;
 const RELIC_POP_T = 0.7;
 const TRAIL_N = 14;
+
+// ============================================================ scene cues (P5-2)
+/**
+ * Visual cues the actors publish for the player visuals, render-side only:
+ * the biome's wind (for the scarf chain) and the moment a pickup was consumed
+ * (for the live player's smile). Module state on purpose, like clawd.ts's
+ * look target: `Actors` and `PlayerVisual` are built separately by the
+ * renderer and share nothing else. Echoes never read the pickup cue.
+ */
+const scene = { wind: 0, gust: 0, pickup: 0, t: 0 };
+/** Wind strength and direction per weather (world units of drift per second, signed). */
+const WIND_BY_WEATHER: Readonly<Record<Biome['weather'], number>> = { spray: 26, rain: -70, spores: 12, snow: 44 };
+/** Seconds of pickup smile left for the live player (0 = none). */
+export function pickupCue(): number { return scene.pickup; }
+/** Current wind on the scarf (signed world units per second), gusts included. */
+export function sceneWind(): number { return scene.wind * (1 + 0.6 * scene.gust); }
+
+// ============================================================ foe anticipation (P5-2, pure)
+/** Seconds before a hop during which the hopper crouches (FoeState.state counts down to the hop). */
+export const HOPPER_CROUCH_T = 0.3;
+/** 0 → 1 as the hopper's state runs out; 0 while it still has more than HOPPER_CROUCH_T to wait or is mid-air. */
+export function hopperCrouch(state: number): number {
+  return state > 0 && state < HOPPER_CROUCH_T ? clamp01(1 - state / HOPPER_CROUCH_T) : 0;
+}
+/** Seconds of reload during which the turret's aim line brightens (state = reload seconds left). */
+export const TURRET_AIM_T = 0.4;
+export function turretCharge(state: number): number {
+  return state > 0 && state < TURRET_AIM_T ? clamp01(1 - state / TURRET_AIM_T) : 0;
+}
+/** The chaser's wind-up length in the sim (state starts here and counts down to the charge). */
+export const CHASER_WINDUP_T = 0.5;
+/** Wind-up shake offset (world units) while state > 0: a fast jitter that grows as the charge nears. */
+export function chaserShake(state: number, t: number): number {
+  if (state <= 0) return 0;
+  const k = clamp01(1 - state / CHASER_WINDUP_T);
+  return Math.sin(t * 70) * (0.4 + 1.2 * k);
+}
+/** Flyer wing-flap phase (radians): a steady beat that quickens with speed. */
+export function flyerFlap(t: number, speed: number): number {
+  return t * (8 + Math.min(200, speed) * 0.03);
+}
+/** Walker blink, 0 open .. 1 closed: a short close every ~3.3 s, staggered by id so a pack never blinks together. */
+export function walkerBlink(t: number, id: number): number {
+  const ph = (t * 0.3 + id * 0.37) % 1;
+  return ph < 0.05 ? 1 : 0;
+}
 
 /**
  * Rising streaks emitted per second per visible updraft column (halved on the
@@ -38,13 +84,15 @@ interface EntVis {
   /** Updraft: streak emission accumulator, and whether the column was pre-filled on first sight. */
   acc: number;
   seeded: boolean;
+  /** Alive on the previous update — a pickup consumed between two updates cues the smile (P5-2). */
+  wasAlive: boolean;
 }
 interface FoeVis { aim: number; charge: number }
 
 function entVis(map: Map<number, EntVis>, e: EntityState): EntVis {
   let v = map.get(e.id);
   if (!v) {
-    v = { pop: 0, lit: 0, minX: e.x, maxX: e.x, minY: e.y, maxY: e.y, acc: 0, seeded: false };
+    v = { pop: 0, lit: 0, minX: e.x, maxX: e.x, minY: e.y, maxY: e.y, acc: 0, seeded: false, wasAlive: e.alive };
     map.set(e.id, v);
   }
   return v;
@@ -57,12 +105,16 @@ export class Actors {
   /** Frame delta from the last `update`, consumed by emitters that run during the draw pass. */
   private dt = 0;
 
-  constructor(private readonly stage: Stage, public biome: Biome, private readonly particles: Particles | null = null) {}
+  constructor(private readonly stage: Stage, public biome: Biome, private readonly particles: Particles | null = null) {
+    scene.wind = WIND_BY_WEATHER[biome.weather] ?? 0;
+  }
 
   setLevel(biome: Biome): void {
     this.biome = biome;
     this.ent.clear();
     this.foe.clear();
+    scene.wind = WIND_BY_WEATHER[biome.weather] ?? 0;
+    scene.pickup = 0;
   }
 
   /** After the particle pool was wiped (respawn, intro): refill every updraft column on its next draw. */
@@ -73,8 +125,13 @@ export class Actors {
   /** Advance visual-only timers. */
   update(dt: number, state: SimState): void {
     this.dt = dt;
+    scene.t += dt;
+    scene.gust = 0.5 + 0.5 * Math.sin(scene.t * 0.7) * Math.sin(scene.t * 1.9 + 1);
+    scene.pickup = Math.max(0, scene.pickup - dt);
     for (const e of state.entities) {
       const v = entVis(this.ent, e);
+      if (v.wasAlive && !e.alive && (e.kind === 'shard' || e.kind === 'relic')) scene.pickup = SMILE_T;
+      v.wasAlive = e.alive;
       if (!e.alive) v.pop += dt;
       if (e.kind === 'checkpoint') v.lit = damp(v.lit, e.state >= 0.5 ? 1 : 0, 0.12, dt);
       else if (e.kind === 'goal') v.lit = damp(v.lit, 1, 0.4, dt);
@@ -654,11 +711,20 @@ export class Actors {
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.ellipse(0, -1.4 + wob * 0.3, 5.4, 3.4, 0, Math.PI * 1.12, Math.PI * 1.88); ctx.stroke();
     }
-    for (const s of [-1, 1]) {
-      ctx.fillStyle = '#FFFFFF';
-      ctx.beginPath(); ctx.arc(f.face * 2.2 + s * 1.9, -0.6, 1.5, 0, TAU); ctx.fill();
-      ctx.fillStyle = '#150C28';
-      ctx.beginPath(); ctx.arc(f.face * 2.9 + s * 1.9, -0.5, 0.75, 0, TAU); ctx.fill();
+    // eyes; a short blink every few seconds, staggered per walker (P5-2)
+    if (walkerBlink(f.t, f.id) > 0.5) {
+      ctx.strokeStyle = '#150C28';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      for (const s of [-1, 1]) { ctx.moveTo(f.face * 2.2 + s * 1.9 - 1.2, -0.6); ctx.lineTo(f.face * 2.2 + s * 1.9 + 1.2, -0.6); }
+      ctx.stroke();
+    } else {
+      for (const s of [-1, 1]) {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath(); ctx.arc(f.face * 2.2 + s * 1.9, -0.6, 1.5, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#150C28';
+        ctx.beginPath(); ctx.arc(f.face * 2.9 + s * 1.9, -0.5, 0.75, 0, TAU); ctx.fill();
+      }
     }
     if (armoured) {
       ctx.fillStyle = '#E8E2F2';
@@ -686,8 +752,10 @@ export class Actors {
   private hopper(f: FoeState, t: number): void {
     const ctx = this.stage.ctx, gctx = this.stage.gctx;
     const d = this.dieK(f);
-    // squash from motion: crouch before a hop, stretch on the way up
-    const sq = f.vy < -30 ? -0.35 : Math.abs(f.vy) < 1 ? 0.18 + 0.12 * Math.sin(f.t * 5) : 0;
+    // squash from motion: crouch before a hop, stretch on the way up; the last HOPPER_CROUCH_T before the hop
+    // the crouch deepens with the countdown (state = seconds until the hop) so the jump is telegraphed (P5-2)
+    const crouch = Math.abs(f.vy) < 1 ? hopperCrouch(f.state) : 0;
+    const sq = f.vy < -30 ? -0.35 : Math.abs(f.vy) < 1 ? 0.18 + 0.12 * Math.sin(f.t * 5) + crouch * 0.55 : 0;
     ctx.save();
     ctx.globalAlpha *= d.alpha;
     ctx.translate(f.x, f.y);
@@ -708,7 +776,8 @@ export class Actors {
     ctx.beginPath(); ctx.ellipse(0, -2.4, 4.6, 3, 0, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
     for (const sd of [-1, 1]) {
       ctx.fillStyle = '#0E2A24';
-      ctx.beginPath(); ctx.ellipse(sd * 2.4 + f.face * 0.8, -1.4, 1.1, 1.5, 0, 0, TAU); ctx.fill();
+      // the eyes narrow with the crouch
+      ctx.beginPath(); ctx.ellipse(sd * 2.4 + f.face * 0.8, -1.4, 1.1, 1.5 * (1 - crouch * 0.6), 0, 0, TAU); ctx.fill();
     }
     ctx.restore();
     if (this.stage.settings.bloom) {
@@ -733,6 +802,20 @@ export class Actors {
       ctx.moveTo(bx, 3.4);
       ctx.quadraticCurveTo(bx + tent, 7, bx + tent * 1.7, 11);
       ctx.stroke();
+    }
+    // wing membranes flapping either side of the bell, quicker when it moves (P5-2)
+    const flap = Math.sin(flyerFlap(f.t, Math.hypot(f.vx, f.vy)));
+    ctx.fillStyle = alpha('#C9B4FF', 0.45);
+    ctx.strokeStyle = alpha('#EDE4FF', 0.6);
+    ctx.lineWidth = 0.6;
+    for (const sd of [-1, 1]) {
+      const wy = -1.5 - flap * 3.2;
+      ctx.beginPath();
+      ctx.moveTo(sd * 5.2, -1.2);
+      ctx.quadraticCurveTo(sd * 9.6, wy - 2.4, sd * 12.4, wy);
+      ctx.quadraticCurveTo(sd * 9.0, wy + 2.2 + flap, sd * 5.6, 1.6);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
     }
     const pump = 1 + Math.sin(f.t * 3.2) * 0.08;
     const g = ctx.createRadialGradient(0, -3, 1, 0, 1, 9);
@@ -769,6 +852,12 @@ export class Actors {
     ctx.scale(d.scale, d.scale);
     ctx.save();
     ctx.rotate(v.aim);
+    // the aim line brightens and reaches out over the last TURRET_AIM_T of the reload (P5-2)
+    if (v.charge > 0.01) {
+      ctx.strokeStyle = alpha(C.danger, 0.1 + v.charge * 0.55);
+      ctx.lineWidth = 0.6 + v.charge * 0.7;
+      ctx.beginPath(); ctx.moveTo(11, 0); ctx.lineTo(11 + 30 * v.charge, 0); ctx.stroke();
+    }
     ctx.fillStyle = '#57506B';
     ctx.beginPath(); ctx.roundRect(2, -2.4, 9, 4.8, 2); ctx.fill();
     ctx.fillStyle = alpha(C.danger, 0.4 + v.charge * 0.6);
@@ -801,6 +890,11 @@ export class Actors {
     ctx.save();
     ctx.globalAlpha *= d.alpha;
     ctx.translate(f.x, f.y);
+    // wind-up: a jitter that grows as the charge nears (state counts down to it), on top of the pulse (P5-2)
+    if (f.state > 0 && f.dying <= 0) {
+      const shake = chaserShake(f.state, f.t);
+      ctx.translate(shake, shake * 0.35);
+    }
     if (winding) {
       const k = 0.5 + 0.5 * Math.sin(f.t * 12);
       ctx.scale(1 + k * 0.16, 1 - k * 0.1);
@@ -918,9 +1012,38 @@ export class Actors {
 interface TrailNode { x: number; y: number; a: number; dash: boolean }
 
 /**
+ * Antenna springs: stiffness, damping and how much of the body's velocity change
+ * the tip misses (the impulse that sets it swinging), per stalk. Driving the
+ * springs with velocity deltas rather than accelerations keeps the response
+ * independent of the frame rate: a run-up to top speed swings the tips the same
+ * whether it took six frames or sixty.
+ */
+const STALK_K = [90, 58] as const;
+const STALK_C = [9, 7] as const;
+const STALK_G = [0.25, 0.32] as const;
+/** A velocity change larger than this per update (a dash, a hard landing) counts as this much; a teleport is ignored. */
+const STALK_DV_MAX = 250;
+/** Largest deflection of a stalk tip (rig units). */
+const STALK_MAX = 6;
+/** Scarf chain physics: gravity, air drag per second, wind coupling, position-constraint passes. */
+const CHAIN_GRAVITY = 55;
+const CHAIN_DRAG = 0.82;
+const CHAIN_WIND = 1.0;
+const CHAIN_PASSES = 2;
+/** A feet jump larger than this between two updates is a teleport: the chain snaps instead of whipping. */
+const TELEPORT_DIST = 40;
+/** Substep ceiling for the springs and the chain (seconds). */
+const VIS_STEP = 1 / 30;
+
+/**
  * Visual-only state of one Clawd (the live player or an echo): squash spring,
  * run-cycle phase, blink, dash-refill flash, spawn warp, afterimage trail and
  * the death tumble. Derived from PlayerState deltas so it works for ghosts too.
+ *
+ * Phase 5 (P5-2) adds the secondary motion — two antenna stalks on damped
+ * springs that lag the body's acceleration, and a CHAIN_N-point scarf chain
+ * blown by the biome wind — plus the idle clock and the pickup smile. All of
+ * it is derived from PlayerState deltas; nothing feeds back into the sim.
  */
 export class PlayerVisual {
   squash = 0;
@@ -930,10 +1053,23 @@ export class PlayerVisual {
   spawnT = 0;
   deadSpin = 0;
   alpha = 1;
+  /** Seconds standing still (feeds RigState.idle). */
+  idleT = 0;
+  /** Seconds of smile left after `smile()` (feeds RigState.smile as a 0..1 remainder). */
+  smileT = 0;
+  /** Antenna tip offsets [x0, y0, x1, y1] in rig units (RigState.stalk). */
+  readonly stalk = new Float32Array(4);
+  /** Scarf chain points in world units, [x, y, …], CHAIN_N of them; `chain[0..1]` is the anchor. */
+  readonly chain = new Float32Array(CHAIN_N * 2);
+  private readonly stalkV = new Float32Array(4);
+  private readonly chainV = new Float32Array(CHAIN_N * 2);
+  /** The chain as offsets from the feet, what the rig draws (RigState.chain). */
+  private readonly chainRel = new Float32Array(CHAIN_N * 2);
+  private chainSet = false;
   private blinkT = 1.5;
   private readonly trail: TrailNode[] = [];
   private head = 0;
-  private prev: { grounded: boolean; vy: number; dashReady: boolean; dead: boolean; stomping: boolean; dashT: number } | null = null;
+  private prev: { grounded: boolean; vx: number; vy: number; dashReady: boolean; dead: boolean; stomping: boolean; dashT: number; x: number; y: number } | null = null;
 
   constructor() {
     for (let i = 0; i < TRAIL_N; i++) this.trail.push({ x: 0, y: 0, a: 0, dash: false });
@@ -943,8 +1079,87 @@ export class PlayerVisual {
   reset(p?: PlayerState): void {
     this.squash = 0; this.anim = 0; this.blink = 0; this.blinkT = 1.5;
     this.dashFlash = 0; this.spawnT = 0.42; this.deadSpin = 0; this.alpha = 1;
+    this.idleT = 0; this.smileT = 0;
+    this.stalk.fill(0); this.stalkV.fill(0);
+    this.chainSet = false;
+    if (p) this.snapChain(p);
     this.prev = null;
     for (const tr of this.trail) { tr.a = 0; if (p) { tr.x = p.x; tr.y = p.y; } }
+  }
+
+  /** Start the pickup smile (SMILE_T seconds); the renderer may call this from a shard / relic event. */
+  smile(): void { this.smileT = SMILE_T; }
+
+  /** Where the scarf hangs from, in world units. */
+  private anchorX(p: PlayerState): number { return p.x + p.w / 2 - p.facing * CHAIN_ANCHOR.dx; }
+  private anchorY(p: PlayerState): number { return p.y + p.h + CHAIN_ANCHOR.dy; }
+
+  /** Lay the whole chain out behind the anchor at rest (spawn, teleport). */
+  private snapChain(p: PlayerState): void {
+    const ax = this.anchorX(p), ay = this.anchorY(p);
+    for (let i = 0; i < CHAIN_N; i++) {
+      this.chain[i * 2] = ax - p.facing * i * CHAIN_SEG * 0.8;
+      this.chain[i * 2 + 1] = ay + i * CHAIN_SEG * 0.6;
+    }
+    this.chainV.fill(0);
+    this.chainSet = true;
+    this.relChain(p);
+  }
+
+  private relChain(p: PlayerState): void {
+    const fx = p.x + p.w / 2, fy = p.y + p.h;
+    for (let i = 0; i < CHAIN_N; i++) {
+      this.chainRel[i * 2] = this.chain[i * 2] - fx;
+      this.chainRel[i * 2 + 1] = this.chain[i * 2 + 1] - fy;
+    }
+  }
+
+  /** The body's velocity changed by (dvx, dvy): each tip keeps a share of its old velocity, so it swings the other way. */
+  private kickStalks(dvx: number, dvy: number): void {
+    const V = this.stalkV;
+    for (let i = 0; i < 2; i++) {
+      V[i * 2] -= dvx * STALK_G[i];
+      V[i * 2 + 1] -= dvy * STALK_G[i];
+    }
+  }
+
+  /** Damped springs for the two antenna tips, back toward rest. */
+  private stepStalks(dt: number): void {
+    const S = this.stalk, V = this.stalkV;
+    for (let i = 0; i < 2; i++) {
+      const k = STALK_K[i], c = STALK_C[i];
+      for (let axis = 0; axis < 2; axis++) {
+        const j = i * 2 + axis;
+        V[j] += (-k * S[j] - c * V[j]) * dt;
+        const s = S[j] + V[j] * dt;
+        if (s > STALK_MAX) { S[j] = STALK_MAX; V[j] *= 0.2; }
+        else if (s < -STALK_MAX) { S[j] = -STALK_MAX; V[j] *= 0.2; }
+        else S[j] = s;
+      }
+    }
+  }
+
+  /** One chain step: forces on every free point, then CHAIN_PASSES distance-constraint passes from the anchor out. */
+  private stepChain(dt: number, p: PlayerState): void {
+    const P = this.chain, V = this.chainV;
+    P[0] = this.anchorX(p); P[1] = this.anchorY(p);
+    const wind = sceneWind() * CHAIN_WIND;
+    const drag = Math.pow(CHAIN_DRAG, dt * 60);
+    for (let i = 1; i < CHAIN_N; i++) {
+      const j = i * 2;
+      V[j] = (V[j] + (wind + Math.sin(scene.t * 3 + i) * Math.abs(wind) * 0.4) * dt) * drag;
+      V[j + 1] = (V[j + 1] + CHAIN_GRAVITY * dt) * drag;
+      P[j] += V[j] * dt; P[j + 1] += V[j + 1] * dt;
+    }
+    for (let pass = 0; pass < CHAIN_PASSES; pass++) {
+      for (let i = 1; i < CHAIN_N; i++) {
+        const j = i * 2, k = j - 2;
+        const dx = P[j] - P[k], dy = P[j + 1] - P[k + 1];
+        const len = Math.hypot(dx, dy);
+        if (len > 1e-6) { P[j] = P[k] + dx / len * CHAIN_SEG; P[j + 1] = P[k + 1] + dy / len * CHAIN_SEG; }
+        else { P[j] = P[k] - p.facing * CHAIN_SEG; P[j + 1] = P[k + 1]; }
+      }
+    }
   }
 
   /** Landing squash from an explicit sim event (richer than the delta guess). */
@@ -966,6 +1181,28 @@ export class PlayerVisual {
     this.squash = damp(this.squash, 0, 0.055, dt);
     this.dashFlash = Math.max(0, this.dashFlash - dt * 3);
     if (this.spawnT > 0) this.spawnT -= dt;
+    this.smileT = Math.max(0, this.smileT - dt);
+
+    // secondary motion (P5-2): the antenna springs are kicked by the body's velocity change, the scarf follows the anchor
+    if (dt > 0) {
+      const prev = this.prev;    // reset() above may have cleared it
+      const teleport = !prev || Math.abs(p.x - prev.x) > TELEPORT_DIST || Math.abs(p.y - prev.y) > TELEPORT_DIST;
+      if (prev && !teleport) {
+        this.kickStalks(clamp(p.vx - prev.vx, -STALK_DV_MAX, STALK_DV_MAX), clamp(p.vy - prev.vy, -STALK_DV_MAX, STALK_DV_MAX));
+      }
+      if (!this.chainSet || teleport) this.snapChain(p);
+      let left = Math.min(dt, 0.1);
+      while (left > 1e-6) {
+        const h = Math.min(VIS_STEP, left);
+        this.stepStalks(h);
+        this.stepChain(h, p);
+        left -= h;
+      }
+      this.relChain(p);
+    }
+    // the idle clock: still on the ground, not dashing or stomping
+    if (!p.dead && p.grounded && Math.abs(p.vx) < 6 && p.dashT <= 0 && !p.stomping) this.idleT += dt;
+    else this.idleT = 0;
 
     if (!p.dead) {
       this.blinkT -= dt;
@@ -987,7 +1224,7 @@ export class PlayerVisual {
     tr.dash = p.dashT > 0;
     tr.a = p.dashT > 0 ? 1 : Math.abs(p.vx) > 200 || Math.abs(p.vy) > 300 ? 0.45 : 0;
 
-    this.prev = { grounded: p.grounded, vy: p.vy, dashReady: p.dashReady, dead: p.dead, stomping: p.stomping, dashT: p.dashT };
+    this.prev = { grounded: p.grounded, vx: p.vx, vy: p.vy, dashReady: p.dashReady, dead: p.dead, stomping: p.stomping, dashT: p.dashT, x: p.x, y: p.y };
   }
 
   private pose(p: PlayerState): RigPose {
@@ -1013,6 +1250,10 @@ export class PlayerVisual {
       dashReady: p.dashReady, dashFlash: this.dashFlash,
       deadSpin: p.dead ? this.deadSpin : 0,
       alpha: this.alpha,
+      idle: this.idleT,
+      smile: this.smileT > 0 ? clamp01(this.smileT / SMILE_T) : 0,
+      stalk: this.stalk,
+      chain: this.chainSet ? this.chainRel : undefined,
     };
   }
 
@@ -1071,12 +1312,14 @@ export class PlayerVisual {
     ctx.restore();
   }
 
-  /** Full live-player draw: trail, spawn warp, ground shadow, rig with glow. */
+  /** Full live-player draw: trail, spawn warp, ground shadow, rig with glow. The live player alone smiles at a pickup. */
   draw(stage: Stage, level: Level, p: PlayerState, skin: Skin): void {
     this.drawTrail(stage, p, skin);
     this.drawSpawnRing(stage, p, skin);
     this.drawShadow(stage, level, p);
-    drawClawd(stage.ctx, stage.gctx, this.rig(p, skin));
+    const rig = this.rig(p, skin);
+    if (scene.pickup > 0 && !p.dead) rig.smile = Math.max(rig.smile ?? 0, clamp01(scene.pickup / SMILE_T));
+    drawClawd(stage.ctx, stage.gctx, rig);
   }
 }
 
