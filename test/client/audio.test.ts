@@ -5,7 +5,7 @@ import { AudioEngine } from '../../src/client/audio/engine.js';
 import {
   BIOME_STING, CHECKPOINT_PITCH_CAP, EVENT_SFX, SFX, SHARD_LADDER, SHARD_SHIMMER_AT, SILENT_EVENTS, STINGERS, UI_SFX, eventSfx, midi, stingFor,
 } from '../../src/client/audio/sfx.js';
-import type { StingerKind } from '../../src/client/audio/sfx.js';
+import type { SfxName, SfxParams, StingerKind, Synth } from '../../src/client/audio/sfx.js';
 import { ENDING_TRACK, SCALES, TRACKS, planStep, planWindow } from '../../src/client/audio/music.js';
 import { BIOME_ORDER } from '../../src/shared/biomes.js';
 
@@ -761,5 +761,81 @@ describe('audio pass (P3-9)', () => {
     const before = sources(ctx).length;
     engine.tick();
     expect(sources(ctx).length).toBeGreaterThan(before);
+  });
+});
+
+// ------------------------------------------------------------------ bubble foe (P5-5)
+describe('bubble sfx (P5-5)', () => {
+  interface Voice { kind: 'tone' | 'noise'; gain: number; at: number; attack: number; dur: number; freqA: number | null; freqB: number | null; type: string }
+  /** A recording Synth: the recipes' calls without WebAudio, so gains and sweeps can be compared directly. */
+  function record(name: SfxName, params: SfxParams = { vol: 1, pan: 0 }): Voice[] {
+    const out: Voice[] = [];
+    const synth: Synth = {
+      tone(freqA, freqB, dur, o = {}) {
+        out.push({ kind: 'tone', gain: o.gain ?? 1, at: o.at ?? 0, attack: o.attack ?? 0, dur, freqA, freqB, type: o.type ?? 'sine' });
+      },
+      noise(dur, o = {}) {
+        out.push({ kind: 'noise', gain: o.gain ?? 1, at: o.at ?? 0, attack: o.attack ?? 0, dur, freqA: o.freq ?? null, freqB: o.freqEnd ?? null, type: o.type ?? 'lowpass' });
+      },
+    };
+    SFX[name](synth, params);
+    return out;
+  }
+  const peak = (v: Voice[]): number => Math.max(...v.map((x) => x.gain));
+  const killed = (): Voice[] => record('foeKilled', { vol: 1, pan: 0, kind: 'hopper' });
+
+  it('bubblePop is a wet pop — one short bandpass burst plus a rising chirp — and quieter than foeKilled', () => {
+    const v = record('bubblePop');
+    const burst = v.filter((x) => x.kind === 'noise');
+    expect(burst).toHaveLength(1);
+    expect(burst[0].type).toBe('bandpass');
+    expect(burst[0].dur).toBeLessThanOrEqual(0.1);
+    expect(burst[0].at).toBe(0);
+    const chirp = v.filter((x) => x.kind === 'tone' && x.freqB !== null && x.freqB > (x.freqA ?? 0));
+    expect(chirp.length).toBeGreaterThanOrEqual(1);
+    expect(v.every((x) => x.dur <= 0.2)).toBe(true);   // a pop, not a tail
+    expect(peak(v)).toBeLessThan(peak(killed()));
+    expect(peak(v)).toBeLessThanOrEqual(0.12);
+  });
+
+  it('bubbleBack is a soft glassy shimmer — sines above 1 kHz swelling in — quieter than the pop and than foeKilled', () => {
+    const v = record('bubbleBack');
+    const tones = v.filter((x) => x.kind === 'tone');
+    expect(tones.length).toBeGreaterThanOrEqual(2);
+    expect(tones.every((x) => x.type === 'sine' && x.attack >= 0.05)).toBe(true);
+    expect(tones.every((x) => (x.freqA ?? 0) >= 1000)).toBe(true);
+    expect(peak(v)).toBeLessThan(peak(record('bubblePop')));
+    expect(peak(v)).toBeLessThan(peak(killed()));
+    expect(peak(v)).toBeLessThanOrEqual(0.05);
+  });
+
+  it('both are deterministic in the event fields alone: two renders match voice for voice, and gain follows vol', () => {
+    for (const name of ['bubblePop', 'bubbleBack'] as const) {
+      expect(record(name)).toEqual(record(name));
+      const full = record(name);
+      const half = record(name, { vol: 0.5, pan: 0.3 });
+      expect(half).toHaveLength(full.length);
+      half.forEach((h, i) => expect(h.gain).toBeCloseTo(full[i].gain * 0.5, 9));
+    }
+  });
+
+  it('the engine plays both through the event map', () => {
+    installFake();
+    const engine = new AudioEngine();
+    try {
+      engine.init();
+      const ctx = ctxOf();
+      expect(EVENT_SFX.bubblePop).toBe('bubblePop');
+      expect(EVENT_SFX.bubbleBack).toBe('bubbleBack');
+      for (const type of ['bubblePop', 'bubbleBack'] as const) {
+        const before = sources(ctx).length;
+        ctx.currentTime += 1;
+        engine.onEvent(sampleEvent(type), fakeSim() as never);
+        expect(sources(ctx).length - before, type).toBeGreaterThanOrEqual(2);
+      }
+    } finally {
+      engine.dispose();
+      removeFake();
+    }
   });
 });

@@ -617,6 +617,15 @@ export class Renderer implements RendererPort {
         P.ring(ev.x, ev.y, 2, 26, 0.32, C.enemyHi, 1.8, 1);
         P.text(ev.x, ev.y - 8, '+', C.enemyHi, 0.55, 0.8);
         break;
+      case 'bubblePop':
+        // the film lets go (P5-5): accent droplets falling out of a thin white ring; the bounce itself is the player's
+        P.droplets(ev.x, ev.y, 10, b.accent);
+        P.ring(ev.x, ev.y, 5, 22, 0.28, '#FFFFFF', 1.4, 0.8);
+        break;
+      case 'bubbleBack':
+        // the film re-forms: a ring closing inward with a few motes flying into the centre
+        P.shimmerIn(ev.x, ev.y, b.accent);
+        break;
       case 'bolt':
         P.spark(ev.x, ev.y, 5, C.dangerHi, 120, null, 0.9, 1);
         break;

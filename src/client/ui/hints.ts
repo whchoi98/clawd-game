@@ -35,6 +35,36 @@ export interface HintContext {
 /** Re-hint templates the shell shows after repeated deaths of one kind. */
 export const REHINT_PIT = '공중에서 {jump} 한 번 더 — 2단 점프로 구덩이를 넘는다';
 export const REHINT_HAZARD = '{dash} 대시 — 대시 중에는 가시와 톱날을 스쳐도 다치지 않는다';
+/**
+ * Re-hint for the bubble foe (P5-5): landing on it from above pops it and bounces you; touching it
+ * from the side or below kills. Device-neutral on purpose — no button is needed to land on it.
+ */
+export const REHINT_BUBBLE = '거품은 위에서 밟아라 · 옆에서 닿으면 죽는다';
+/** Death toast for cause `bubble` (the shell's `deathLine` table maps causes to these one-liners). */
+export const DEATH_LINE_BUBBLE = '거품에 닿았다';
+
+/** The re-hint families: which deaths bring which hint back. */
+export type RehintKind = 'pit' | 'hazard' | 'bubble';
+export const REHINT_BY_KIND: Readonly<Record<RehintKind, string>> = { pit: REHINT_PIT, hazard: REHINT_HAZARD, bubble: REHINT_BUBBLE };
+
+/**
+ * The re-hint family of a death cause (the sim's `death.cause` string), or null for deaths no hint
+ * helps with (retry, tide, bolt, switch, a generic foe). Pure; the shell counts deaths per family.
+ */
+export function rehintKind(cause: string): RehintKind | null {
+  switch (cause) {
+    case 'pit': return 'pit';
+    case 'spike': case 'saw': return 'hazard';
+    case 'bubble': return 'bubble';
+    default: return null;
+  }
+}
+
+/** The re-hint template for a death cause, or null when the cause has none. */
+export function deathHint(cause: string): string | null {
+  const k = rehintKind(cause);
+  return k ? REHINT_BY_KIND[k] : null;
+}
 
 /** Standard-mapping button index → glyph (enclosed letters render in every CJK UI font). */
 const PAD_BUTTON_GLYPH: Readonly<Record<number, string>> = { 0: 'Ⓐ', 1: 'Ⓑ', 2: 'Ⓧ', 3: 'Ⓨ', 12: '↑', 13: '↓', 14: '←', 15: '→' };
