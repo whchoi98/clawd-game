@@ -245,7 +245,7 @@ npm run icons          # public/icons/icon.svg → PNG (Playwright; 결과는 �
 
 ## 배포
 
-현재 배포: v0.2.0 (2026-09-06) — `ClawdEchoTowerStack` (ap-northeast-2), CloudFront `E38DW91AO2DWTB` → https://clawd-game.whchoi.net/ (배포 도메인 https://d24frhamecczl7.cloudfront.net/ 도 유효)
+현재 배포: v0.3.0 (2026-09-07) — `ClawdEchoTowerStack` (ap-northeast-2), CloudFront `E38DW91AO2DWTB` → https://clawd-game.whchoi.net/ (배포 도메인 https://d24frhamecczl7.cloudfront.net/ 도 유효)
 
 ```bash
 export CDK_DEFAULT_ACCOUNT=061525506239 CDK_DEFAULT_REGION=ap-northeast-2
