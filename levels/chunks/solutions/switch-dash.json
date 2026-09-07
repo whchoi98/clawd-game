@@ -1,6 +1,6 @@
 {
   "levelId": "switch-dash",
-  "sim": 2,
+  "sim": 3,
   "rev": 0,
   "seed": 823551047,
   "masks": "EQUBGxIKAgoSCgIEIgMCCxIKAgQiAwIfJAMAHQIGIgMCCCoBOgISDBAcAAQmAwIhEgkCDiYDAgcSCQICARAkAwAdEhwCBBIKAgQiAwIS",
@@ -8,5 +8,5 @@
   "time": 3.05,
   "shards": 0,
   "deaths": 0,
-  "recordedAt": "2026-09-06T18:21:23.834Z"
+  "recordedAt": "2026-09-06T23:55:28.468Z"
 }

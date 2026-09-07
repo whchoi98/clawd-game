@@ -1,0 +1,116 @@
+{
+  "levelId": "t3",
+  "name": "조수 첨탑",
+  "sim": 3,
+  "rev": 1,
+  "seed": 29,
+  "par": 70,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 286,
+  "clearRate": 0.9533333333333334,
+  "gaveUp": 14,
+  "deaths": 135,
+  "deathsPerEpisode": 0.45,
+  "medianClearSec": 10.38,
+  "causes": {
+    "foe": 135
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 24,
+      "ty": 18,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 1,
+      "tx": 29,
+      "ty": 14,
+      "reached": 291,
+      "rate": 0.97
+    },
+    {
+      "index": 2,
+      "tx": 47,
+      "ty": 8,
+      "reached": 289,
+      "rate": 0.9633333333333334
+    },
+    {
+      "index": 3,
+      "tx": 53,
+      "ty": 5,
+      "reached": 286,
+      "rate": 0.9533333333333334
+    }
+  ],
+  "cells": [
+    {
+      "tx": 33,
+      "ty": 12,
+      "deaths": 97,
+      "causes": {
+        "foe": 97
+      }
+    },
+    {
+      "tx": 33,
+      "ty": 11,
+      "deaths": 28,
+      "causes": {
+        "foe": 28
+      }
+    },
+    {
+      "tx": 34,
+      "ty": 11,
+      "deaths": 5,
+      "causes": {
+        "foe": 5
+      }
+    },
+    {
+      "tx": 32,
+      "ty": 12,
+      "deaths": 3,
+      "causes": {
+        "foe": 3
+      }
+    },
+    {
+      "tx": 33,
+      "ty": 13,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 34,
+      "ty": 12,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 32,
+      "x1": 34,
+      "ty": 12,
+      "deaths": 135,
+      "share": 1,
+      "cause": "foe"
+    }
+  ]
+}

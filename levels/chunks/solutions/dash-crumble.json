@@ -1,6 +1,6 @@
 {
   "levelId": "dash-crumble",
-  "sim": 2,
+  "sim": 3,
   "rev": 0,
   "seed": 3905898173,
   "masks": "EQUBGxIKAgoSCgIEIgMCGxIMAgQkAwAdAggSDAIMIgMCHSIDAh0iAwIREg4CDgAIEAgiAwIdEhwCBCQDAB0CCBIMAgwiAwIZ",
@@ -8,5 +8,5 @@
   "time": 3.392,
   "shards": 5,
   "deaths": 0,
-  "recordedAt": "2026-09-06T18:21:04.864Z"
+  "recordedAt": "2026-09-06T23:55:08.296Z"
 }

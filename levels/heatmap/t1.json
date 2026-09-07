@@ -1,0 +1,182 @@
+{
+  "levelId": "t1",
+  "name": "새벽 물가",
+  "sim": 3,
+  "rev": 1,
+  "seed": 5,
+  "par": 45,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 296,
+  "clearRate": 0.9866666666666667,
+  "gaveUp": 4,
+  "deaths": 39,
+  "deathsPerEpisode": 0.13,
+  "medianClearSec": 12.53,
+  "causes": {
+    "pit": 18,
+    "foe": 21
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 32,
+      "ty": 15,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 1,
+      "tx": 49,
+      "ty": 15,
+      "reached": 297,
+      "rate": 0.99
+    },
+    {
+      "index": 2,
+      "tx": 70,
+      "ty": 15,
+      "reached": 295,
+      "rate": 0.9833333333333333
+    }
+  ],
+  "cells": [
+    {
+      "tx": 73,
+      "ty": 15,
+      "deaths": 9,
+      "causes": {
+        "foe": 9
+      }
+    },
+    {
+      "tx": 89,
+      "ty": 19,
+      "deaths": 9,
+      "causes": {
+        "pit": 9
+      }
+    },
+    {
+      "tx": 19,
+      "ty": 15,
+      "deaths": 6,
+      "causes": {
+        "foe": 6
+      }
+    },
+    {
+      "tx": 46,
+      "ty": 19,
+      "deaths": 4,
+      "causes": {
+        "pit": 4
+      }
+    },
+    {
+      "tx": 68,
+      "ty": 19,
+      "deaths": 3,
+      "causes": {
+        "pit": 3
+      }
+    },
+    {
+      "tx": 71,
+      "ty": 14,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 71,
+      "ty": 15,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 88,
+      "ty": 19,
+      "deaths": 2,
+      "causes": {
+        "pit": 2
+      }
+    },
+    {
+      "tx": 19,
+      "ty": 14,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 20,
+      "ty": 14,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 88,
+      "x1": 89,
+      "ty": 19,
+      "deaths": 11,
+      "share": 0.28205128205128205,
+      "cause": "pit"
+    },
+    {
+      "x0": 73,
+      "x1": 73,
+      "ty": 15,
+      "deaths": 9,
+      "share": 0.23076923076923078,
+      "cause": "foe"
+    },
+    {
+      "x0": 19,
+      "x1": 20,
+      "ty": 15,
+      "deaths": 8,
+      "share": 0.20512820512820512,
+      "cause": "foe"
+    },
+    {
+      "x0": 46,
+      "x1": 46,
+      "ty": 19,
+      "deaths": 4,
+      "share": 0.10256410256410256,
+      "cause": "pit"
+    },
+    {
+      "x0": 71,
+      "x1": 71,
+      "ty": 14,
+      "deaths": 4,
+      "share": 0.10256410256410256,
+      "cause": "foe"
+    },
+    {
+      "x0": 68,
+      "x1": 68,
+      "ty": 19,
+      "deaths": 3,
+      "share": 0.07692307692307693,
+      "cause": "pit"
+    }
+  ]
+}

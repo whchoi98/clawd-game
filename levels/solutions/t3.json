@@ -1,12 +1,12 @@
 {
   "levelId": "t3",
-  "sim": 2,
-  "rev": 0,
+  "sim": 3,
+  "rev": 1,
   "seed": 29,
-  "masks": "EQUBGxIKAgoSCgIEIgMCCxIFAhsSCgIEJgMCHwAQEgUCGwACEAY6AxAFEgoCBCIDAh8ABxAJAgYkAwIHEgwCAhIMAhYmAwIdKgMCHSIDAh0iAwIdIgMCHSoDAh0qAwItEgwCBBIKAgQmAwIgKgMCDBIKAgQiAwIfIgMCHQADIgMAChIKAgQiAwIR",
-  "ticks": 749,
-  "time": 6.242,
-  "shards": 6,
+  "masks": "AjASCgIEIgMCHyIDAh0iAwIdIgMCHSIDAi0SDAIEAAIQDiYDAh0SCgIKEgoCBCIDAgsAECIDAh0iAwIdIgMCHSIDAi0BEAAQAQQmAwEJEhwCBCoDAh0iAwIdIgMCHSIDAh0iAwIX",
+  "ticks": 693,
+  "time": 5.775,
+  "shards": 0,
   "deaths": 0,
-  "recordedAt": "2026-09-06T16:12:18.813Z"
+  "recordedAt": "2026-09-06T23:55:00.661Z"
 }

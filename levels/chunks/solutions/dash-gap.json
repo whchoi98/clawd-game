@@ -1,6 +1,6 @@
 {
   "levelId": "dash-gap",
-  "sim": 2,
+  "sim": 3,
   "rev": 0,
   "seed": 2557455965,
   "masks": "AjASCgIEIgMCHyIDAh0iAwIREg4CDiYDAh0SHAIEEBASHAIEEhwCBCYDAh0SCgIEIgMCFw==",
@@ -8,5 +8,5 @@
   "time": 2.825,
   "shards": 0,
   "deaths": 0,
-  "recordedAt": "2026-09-06T18:21:09.539Z"
+  "recordedAt": "2026-09-06T23:55:13.864Z"
 }

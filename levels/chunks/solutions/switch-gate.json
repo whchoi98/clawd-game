@@ -1,6 +1,6 @@
 {
   "levelId": "switch-gate",
-  "sim": 2,
+  "sim": 3,
   "rev": 0,
   "seed": 591733548,
   "masks": "AkgSCAIYEgglAwEdAAEQDyYDAh0SBQIbIgMCHSIDAhESDgIOEgoCChIKAgQiAwILEBwABAIFEgsBBiYDAQcSCgIKEgoCBCIDAgo=",
@@ -8,5 +8,5 @@
   "time": 3.417,
   "shards": 3,
   "deaths": 0,
-  "recordedAt": "2026-09-06T18:25:40.342Z"
+  "recordedAt": "2026-09-06T23:55:34.563Z"
 }

@@ -1,0 +1,83 @@
+{
+  "levelId": "v1",
+  "name": "공허의 수정",
+  "sim": 3,
+  "rev": 1,
+  "seed": 101,
+  "par": 70,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 0,
+  "clearRate": 0,
+  "gaveUp": 300,
+  "deaths": 7500,
+  "deathsPerEpisode": 25,
+  "medianClearSec": null,
+  "causes": {
+    "spike": 7500
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 11,
+      "ty": 17,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 1,
+      "tx": 31,
+      "ty": 17,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 2,
+      "tx": 55,
+      "ty": 17,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 3,
+      "tx": 72,
+      "ty": 9,
+      "reached": 0,
+      "rate": 0
+    },
+    {
+      "index": 4,
+      "tx": 84,
+      "ty": 9,
+      "reached": 0,
+      "rate": 0
+    }
+  ],
+  "cells": [
+    {
+      "tx": 14,
+      "ty": 18,
+      "deaths": 7500,
+      "causes": {
+        "spike": 7500
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 14,
+      "x1": 14,
+      "ty": 18,
+      "deaths": 7500,
+      "share": 1,
+      "cause": "spike"
+    }
+  ]
+}

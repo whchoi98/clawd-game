@@ -1,0 +1,469 @@
+{
+  "levelId": "t2",
+  "name": "조류의 도약",
+  "sim": 3,
+  "rev": 1,
+  "seed": 13,
+  "par": 55,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 295,
+  "clearRate": 0.9833333333333333,
+  "gaveUp": 5,
+  "deaths": 1400,
+  "deathsPerEpisode": 4.666666666666667,
+  "medianClearSec": 29.58,
+  "causes": {
+    "spike": 1222,
+    "foe": 178
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 23,
+      "ty": 17,
+      "reached": 48,
+      "rate": 0.16
+    },
+    {
+      "index": 1,
+      "tx": 48,
+      "ty": 17,
+      "reached": 64,
+      "rate": 0.21333333333333335
+    },
+    {
+      "index": 2,
+      "tx": 78,
+      "ty": 17,
+      "reached": 64,
+      "rate": 0.21333333333333335
+    },
+    {
+      "index": 3,
+      "tx": 91,
+      "ty": 17,
+      "reached": 200,
+      "rate": 0.6666666666666666
+    }
+  ],
+  "cells": [
+    {
+      "tx": 98,
+      "ty": 16,
+      "deaths": 325,
+      "causes": {
+        "spike": 325
+      }
+    },
+    {
+      "tx": 99,
+      "ty": 16,
+      "deaths": 280,
+      "causes": {
+        "spike": 280
+      }
+    },
+    {
+      "tx": 97,
+      "ty": 16,
+      "deaths": 250,
+      "causes": {
+        "spike": 250
+      }
+    },
+    {
+      "tx": 93,
+      "ty": 16,
+      "deaths": 150,
+      "causes": {
+        "spike": 150
+      }
+    },
+    {
+      "tx": 96,
+      "ty": 16,
+      "deaths": 64,
+      "causes": {
+        "spike": 64
+      }
+    },
+    {
+      "tx": 92,
+      "ty": 17,
+      "deaths": 49,
+      "causes": {
+        "spike": 49
+      }
+    },
+    {
+      "tx": 94,
+      "ty": 16,
+      "deaths": 38,
+      "causes": {
+        "spike": 38
+      }
+    },
+    {
+      "tx": 100,
+      "ty": 17,
+      "deaths": 37,
+      "causes": {
+        "spike": 37
+      }
+    },
+    {
+      "tx": 95,
+      "ty": 16,
+      "deaths": 25,
+      "causes": {
+        "spike": 25
+      }
+    },
+    {
+      "tx": 52,
+      "ty": 15,
+      "deaths": 19,
+      "causes": {
+        "foe": 19
+      }
+    },
+    {
+      "tx": 50,
+      "ty": 16,
+      "deaths": 18,
+      "causes": {
+        "foe": 18
+      }
+    },
+    {
+      "tx": 51,
+      "ty": 17,
+      "deaths": 17,
+      "causes": {
+        "foe": 17
+      }
+    },
+    {
+      "tx": 24,
+      "ty": 17,
+      "deaths": 15,
+      "causes": {
+        "foe": 15
+      }
+    },
+    {
+      "tx": 52,
+      "ty": 16,
+      "deaths": 14,
+      "causes": {
+        "foe": 14
+      }
+    },
+    {
+      "tx": 44,
+      "ty": 16,
+      "deaths": 13,
+      "causes": {
+        "foe": 13
+      }
+    },
+    {
+      "tx": 24,
+      "ty": 16,
+      "deaths": 9,
+      "causes": {
+        "foe": 9
+      }
+    },
+    {
+      "tx": 50,
+      "ty": 17,
+      "deaths": 8,
+      "causes": {
+        "foe": 8
+      }
+    },
+    {
+      "tx": 51,
+      "ty": 15,
+      "deaths": 8,
+      "causes": {
+        "foe": 8
+      }
+    },
+    {
+      "tx": 52,
+      "ty": 17,
+      "deaths": 6,
+      "causes": {
+        "foe": 6
+      }
+    },
+    {
+      "tx": 50,
+      "ty": 15,
+      "deaths": 5,
+      "causes": {
+        "foe": 5
+      }
+    },
+    {
+      "tx": 44,
+      "ty": 15,
+      "deaths": 4,
+      "causes": {
+        "foe": 4
+      }
+    },
+    {
+      "tx": 45,
+      "ty": 15,
+      "deaths": 4,
+      "causes": {
+        "foe": 4
+      }
+    },
+    {
+      "tx": 46,
+      "ty": 17,
+      "deaths": 4,
+      "causes": {
+        "foe": 4
+      }
+    },
+    {
+      "tx": 49,
+      "ty": 16,
+      "deaths": 4,
+      "causes": {
+        "foe": 4
+      }
+    },
+    {
+      "tx": 93,
+      "ty": 17,
+      "deaths": 4,
+      "causes": {
+        "spike": 4
+      }
+    },
+    {
+      "tx": 26,
+      "ty": 17,
+      "deaths": 3,
+      "causes": {
+        "foe": 3
+      }
+    },
+    {
+      "tx": 44,
+      "ty": 17,
+      "deaths": 3,
+      "causes": {
+        "foe": 3
+      }
+    },
+    {
+      "tx": 45,
+      "ty": 14,
+      "deaths": 3,
+      "causes": {
+        "foe": 3
+      }
+    },
+    {
+      "tx": 44,
+      "ty": 18,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 47,
+      "ty": 14,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 48,
+      "ty": 14,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 48,
+      "ty": 15,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 22,
+      "ty": 16,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 31,
+      "ty": 17,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 32,
+      "ty": 16,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 32,
+      "ty": 17,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 44,
+      "ty": 14,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 45,
+      "ty": 16,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 45,
+      "ty": 17,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 47,
+      "ty": 15,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 47,
+      "ty": 17,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 49,
+      "ty": 17,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 51,
+      "ty": 14,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 52,
+      "ty": 14,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 53,
+      "ty": 15,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 92,
+      "x1": 100,
+      "ty": 16,
+      "deaths": 1222,
+      "share": 0.8728571428571429,
+      "cause": "spike"
+    },
+    {
+      "x0": 44,
+      "x1": 53,
+      "ty": 15,
+      "deaths": 147,
+      "share": 0.105,
+      "cause": "foe"
+    },
+    {
+      "x0": 24,
+      "x1": 24,
+      "ty": 17,
+      "deaths": 24,
+      "share": 0.017142857142857144,
+      "cause": "foe"
+    },
+    {
+      "x0": 26,
+      "x1": 26,
+      "ty": 17,
+      "deaths": 3,
+      "share": 0.002142857142857143,
+      "cause": "foe"
+    },
+    {
+      "x0": 31,
+      "x1": 32,
+      "ty": 17,
+      "deaths": 3,
+      "share": 0.002142857142857143,
+      "cause": "foe"
+    },
+    {
+      "x0": 22,
+      "x1": 22,
+      "ty": 16,
+      "deaths": 1,
+      "share": 0.0007142857142857143,
+      "cause": "foe"
+    }
+  ]
+}

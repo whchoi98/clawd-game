@@ -11,6 +11,12 @@
 - P3-12 스케일 절벽 제거: 리플레이 검증을 `worker_threads` 워커 1개 + 세마포어(동시 4 · 대기 16)로 옮기고 초과 시 `503 { error: 'busy' }` + `Retry-After: 3`(`src/server/verifyPool.ts`), `POST /api/runs` IP 예산(12/분)을 DynamoDB `RL#<ip>#<minute>` 카운터(TTL 120 s)로 플릿 공유, `GET /api/leaderboard`는 공개 top-N만 + `Cache-Control: public, s-maxage=5, stale-while-revalidate=30`과 CloudFront `/api/leaderboard*` 전용 캐시 behaviour(최대 60 s), 새 `GET /api/me?mode&board&playerId`(no-store, `rankCapped` 1,000), `BOARD#<mode>#<board>` 총원 카운터(`saveBest`가 유지, 없으면 COUNT 폴백), Fargate 태스크 512 CPU / 1024 MiB · 상한 10(`cdk.json` `taskCpu` · `taskMemory` · `maxTasks`) + ALB p95 > 0.8 s 스텝 스케일링(+2), 부하 스크립트 `tools/load/submit.mjs`, 런북 `docs/runbooks/scale.md`.
 ### Added (Phase 4 A)
 - P3-9 오디오 연출 패스·캐릭터 주스·세레머니: 바이옴 조성별 클리어 스팅어 3종(트랙 키로 선택), 층 돌파 팡파르·엔딩 화음·별/메달 UI 사운드(`AudioEngine.stinger`), 체크포인트 순번별 차임 상승, 5음계 콤보 사다리(8+에서 5도 시머), hp 무관 피격음, 엔딩 트랙 `ending`(타이틀 변주); 착지 먼지 임팩트 스케일·스킨 색 대시 잔상·벽 슬라이드 스파크·골 컨페티·리스폰 팝·골 6타일 내 시선 유도(`clawd.ts setLookTarget`); 결과 화면 단계 리빌(등급 → 별 → 메달 행 → 보드, `ui/ceremony.ts Timeline`, reduced-motion·캡처 하네스는 즉시), 층 마지막 존 첫 클리어의 `#scr-tier` 비스타 카드(3초·아무 키 스킵, `Progress.tiersBroken`), 탑 완주 첫 회의 `#scr-ending`(절차적 밤하늘·정상의 클로드·3줄 서사·합계·제출 줄·'다시 오르기', `Progress.endingSeen`), 엔딩 후 타이틀 한 줄 서사. 이전 코드 스냅샷·병합이 두 플래그를 싣고, 진행 기록 삭제가 둘을 지운다.
+### Changed (P2-8 — 9존 튠업, SIM_VERSION 3)
+- `SIM_VERSION = 3` — **위험물 즉사**: 보통 모드에서 가시·톱날·볼트·적·스위치 압착 접촉은 같은 틱의 사망이다(`hurt` 이벤트도 hp 변화도 없고, 사망 원인 문자열 `spike`/`saw`/`bolt`/`foe`/`switch`는 그대로). 하트 3개는 어시스트 모드만(`ASSIST.maxHp`, 기존 피격·무적 동작 유지). 체크포인트는 활성화 시점의 스위치 극성을 기억해 리스폰이 극성을 `A`로 되돌리지 않는다(토글 뒤의 체크포인트에서 죽으면 관문 앞에 갇히던 s2 결함 수정). 모든 스토리 보드가 `s3r1`로 새로 열린다.
+- **9존 튠업(모두 rev 1)** — 체크포인트를 파 20초당 1개 이상, 이웃한 `P`/`C`/`G`가 수평 32칸 이내가 되도록 초보 봇 히트맵의 사망 밀집 지점 바로 앞에 배치(t1 1→3 · t2 2→4 · t3 1→4 · s1 2→5 · s2 1→4 · s3 1→6 · v1 2→5 · v2 1→5 · v3 2→7). 파편을 존당 8~12개로 줄여(t1 20→11, 나머지 22~30→9~11) 대시·월점프·2단 점프가 필요한 옆길로 옮겼다. t1의 두 치명 구덩이는 5칸(7·6칸에서), s2의 첫 관문은 지붕으로 봉인해 벽차기 우회를 막았고 복도 입구의 호퍼는 워커로 바꿨으며(호퍼가 체크포인트 77을 지키고 서서 초보 봇과 페이스 솔버를 모두 죽였다), v3 선반의 스파이커는 통로 출구에서 떨어졌다. DSL 검증기에 `zoneRules`/`validateZone`(체크포인트 밀도·간격, 파편 8~12) 추가. 빠른·페이스 두 코퍼스와 청크 골든 14개를 v3에서 재녹화하고 `GOAL_ECHOES`·코퍼스 다이제스트를 갱신했다.
+
+### Added
+- `tools/novice.ts` — 초보 봇 사망 히트맵: 존당 300 에피소드의 단순 반응 정책(오른쪽 홀드·지연 점프·잊는 대시·90초/25사망 포기)을 실제 Sim에 돌려 `levels/heatmap/<zone>.json`(사망 칸·원인·체크포인트 도달률·클리어율·hot spot)과 ASCII 오버레이를 만든다. `--levels`로 이전 지형과 전후 비교, `--guide`로 길잡이 메아리 녹화. 텔레메트리 2주치를 대신하는 합성 대체물.
 
 ## [0.2.0] - 2026-09-06
 

@@ -14,9 +14,11 @@ export const TICK_HZ = 120;
  * Bumped whenever a change alters what a mask log reproduces (physics, phase
  * timing, level geometry that ships with the sim). Replays and leaderboard
  * boards are keyed by it; the server refuses submissions from another version.
- * v1 = launch · v2 = free-failure loop (fast respawn, RETRY input).
+ * v1 = launch · v2 = free-failure loop (fast respawn, RETRY input) ·
+ * v3 = instant death (hazard contact kills outside assist mode), checkpoint
+ * density (respawns keep the switch polarity of the checkpoint).
  */
-export const SIM_VERSION = 2;
+export const SIM_VERSION = 3;
 /**
  * Bumped when the daily / endless tower generators change their output.
  * v1 = launch · v2 = authored chunks spliced into every band (levels/chunks).

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { census, validate } from '../../levels/dsl.js';
+import {
+  CHECKPOINT_MAX_GAP, CHECKPOINT_PAR_SEC, SHARD_MAX, SHARD_MIN, census, checkpointsFor, validate, validateZone, zoneRules,
+} from '../../levels/dsl.js';
 import { ZONES } from '../../levels/build.js';
 import { Level } from '../../src/sim/level.js';
 import type { LevelDef } from '../../src/sim/types.js';
@@ -15,6 +17,25 @@ const BIOME: Record<string, string> = {
 const HANGUL = /[가-힣]/;
 
 const byId: Record<string, LevelDef> = Object.fromEntries(ZONES.map((z) => [z.id, z]));
+
+/** Columns of every P / C / G marker, left to right. */
+function markerColumns(def: LevelDef): { ch: string; x: number }[] {
+  const out: { ch: string; x: number }[] = [];
+  for (const r of def.rows) for (let x = 0; x < r.length; x++) if ('PCG'.includes(r[x])) out.push({ ch: r[x], x });
+  return out.sort((a, b) => a.x - b.x);
+}
+
+/** Widest run of bottomless columns (no floor character anywhere in the column). */
+function widestPit(def: LevelDef): number {
+  const w = def.rows[0].length;
+  let run = 0, best = 0;
+  for (let x = 0; x < w; x++) {
+    const floored = def.rows.some((r) => '#X=~W'.includes(r[x]));
+    run = floored ? 0 : run + 1;
+    best = Math.max(best, run);
+  }
+  return best;
+}
 
 describe('the nine zones', () => {
   it('are exactly t1..v3 in tower order with the planned biomes and pars', () => {
@@ -53,10 +74,16 @@ describe('the nine zones', () => {
     expect(byId.s3.hint).toMatch(/\{stomp\}/);
   });
 
+  it('are all at geometry revision 1 (P2-8 tune-up: SIM_VERSION 3 boards start fresh)', () => {
+    for (const z of ZONES) expect(z.rev, z.id).toBe(1);
+  });
+
   for (const id of ORDER) {
     describe(id, () => {
-      it('passes every validator rule', () => {
+      it('passes every validator rule, geometry and zone pacing alike', () => {
         expect(validate(byId[id])).toEqual([]);
+        expect(zoneRules(byId[id])).toEqual([]);
+        expect(validateZone(byId[id])).toEqual([]);
       });
 
       it('is 60–120 columns by 16–30 rows', () => {
@@ -67,12 +94,23 @@ describe('the nine zones', () => {
         expect(c.h).toBeLessThanOrEqual(30);
       });
 
-      it('has 18–32 shards, exactly one relic and the required checkpoints', () => {
+      it(`has ${SHARD_MIN}–${SHARD_MAX} shards, exactly one relic and at least ceil(par / ${CHECKPOINT_PAR_SEC}) checkpoints`, () => {
         const c = census(byId[id]);
-        expect(c.shards).toBeGreaterThanOrEqual(18);
-        expect(c.shards).toBeLessThanOrEqual(32);
+        expect(c.shards).toBeGreaterThanOrEqual(SHARD_MIN);
+        expect(c.shards).toBeLessThanOrEqual(SHARD_MAX);
         expect(c.relics).toBe(1);
-        if (id !== 't1') expect(c.checkpoints).toBeGreaterThanOrEqual(1);
+        const need = Math.ceil(PAR[id] / CHECKPOINT_PAR_SEC);
+        expect(checkpointsFor(PAR[id])).toBe(need);
+        expect(c.checkpoints).toBeGreaterThanOrEqual(need);
+      });
+
+      it(`keeps P, every checkpoint and G within ${CHECKPOINT_MAX_GAP} columns of their neighbours`, () => {
+        const m = markerColumns(byId[id]);
+        expect(m[0].ch).toBe('P');
+        expect(m[m.length - 1].ch).toBe('G');
+        for (let i = 1; i < m.length; i++) {
+          expect(m[i].x - m[i - 1].x, `${id}: ${m[i - 1].ch}@${m[i - 1].x} → ${m[i].ch}@${m[i].x}`).toBeLessThanOrEqual(CHECKPOINT_MAX_GAP);
+        }
       });
 
       it('loads as a Level whose start cell is open and stands on rock', () => {
@@ -88,6 +126,14 @@ describe('the nine zones', () => {
         expect(lv.totalRelics).toBe(1);
       });
 
+      it('every checkpoint stands on something: rock or a one-way ledge directly below', () => {
+        const lv = new Level(byId[id]);
+        for (const c of lv.spawns.filter((s) => s.ch === 'C')) {
+          expect(lv.solid(c.tx, c.ty), `${id}: C at (${c.tx},${c.ty}) is inside rock`).toBe(false);
+          expect(lv.solid(c.tx, c.ty + 1) || lv.oneWay(c.tx, c.ty + 1), `${id}: C at (${c.tx},${c.ty}) floats`).toBe(true);
+        }
+      });
+
       it('lists spikers only on open cells above rock', () => {
         const lv = new Level(byId[id]);
         for (const [tx, ty] of byId[id].spikers ?? []) {
@@ -98,12 +144,22 @@ describe('the nine zones', () => {
     });
   }
 
-  it('t1 has exactly 20 shards and teaches without dash crystals, toggles or switch blocks', () => {
-    const c = census(byId.t1);
-    expect(c.shards).toBe(20);
+  it('t1 has 11 shards on perches, three checkpoints (32 / 49 / 70), no pit wider than five, and teaches without dash crystals, toggles or switch blocks', () => {
+    const t1 = byId.t1;
+    const c = census(t1);
+    expect(c.shards).toBe(11);
+    expect(c.checkpoints).toBe(3);
+    expect(markerColumns(t1).map((m) => `${m.ch}${m.x}`)).toEqual(['P3', 'C32', 'C49', 'C70', 'G96']);
+    expect(widestPit(t1)).toBeLessThanOrEqual(5);
+    // the first lethal pit is tiles 41..45 (its far lip at 46 keeps the guide echo's checkpoint route), the wide pit is 63..67
+    const floor = t1.rows[16];
+    expect(floor.slice(40, 47)).toBe('#.....#');
+    expect(floor.slice(62, 69)).toBe('#.....#');
+    // no shard is left on the start yard's sand
+    expect(t1.rows[15].slice(0, 15)).not.toContain('o');
     expect(c.crystals).toBe(0);
     expect(c.toggles).toBe(0);
-    expect(byId.t1.rows.join('')).not.toMatch(/[%&]/);
+    expect(t1.rows.join('')).not.toMatch(/[%&]/);
   });
 
   it('t3 contains a 4-wide wall-jump shaft', () => {
@@ -120,11 +176,16 @@ describe('the nine zones', () => {
     expect(best).toBeGreaterThanOrEqual(8);
   });
 
-  it('s2 uses switch blocks of both polarities and at least two toggles', () => {
+  it('s2 uses switch blocks of both polarities, at least two toggles, and seals its first gate with a roof', () => {
     const flat = byId.s2.rows.join('');
     expect(flat).toMatch(/%/);
     expect(flat).toMatch(/&/);
     expect(census(byId.s2).toggles).toBeGreaterThanOrEqual(2);
+    // the pillar above gate 1 meets a rock roof over the start yard: no wall jump gets past row 0
+    const rows = byId.s2.rows;
+    expect(rows[0].slice(0, 18)).toBe('#'.repeat(18));
+    for (let y = 2; y <= 13; y++) expect(rows[y].slice(14, 16)).toBe('##');
+    expect(rows[14].slice(14, 16)).toBe('%%');
   });
 
   it('s3 fields turrets, saws and a chaser', () => {
@@ -145,9 +206,9 @@ describe('the nine zones', () => {
     expect(flat.split('=').length - 1).toBeGreaterThanOrEqual(12);
   });
 
-  it('v3 is the finale: exactly two checkpoints and every mechanic present', () => {
+  it('v3 is the finale: at least six checkpoints (par 120) and every mechanic present', () => {
     const c = census(byId.v3);
-    expect(c.checkpoints).toBe(2);
+    expect(c.checkpoints).toBeGreaterThanOrEqual(6);
     expect(c.crystals).toBeGreaterThanOrEqual(1);
     expect(c.toggles).toBeGreaterThanOrEqual(1);
     const flat = byId.v3.rows.join('');

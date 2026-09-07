@@ -83,11 +83,11 @@ describe('levels/solutions — golden replays', () => {
     const stale = { ...sol, sim: sol.sim + 1 };
     const out = renderEchoes([t1], { [t1.id]: stale });
     expect(out.warnings).toHaveLength(1);
-    expect(out.warnings[0]).toMatch(/t1: solution skipped — recorded on sim v3, this build is v2/);
+    expect(out.warnings[0]).toMatch(new RegExp(`t1: solution skipped — recorded on sim v${SIM_VERSION + 1}, this build is v${SIM_VERSION}`));
     expect(out.src).not.toContain('t1:');
     expect(out.sources).toEqual({});
     const rev = renderEchoes([t1], { [t1.id]: { ...sol, rev: 7 } });
-    expect(rev.warnings[0]).toMatch(/recorded at rev 7, the zone is at rev 0/);
+    expect(rev.warnings[0]).toMatch(new RegExp(`recorded at rev 7, the zone is at rev ${t1.rev ?? 0}`));
     expect(solutionProblem(t1, { ...sol, masks: encodeMasks(new Uint8Array(200)) })).toMatch(/does not verify|does not clear/);
     expect(solutionProblem(t1, sol)).toBeNull();
   });
@@ -206,7 +206,7 @@ describe('levels/solutions/par — paced golden replays (the 목표 echo and the
     if (paced) {
       const stale = renderEchoes([t1], { [t1.id]: { ...paced, sim: paced.sim + 1 } }, { [t1.id]: fast });
       expect(stale.sources).toEqual({ t1: 'fast' });
-      expect(stale.warnings[0]).toMatch(/recorded on sim v3, this build is v2 — goal echo falls back/);
+      expect(stale.warnings[0]).toMatch(new RegExp(`recorded on sim v${SIM_VERSION + 1}, this build is v${SIM_VERSION} — goal echo falls back`));
       const good = renderEchoes([t1], { [t1.id]: paced }, { [t1.id]: fast });
       expect(good.sources).toEqual({ t1: 'paced' });
       expect(good.warnings).toEqual([]);

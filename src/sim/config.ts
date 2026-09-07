@@ -65,11 +65,17 @@ export const PHYS = {
   tideLeash: 26,         // the tide never falls more than this many tiles behind
 } as const;
 
-/** Assist mode multiplies / overrides without touching level design. */
+/**
+ * Assist mode multiplies / overrides without touching level design. Hearts are
+ * an assist feature since SIM_VERSION 3: outside assist every hazard contact is
+ * a death, so `maxHp` only ever shows in assist mode (PHYS.maxHp stays the
+ * stored value on the player state in both modes).
+ */
 export const ASSIST = {
   gravity: 0.82,
   gravityFall: 0.8,
   maxJumps: 3,
+  maxHp: 3,
   hurtInvuln: 2.2,
   dashCooldown: 0.12,
 } as const;

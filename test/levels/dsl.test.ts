@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_PIT_TILES, SHAFT_WIDTH_TILES } from '../../src/sim/legend.js';
-import { assertValid, census, dumpAt, room, validate, type ZoneMeta } from '../../levels/dsl.js';
+import {
+  CHECKPOINT_MAX_GAP, CHECKPOINT_PAR_SEC, SHARD_MAX, SHARD_MIN, assertValid, census, checkpointsFor, dumpAt, room, validate, validateZone, zoneRules,
+  type ZoneMeta,
+} from '../../levels/dsl.js';
 import type { LevelDef } from '../../src/sim/types.js';
 
 const META: ZoneMeta = { id: 'test', name: '테스트', en: 'TEST', biome: 'tidepool', par: 10, seed: 1, hint: '힌트' };
@@ -323,5 +326,67 @@ describe('Room marks (P2-7)', () => {
     const d = m.ground(0, 29, 10).ent('P', 2, 9).ent('G', 27, 9).def(META);
     expect(Object.keys(d)).not.toContain('marks');
     expect(validate(d)).toEqual([]);
+  });
+});
+
+describe('zone pacing rules (P2-8): validateZone = validate + zoneRules', () => {
+  /** A 100-wide zone: flat floor, P at 3, G at 96, `shards` shards on the floor, checkpoints at the given columns. */
+  function zone(checkpoints: number[], shards = 10, par = 45) {
+    const m = room(100, 14).ground(0, 99, 10).ent('P', 3, 9).ent('G', 96, 9);
+    for (const x of checkpoints) m.ent('C', x, 9);
+    for (let i = 0; i < shards; i++) m.ent('o', 5 + i * 2, 7);
+    return m.def({ ...META, par });
+  }
+
+  it('checkpointsFor is ceil(par / 20): 45 s → 3, 55 s → 3, 60 s → 3, 70 s → 4, 120 s → 6', () => {
+    expect(CHECKPOINT_PAR_SEC).toBe(20);
+    expect([45, 55, 60, 70, 75, 85, 90, 120].map(checkpointsFor)).toEqual([3, 3, 3, 4, 4, 5, 5, 6]);
+  });
+
+  it('accepts a zone with enough checkpoints, no marker gap over 32 and 8–12 shards', () => {
+    const d = zone([30, 55, 80]);
+    expect(zoneRules(d)).toEqual([]);
+    expect(validateZone(d)).toEqual([]);
+    expect(validate(d)).toEqual([]);
+  });
+
+  it('refuses too few checkpoints for the par, naming the count it needs', () => {
+    const errs = zoneRules(zone([30, 62]));
+    expect(errs.join('\n')).toMatch(/2 checkpoint\(s\) for par 45s — needs at least 3/);
+    // a shorter par is content with two (spaced so no gap exceeds 32)
+    expect(zoneRules(zone([32, 64], 10, 40))).toEqual([]);
+  });
+
+  it(`refuses neighbouring P / C / G markers more than ${CHECKPOINT_MAX_GAP} columns apart, with the cell dump at the far marker`, () => {
+    expect(CHECKPOINT_MAX_GAP).toBe(32);
+    const errs = zoneRules(zone([36, 60, 80]));   // P at 3 → C at 36 is 33 apart
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatch(/P at \(3,9\) and C at \(36,9\) are 33 columns apart \(max 32\)\ncell \(36, 9\)/);
+    // the gap is read between neighbours in column order, G included
+    const tail = zoneRules(zone([30, 60, 63]));    // C at 63 → G at 96 is 33 apart
+    expect(tail.join('\n')).toMatch(/C at \(63,9\) and G at \(96,9\) are 33 columns apart/);
+    expect(zoneRules(zone([35, 64, 67]))).toEqual([]);   // 32 is allowed
+  });
+
+  it(`refuses fewer than ${SHARD_MIN} or more than ${SHARD_MAX} shards`, () => {
+    expect(zoneRules(zone([30, 55, 80], 7)).join('\n')).toMatch(/7 shards — a zone carries 8..12/);
+    expect(zoneRules(zone([30, 55, 80], 13)).join('\n')).toMatch(/13 shards — a zone carries 8..12/);
+    expect(zoneRules(zone([30, 55, 80], 8))).toEqual([]);
+    expect(zoneRules(zone([30, 55, 80], 12))).toEqual([]);
+  });
+
+  it('validateZone reports geometry problems first and the pacing rules only for a geometrically sound zone; validate() alone ignores pacing', () => {
+    const d = zone([36, 60, 80], 7);
+    expect(validate(d)).toEqual([]);                        // the geometry validator does not know about pacing
+    const errs = validateZone(d);
+    expect(errs).toHaveLength(2);
+    expect(errs.join('\n')).toMatch(/33 columns apart/);
+    expect(errs.join('\n')).toMatch(/7 shards/);
+    const broken = { ...d, rows: d.rows.map((r, y) => (y === 9 ? r.replace('G', '.') : r)) };
+    expect(validateZone(broken).join('\n')).toMatch(/exactly one G/);
+    expect(validateZone(broken).join('\n')).not.toMatch(/shards/);
+    // test rooms and chunk rooms keep using validate(): a one-shard flat room is still sound
+    expect(validate(flatRoom().def(META))).toEqual([]);
+    expect(zoneRules(flatRoom().def(META)).join('\n')).toMatch(/0 checkpoint\(s\)/);
   });
 });

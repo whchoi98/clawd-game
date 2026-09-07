@@ -1,0 +1,389 @@
+{
+  "levelId": "s1",
+  "name": "비 내리는 발판",
+  "sim": 3,
+  "rev": 1,
+  "seed": 41,
+  "par": 60,
+  "episodes": 300,
+  "policy": {
+    "maxDelay": 12,
+    "dashForget": 0.3,
+    "mistime": 0.14285714285714285,
+    "dashGap": 5,
+    "giveUpSec": 90,
+    "giveUpDeaths": 25
+  },
+  "clears": 297,
+  "clearRate": 0.99,
+  "gaveUp": 3,
+  "deaths": 433,
+  "deathsPerEpisode": 1.4433333333333334,
+  "medianClearSec": 16.1,
+  "causes": {
+    "spike": 198,
+    "foe": 166,
+    "pit": 69
+  },
+  "checkpoints": [
+    {
+      "index": 0,
+      "tx": 27,
+      "ty": 17,
+      "reached": 300,
+      "rate": 1
+    },
+    {
+      "index": 1,
+      "tx": 43,
+      "ty": 17,
+      "reached": 257,
+      "rate": 0.8566666666666667
+    },
+    {
+      "index": 2,
+      "tx": 68,
+      "ty": 11,
+      "reached": 91,
+      "rate": 0.30333333333333334
+    },
+    {
+      "index": 3,
+      "tx": 78,
+      "ty": 7,
+      "reached": 277,
+      "rate": 0.9233333333333333
+    },
+    {
+      "index": 4,
+      "tx": 89,
+      "ty": 7,
+      "reached": 260,
+      "rate": 0.8666666666666667
+    }
+  ],
+  "cells": [
+    {
+      "tx": 82,
+      "ty": 5,
+      "deaths": 69,
+      "causes": {
+        "foe": 69
+      }
+    },
+    {
+      "tx": 37,
+      "ty": 19,
+      "deaths": 56,
+      "causes": {
+        "spike": 56
+      }
+    },
+    {
+      "tx": 36,
+      "ty": 19,
+      "deaths": 53,
+      "causes": {
+        "spike": 53
+      }
+    },
+    {
+      "tx": 83,
+      "ty": 5,
+      "deaths": 41,
+      "causes": {
+        "foe": 41
+      }
+    },
+    {
+      "tx": 35,
+      "ty": 19,
+      "deaths": 24,
+      "causes": {
+        "spike": 24
+      }
+    },
+    {
+      "tx": 38,
+      "ty": 19,
+      "deaths": 22,
+      "causes": {
+        "spike": 22
+      }
+    },
+    {
+      "tx": 56,
+      "ty": 21,
+      "deaths": 21,
+      "causes": {
+        "pit": 21
+      }
+    },
+    {
+      "tx": 48,
+      "ty": 15,
+      "deaths": 17,
+      "causes": {
+        "foe": 17
+      }
+    },
+    {
+      "tx": 39,
+      "ty": 19,
+      "deaths": 14,
+      "causes": {
+        "spike": 14
+      }
+    },
+    {
+      "tx": 62,
+      "ty": 21,
+      "deaths": 14,
+      "causes": {
+        "pit": 14
+      }
+    },
+    {
+      "tx": 30,
+      "ty": 19,
+      "deaths": 13,
+      "causes": {
+        "spike": 13
+      }
+    },
+    {
+      "tx": 48,
+      "ty": 14,
+      "deaths": 11,
+      "causes": {
+        "foe": 11
+      }
+    },
+    {
+      "tx": 57,
+      "ty": 21,
+      "deaths": 9,
+      "causes": {
+        "pit": 9
+      }
+    },
+    {
+      "tx": 76,
+      "ty": 21,
+      "deaths": 9,
+      "causes": {
+        "pit": 9
+      }
+    },
+    {
+      "tx": 34,
+      "ty": 19,
+      "deaths": 8,
+      "causes": {
+        "spike": 8
+      }
+    },
+    {
+      "tx": 105,
+      "ty": 17,
+      "deaths": 8,
+      "causes": {
+        "foe": 8
+      }
+    },
+    {
+      "tx": 63,
+      "ty": 21,
+      "deaths": 7,
+      "causes": {
+        "pit": 7
+      }
+    },
+    {
+      "tx": 83,
+      "ty": 7,
+      "deaths": 6,
+      "causes": {
+        "foe": 6
+      }
+    },
+    {
+      "tx": 40,
+      "ty": 19,
+      "deaths": 4,
+      "causes": {
+        "spike": 4
+      }
+    },
+    {
+      "tx": 60,
+      "ty": 21,
+      "deaths": 4,
+      "causes": {
+        "pit": 4
+      }
+    },
+    {
+      "tx": 83,
+      "ty": 6,
+      "deaths": 4,
+      "causes": {
+        "foe": 4
+      }
+    },
+    {
+      "tx": 33,
+      "ty": 19,
+      "deaths": 3,
+      "causes": {
+        "spike": 3
+      }
+    },
+    {
+      "tx": 49,
+      "ty": 14,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 64,
+      "ty": 21,
+      "deaths": 2,
+      "causes": {
+        "pit": 2
+      }
+    },
+    {
+      "tx": 105,
+      "ty": 16,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 106,
+      "ty": 17,
+      "deaths": 2,
+      "causes": {
+        "foe": 2
+      }
+    },
+    {
+      "tx": 31,
+      "ty": 19,
+      "deaths": 1,
+      "causes": {
+        "spike": 1
+      }
+    },
+    {
+      "tx": 47,
+      "ty": 15,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 48,
+      "ty": 16,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 49,
+      "ty": 15,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    },
+    {
+      "tx": 59,
+      "ty": 21,
+      "deaths": 1,
+      "causes": {
+        "pit": 1
+      }
+    },
+    {
+      "tx": 61,
+      "ty": 21,
+      "deaths": 1,
+      "causes": {
+        "pit": 1
+      }
+    },
+    {
+      "tx": 67,
+      "ty": 21,
+      "deaths": 1,
+      "causes": {
+        "pit": 1
+      }
+    },
+    {
+      "tx": 106,
+      "ty": 16,
+      "deaths": 1,
+      "causes": {
+        "foe": 1
+      }
+    }
+  ],
+  "hotspots": [
+    {
+      "x0": 33,
+      "x1": 40,
+      "ty": 19,
+      "deaths": 184,
+      "share": 0.42494226327944573,
+      "cause": "spike"
+    },
+    {
+      "x0": 82,
+      "x1": 83,
+      "ty": 5,
+      "deaths": 120,
+      "share": 0.27713625866050806,
+      "cause": "foe"
+    },
+    {
+      "x0": 47,
+      "x1": 49,
+      "ty": 15,
+      "deaths": 33,
+      "share": 0.07621247113163972,
+      "cause": "foe"
+    },
+    {
+      "x0": 56,
+      "x1": 57,
+      "ty": 21,
+      "deaths": 30,
+      "share": 0.06928406466512702,
+      "cause": "pit"
+    },
+    {
+      "x0": 59,
+      "x1": 64,
+      "ty": 21,
+      "deaths": 29,
+      "share": 0.06697459584295612,
+      "cause": "pit"
+    },
+    {
+      "x0": 30,
+      "x1": 31,
+      "ty": 19,
+      "deaths": 14,
+      "share": 0.03233256351039261,
+      "cause": "spike"
+    }
+  ]
+}
