@@ -113,7 +113,7 @@ export function dailyBody(seed: number, over: SubmitOverride = {}): RunSubmit {
 
 export interface MakeAppOpts {
   now?: Date;
-  /** A live clock (wins over `now`); pair it with a MemoryRepo built on the same clock for ttl tests. */
+  /** A live clock (wins over `now`); an explicitly supplied repo must share it for ttl tests. */
   clock?: () => Date;
   verify?: AppDeps['verify'];
   rateLimit?: AppDeps['rateLimit'];
@@ -124,10 +124,11 @@ export interface MakeAppOpts {
 }
 
 export async function makeApp(opts: MakeAppOpts = {}) {
-  const repo = opts.repo ?? new MemoryRepo();
+  const now = opts.clock ?? (() => opts.now ?? FIXED_NOW);
+  const repo = opts.repo ?? new MemoryRepo({ now: () => now().getTime() });
   const deps: AppDeps = {
     repo,
-    now: opts.clock ?? (() => opts.now ?? FIXED_NOW),
+    now,
     dailySecret: opts.dailySecret ?? SECRET,
     verify: opts.verify ?? echoVerify(),
     staticDir: opts.staticDir,

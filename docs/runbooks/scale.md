@@ -37,7 +37,7 @@ npm run release -- patch
 | --- | --- | --- |
 | `VERIFY_CONCURRENCY` / `VERIFY_QUEUE` | 4 / 16 | `src/server/verifyPool.ts` — 워커 안에서 동시에 도는 검증 수 / 자리를 기다리는 수. 그 뒤는 503 |
 | `VERIFY_BUSY_RETRY_AFTER_SEC` | 3 | 503의 `Retry-After`. 클라이언트 SubmitQueue가 이 값 뒤에 재시도한다 |
-| `VERIFY_TIMEOUT_MS` | 20 000 | 검증 하나가 이보다 오래 걸리면 워커가 멈춘 것으로 보고 종료·재생성(진행 중이던 제출은 503 timeout) |
+| `VERIFY_TIMEOUT_MS` | 20 000 | 대기 중인 작업이 있을 때 작업 전달·완료가 이 시간 동안 없으면 워커를 종료·재생성한다. 두 이벤트마다 타이머를 다시 설정하므로 개별 검증의 절대 실행 기한은 아니다(진행 중이던 제출은 503 timeout) |
 | `RUNS_PER_IP_PER_MINUTE` | 12 | `src/server/routes/runs.ts` — 주소당 제출 예산(플릿 전체) |
 | `LEADERBOARD_S_MAXAGE` / `…STALE_WHILE_REVALIDATE` | 5 / 30 | `src/server/routes/leaderboard.ts` — 엣지가 한 페이지를 들고 있는 시간 |
 | `LEADERBOARD_EDGE_MAX_TTL_SECONDS` | 60 | `infra/lib/constructs/edge.ts` — 원본이 더 길게 요청해도 엣지가 넘지 않는 상한 |

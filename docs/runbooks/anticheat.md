@@ -80,7 +80,7 @@ git add src/shared/names.blocklist.json && git commit -m "names: ban 새단어"
 ```
 
 - `delist`한 런의 고스트(`/api/ghost/<runId>`)는 404가 된다. 클라이언트는 로컬 마스크로 폴백한다.
-- `delist`된 플레이어는 그 보드에 베스트가 없어지므로 새 런을 내면 다시 올라간다. 같은 리플레이를 다시 내면 HASH가 남아 있어 `duplicate`.
+- `delist`된 플레이어는 그 보드에 베스트가 없어지므로 새 입력 로그를 내면 다시 올라갈 수 있다. HASH가 남은 같은 리플레이를 다른 플레이어가 내면 `422 duplicate`이고, 원래 소유자가 다시 내면 `200`, `personalBest: false`로 끝나며 내려간 보드 항목을 복구하지 않는다.
 - `export-board`의 출력에는 `playerId`(자격 증명)가 들어 있다. 팀 밖으로 공유하지 말고, 공유할 땐 `jq 'del(.entries[].playerId)'`.
 - MemoryRepo(테스트)와 DynamoRepo 둘 다 `delistRun`/`renameRun`을 구현한다. 새 저장소를 붙이면 둘을 구현해야 CLI가 동작한다.
 

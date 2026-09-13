@@ -48,7 +48,9 @@ describe('transfer codes (unit)', () => {
     expect(CODE_ALPHABET).toHaveLength(32);
     for (const ch of 'IO01') expect(CODE_ALPHABET).not.toContain(ch);
     expect(CODE_LENGTH).toBe(8);
-    const code = makeTransferCode(SECRET);
+    // A single check character can collide across keys. This fixed body has
+    // different check characters for SECRET and other-secret.
+    const code = makeTransferCode(SECRET, (n) => Uint8Array.from({ length: n }, (_, i) => i));
     expect(TransferCode.safeParse(code).success).toBe(true);
     expect(code[7]).toBe(checkChar(code.slice(0, 7), SECRET));
     expect(isValidCode(code, SECRET)).toBe(true);
@@ -67,7 +69,8 @@ describe('transfer codes (unit)', () => {
   });
 
   it('isValidCode refuses a wrong check character, wrong length and letters outside the alphabet', () => {
-    const code = makeTransferCode(SECRET);
+    // Keep letters in the code so lower-casing always changes it.
+    const code = makeTransferCode(SECRET, (n) => new Uint8Array(n));
     const flipped = code.slice(0, 7) + CODE_ALPHABET[(CODE_ALPHABET.indexOf(code[7]) + 1) % 32];
     expect(isValidCode(flipped, SECRET)).toBe(false);
     expect(isValidCode(code.slice(0, 7), SECRET)).toBe(false);

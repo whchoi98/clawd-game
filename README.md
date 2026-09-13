@@ -54,14 +54,16 @@
 | 일일 콘텐츠 | 없음 | HMAC(날짜) 시드 데일리 타워, 30일 TTL 리더보드 |
 | 입력 | 이벤트 큐 → 프레임당 엣지 소비 (역사적으로 버그 원인) | **틱당 마스크 1바이트**, 엣지는 sim 내부에서 `mask & ~prev`로 유도 |
 | 언어 | JS + Python 레벨 빌더 | TypeScript 단일 툴체인 (클라이언트·sim·서버·인프라·레벨 DSL) |
-| 배포 산출물 | 해시 없는 파일, 5분 TTL + 전체 무효화 | 콘텐츠 해시 에셋 1년 immutable, `index.html` no-cache |
+| 배포 산출물 | 해시 없는 파일, 5분 TTL + 전체 무효화 | 콘텐츠 해시 에셋 1년 immutable, `index.html` 브라우저 재검증·엣지 60초 캐시 |
 | 테스트 | CDK 스택 8개 | sim·레벨·클라이언트·서버·인프라 **1,727개** + Playwright 사용자 흐름·오디오·배포 후 점검 |
 
 ## 아키텍처
 
+구성 요소·기록 제출 흐름·코드 위치는 [아키텍처 문서](docs/architecture.md)에 정리했습니다.
+
 ```mermaid
 flowchart LR
-  B[브라우저] -->|HTTPS| CF[CloudFront<br/>/assets/* 1y immutable<br/>/api/* no cache<br/>CSP · HSTS · nosniff]
+  B[브라우저] -->|HTTPS| CF[CloudFront<br/>/assets/* 1y immutable<br/>/api/* no cache · leaderboard 예외<br/>CSP · HSTS · nosniff]
   CF -->|"HTTP :80<br/>X-Origin-Verify: {{resolve:secretsmanager}}"| ALB[ALB · Public subnets<br/>SG ingress = CloudFront<br/>origin-facing prefix list만<br/>기본 액션 403]
   ALB -->|헤더 일치 시에만 forward| SVC[ECS Fargate ARM64<br/>Private subnets · 기존 NAT<br/>Fastify · 정적 + /api<br/>같은 sim으로 리플레이 검증]
   SVC --> DDB[(DynamoDB<br/>단일 테이블 · on-demand<br/>PITR · TTL)]
@@ -69,7 +71,7 @@ flowchart LR
   SVC -.-> CW[CloudWatch Logs 14d<br/>Container Insights]
 ```
 
-**네트워크**는 만들지 않습니다. 기존 `cc-on-bedrock-vpc`(`vpc-0dfa5610180dfa628`)를 `Vpc.fromLookup`으로 가져와 ALB는 Public 서브넷, 태스크는 Private 서브넷(기존 NAT Gateway 2개 경유)에 둡니다. 이 VPC에는 S3·DynamoDB 게이트웨이 엔드포인트와 ECR·Logs·Secrets Manager 인터페이스 엔드포인트가 이미 있어 이미지 풀·로그·시크릿 조회가 VPC 안에서 끝납니다. 스택이 만드는 네트워크 리소스는 보안 그룹 2개뿐입니다.
+**네트워크**는 만들지 않습니다. 기존 `cc-on-bedrock-vpc`(`vpc-0dfa5610180dfa628`)를 `Vpc.fromLookup`으로 가져와 ALB는 Public 서브넷, 태스크는 Private 서브넷(기존 NAT Gateway 2개 경유)에 둡니다. 이 VPC에는 S3·DynamoDB 게이트웨이 엔드포인트와 ECR·Logs·Secrets Manager 인터페이스 엔드포인트가 이미 있어 이미지 풀·로그·시크릿 조회가 VPC 안에서 끝납니다. 기존 VPC 안에 ALB와 서비스용 보안 그룹 두 개를 만들며, VPC·NAT·엔드포인트는 새로 만들지 않습니다.
 
 ### CF-Prefix SG 경로 (ALB에 CloudFront만 닿게 하는 세 겹)
 
@@ -90,14 +92,14 @@ flowchart LR
 
 Fastify 5. `GET /healthz`(ALB 헬스체크), `GET /api/health`, `GET /api/daily`, `POST /api/runs`, `GET /api/leaderboard`(공개 top-N, 엣지 캐시), `GET /api/me`(개인 행, no-store), `GET /api/ghost/:runId`. 모든 입출력은 `src/shared/protocol.ts`의 zod 스키마로 파싱됩니다. 어시스트 모드 기록은 보드 부적격, 데일리는 오늘·어제(UTC)만 접수하고 시드는 서버 HMAC과 일치해야 합니다. 검증은 2,400틱마다 이벤트 루프에 양보하고, 주장이 정당화할 수 없는 길이의 로그는 재생 전에 거절합니다. 속도 제한은 IP(`CloudFront-Viewer-Address`, 기록 제출 12회/분) + 플레이어 ID(10회/분) 이중입니다. 리더보드는 플레이어의 유일한 자격 증명인 원본 id를 절대 내보내지 않고 HMAC `playerTag`와 서버가 계산한 `you`만 줍니다.
 
-DynamoDB 단일 테이블(`pk`/`sk`): `LB#<mode>#<board>` / `<score 12자리>#<99999-shards>#<runId>`(오름차순 쿼리 = 가장 빠른 기록부터, 동점은 샤드 많은 순), `RUN#<runId>` / `META`(리플레이 본문), `PLAYER#<id>` / `BEST#<mode>#<board>`(내 순위는 GetItem 한 번). 개인 최고 갱신은 조건식이 붙은 TransactWrite 한 번으로 이전 보드 항목을 지우며 기록하고, 동시 제출 충돌은 재조회 후 재시도합니다. 데일리 항목은 30일 TTL.
+DynamoDB 단일 테이블(`pk`/`sk`): `LB#<mode>#<board>` / `<score 12자리>#<99999-shards>#<runId>`(오름차순 쿼리 = 가장 빠른 기록부터, 동점은 샤드 많은 순), `RUN#<runId>` / `META`(리플레이 본문), `PLAYER#<id>` / `BEST#<mode>#<board>`(내 최고 기록 조회는 GetItem 한 번이며 순위·총원은 별도 조회). 개인 최고 갱신은 조건식이 붙은 TransactWrite 한 번으로 이전 보드 항목을 지우며 기록하고, 동시 제출 충돌은 재조회 후 재시도합니다. 데일리 항목은 30일 TTL.
 
 ## PWA: 설치와 오프라인
 
 게임이 내려받는 것이 `index.html`과 해시된 JS/CSS 한 벌뿐이고 시뮬레이션이 클라이언트에서 완결되므로, PWA로 만들면 **스토리와 끝없는 등반은 완전 오프라인**으로 플레이됩니다.
 
 - `manifest.webmanifest`(전체 화면·가로 고정·192/512/maskable 아이콘)와 iOS용 `apple-touch-icon`/메타. Android Chrome은 타이틀 메뉴의 **홈 화면에 추가** 항목(`beforeinstallprompt`)으로, iOS Safari는 공유 → 홈 화면에 추가 안내로 설치합니다.
-- `/sw.js`(해시 없는 고정 URL, `no-cache`)는 빌드가 해시 에셋 목록과 빌드 ID를 주입해 **원자적으로 프리캐시**합니다. `/assets/*`는 cache-first, `index.html`은 network-first(오프라인이면 캐시), `/api/*`와 교차 출처 요청은 절대 가로채지 않습니다(SW 자신의 CSP가 `connect-src 'self'`).
+- `/sw.js`(해시 없는 고정 URL, 브라우저 `max-age=0`·엣지 `s-maxage=60`)는 빌드가 해시 에셋 목록과 빌드 ID를 주입해 **원자적으로 프리캐시**합니다. `/assets/*`는 cache-first, `index.html`은 network-first(오프라인이면 캐시), `/api/*`와 교차 출처 요청은 절대 가로채지 않습니다(SW 자신의 CSP가 `connect-src 'self'`).
 - 새 배포가 감지되면 "새 버전이 준비됐다 · 새로고침" 바가 뜨고(플레이 중에는 숨김), 확인 시 `skip-waiting` → 새로고침 한 번.
 - **오프라인 데일리**: 오늘의 시드를 받아둔 적이 있으면 그 시드로 플레이하고, 완료된 기록은 `localStorage` 대기열(최대 20개)에 넣어 온라인 복귀 시 자동 전송합니다. 서버가 어차피 재생·검증하므로 지연 제출도 안전하며, 데일리는 오늘·어제 안에 복귀하면 유효합니다.
 - 회전 안내는 짧은 변이 600px 미만인 폰에서만 뜨고 "그래도 계속"으로 닫을 수 있습니다. iPad는 세로로도 플레이됩니다(레터박스).
@@ -133,8 +135,8 @@ DynamoDB 단일 테이블(`pk`/`sk`): `LB#<mode>#<board>` / `<score 12자리>#<9
 - **진행도 이전 코드** — 설정 → 데이터 → '다른 기기로 옮기기': 마스크를 뺀 진행도 스냅샷(≤16 KB)을 서버에 7일 보관하고 1회용 8자 코드(HMAC 검사 문자)로 다른 기기에서 복원합니다(플레이어 id·이름 유지, 더 좋은 기록 우선 병합). 첫 클리어 후 `navigator.storage.persist()`를 요청해 iOS의 7일 미사용 삭제에 대비합니다.
 - **햅틱** — 착지·대시·월점프·사망·체크포인트·골에 Vibration API와 게임패드 럼블(초당 80 ms 예산, 설정 '진동').
 - **적응 화질 v2** — 2초 창 프레임 시간 p95와 표시 주사율 추정(60~240 Hz)으로 티어를 조정하고(히스테리시스·60초 잠금) 정착 티어를 저장해 다음 세션 첫 프레임부터 적용합니다.
-- **운영 위생** — CloudWatch 알람 10종(ALB 5xx·p95·비정상 호스트, ECS CPU·메모리, DynamoDB 스로틀, CloudFront 5xx, `VerifyMs` p95, 거절 비율)과 대시보드, SNS(컨텍스트 `alarmEmail`), ALB 액세스 로그(30일), 테이블 RETAIN·삭제 보호·AWS Backup(일간 35일), `TAG_SECRET` 분리, 엣지 `s-maxage=60` 캐시(릴리스 스크립트가 무효화). 런북: `docs/runbooks/secrets.md`.
-- **스케일 절벽 제거** (P3-12) — 리플레이 검증은 `worker_threads` 워커 1개(서버 번들 자체를 워커 스크립트로 재실행)에서 세마포어 뒤에 돕니다: 동시 4 · 대기 16, 넘치면 즉시 `503 { error: 'busy' }` + `Retry-After: 3`이라 제출 폭주가 지연 절벽 대신 재시도로 풀립니다. `POST /api/runs`의 IP당 12/분 예산은 DynamoDB 카운터(`RL#<ip>#<minute>`, TTL 120 s)로 플릿 전체가 공유하고, `GET /api/leaderboard`는 공개 top-N만 돌려 `Cache-Control: public, s-maxage=5, stale-while-revalidate=30`과 CloudFront `/api/leaderboard*` 전용 behaviour(최대 60 s, gzip/br)로 엣지에 캐시되며, 개인 행은 새 `GET /api/me?mode&board&playerId`(no-store, 순위는 1,000 밖이면 `rankCapped`)가 줍니다. 보드 총원은 `BOARD#<mode>#<board>` 카운터(GetItem 1회)로, 리더보드 페이지가 읽기 2회, `/api/me`가 3회입니다. 태스크는 512 CPU / 1024 MiB, 2~10개(`cdk.json` 컨텍스트 `taskCpu` · `taskMemory` · `maxTasks`), ALB p95 > 0.8 s가 2분 이어지면 +2 태스크 스텝 스케일링. `npx tsx tools/load/submit.mjs --n 200`이 유효 제출 N개를 동시에 쏘며 `/healthz` p99와 503 외 5xx를 잽니다. 런북: `docs/runbooks/scale.md`.
+- **운영 위생** — SNS에 연결된 CloudWatch 알람 10종(ALB 5xx·p95·정상/비정상 호스트, ECS CPU·메모리, DynamoDB 읽기/쓰기 스로틀, `VerifyMs` p95, 거절 비율)과 대시보드(CloudFront 지표 포함), SNS(컨텍스트 `alarmEmail`), ALB 액세스 로그(30일), 테이블 RETAIN·삭제 보호·AWS Backup(일간 35일), `TAG_SECRET` 분리, 엣지 `s-maxage=60` 캐시(릴리스 스크립트가 무효화). 런북: `docs/runbooks/secrets.md`.
+- **스케일 절벽 제거** (P3-12) — 리플레이 검증은 `worker_threads` 워커 1개(서버 번들 자체를 워커 스크립트로 재실행)에서 세마포어 뒤에 돕니다: 동시 4 · 대기 16, 넘치면 즉시 `503 { error: 'busy' }` + `Retry-After: 3`이라 제출 폭주가 지연 절벽 대신 재시도로 풀립니다. `POST /api/runs`의 IP당 12/분 예산은 DynamoDB 카운터(`RL#<ip>#<minute>`, TTL 120 s)로 플릿 전체가 공유하고, `GET /api/leaderboard`는 공개 top-N만 돌려 `Cache-Control: public, s-maxage=5, stale-while-revalidate=30`과 CloudFront `/api/leaderboard*` 전용 behaviour(최대 60 s, gzip/br)로 엣지에 캐시되며, 개인 행은 새 `GET /api/me?mode&board&playerId`(no-store, 순위는 1,000 밖이면 `rankCapped`)가 줍니다. 보드 총원은 `BOARD#<mode>#<board>` 카운터(GetItem 1회)로, 리더보드는 top-N과 총원을, `/api/me`는 개인 최고·제한된 순위·총원을 조회합니다. 실제 DynamoDB 요청 수는 순위 조회 페이지 수와 카운터 유무에 따라 달라집니다. 태스크는 512 CPU / 1024 MiB, 2~10개(`cdk.json` 컨텍스트 `taskCpu` · `taskMemory` · `maxTasks`), ALB p95 > 0.8 s가 2분 이어지면 +2 태스크 스텝 스케일링. `npx tsx tools/load/submit.mjs --n 200`이 유효 제출 N개를 동시에 쏘며 `/healthz` p99와 503 외 5xx를 잽니다. 런북: `docs/runbooks/scale.md`.
 
 ## Phase 3 B: 메아리 링크 경주·터치 커스터마이즈
 
@@ -187,17 +189,26 @@ infra/          CDK 스택: Network(import) · Data · Service · Edge
 tools/          build.mjs(esbuild) · dev.mjs(레벨 워치 포함) · solve.ts(골든 리플레이 솔버, --pace로 페이스 코퍼스) · qa/smoke.ts · qa/grid.ts(Playwright) · postdeploy.mjs
 test/           sim · levels · client · server · infra · tools
 docs/superpowers/  설계 스펙 · 구현 계획
+docs/             문서 색인 · 아키텍처 · 온보딩 · 구현 참조 · ADR · 운영 런북 · 품질 기록
+AGENTS.md         Codex 등 코딩 에이전트의 작업 지침
+CONTRIBUTING.md   기여·검사·커밋 준비 안내
 ```
 
 ## 실행
 
+Node.js **20 이상**이 필요하며, CI와 Docker는 **Node.js 22**를 사용합니다.
+처음 시작할 때는 [온보딩 가이드](docs/onboarding.md)를 참고하세요.
+
 ```bash
-npm install
+npm ci                # package-lock.json 기준 설치
 npm run dev            # http://127.0.0.1:8099 — esbuild watch + 인메모리 저장소 서버
-npm test               # vitest 384개
+npm test               # Vitest 단위·통합 검사 (브라우저 오디오는 qa:audio로 별도 실행)
 npm run typecheck      # 루트 + infra
 npm run levels         # 레벨 DSL → levels.generated.ts (검증 포함)
+npm run levels -- --check  # 생성된 레벨·메아리·청크 파일 최신 여부
+npx tsx tools/hash-corpus.ts --check  # 결정론 코퍼스 다이제스트 최신 여부
 npm run build          # dist/public (해시 에셋) + dist/server/index.js
+npm run build -- --prod  # 운영용 최소화 빌드
 npm run qa:browser && npm run qa:smoke   # Playwright 스모크 + 오프라인 단계 (dev 서버 필요)
 npm run qa:mobile      # 폰·태블릿 에뮬레이션 레이아웃 QA
 npm run qa:readability # 상승기류·가시·골 비콘 픽셀 대비 QA
@@ -208,7 +219,9 @@ npm run stats -- --help  # 텔레메트리 NDJSON → 퍼널·D1·사망 히트�
 npm run icons          # public/icons/icon.svg → PNG (Playwright; 결과는 커밋)
 ```
 
-레벨은 손으로 타이핑하지 않습니다. `levels/dsl.ts`의 프리미티브로 조립하고, 검증기가 직사각형 여부·`P`/`G` 존재·모든 `o`/`R`/`G`의 플러드필 도달성(스위치 극성 양쪽)·7칸 초과 구덩이·통로 폭(3–5칸)을 거절합니다. `src/sim/levels.generated.ts`와 `src/sim/echoes.generated.ts`는 **생성 파일**이므로 직접 고치지 마세요.
+빌드된 앱은 `TABLE_NAME`을 설정하지 않은 상태에서 `PORT=8099 STATIC_DIR=dist/public DAILY_SECRET=local-development npm start`로 실행합니다. `npm start`의 기본 포트는 8080이며 `STATIC_DIR`이 없으면 API만 제공합니다. 환경 변수와 기본값은 [서버 참조](docs/reference/server.md)에 있습니다. 스크립트는 `.env` 파일을 자동으로 읽지 않습니다.
+
+레벨은 손으로 타이핑하지 않습니다. `levels/dsl.ts`의 프리미티브로 조립하고, 검증기가 직사각형 여부·`P`/`G` 존재·모든 `o`/`R`/`G`의 플러드필 도달성(스위치 극성 양쪽)·7칸 초과 구덩이·통로 폭(3–5칸)을 거절합니다. `src/sim/levels.generated.ts`, `src/sim/echoes.generated.ts`, `src/sim/chunks.generated.ts`는 **생성 파일**이므로 직접 고치지 마세요.
 
 ### 구역 만들기 10분 가이드
 
@@ -223,7 +236,7 @@ npm run icons          # public/icons/icon.svg → PNG (Playwright; 결과는 �
 5. **메타.** `m.def({ id, name, en, biome, par, seed, hint, rev?, spikers?, tide?, baseY? })`. `hint`는 `{move} {jump} {dash} {stomp} {down}` 토큰만 쓴다(Shift·Space·화살표 같은 원시 키 이름은 검증기가 거절한다 — 폰과 리바인드에서 틀리기 때문). **배포된 구역의 칸을 바꾸면 `rev`를 올린다**: 보드 키(`t1#s4r1`)와 골든 리플레이가 거기에 묶여 있다.
 6. **빌드와 검증.** `levels/build.ts`의 `ZONES`에 추가하고 `npm run levels`. 검증기 규칙(`validate`): 직사각형 · 허용 문자만 · `P`/`G` 정확히 하나씩, 둘 다 바위 위 · 모든 `o`/`R`/`G`가 `P`에서 플러드필로 도달 가능(스위치 극성 중 하나, `k`에서 극성 전환 허용) · 바닥 없는 구덩이 최대 7칸 · 마주 보는 5칸 이상 벽 사이 폭은 3–5칸. 스토리 존에는 페이싱 규칙(`zoneRules`, 합쳐서 `validateZone`)이 더 붙는다: 체크포인트 ≥ `ceil(par / 20)` · 이웃한 `P`/`C`/`G` 수평 간격 ≤ 32칸 · 파편 8~12개(청크 솔로 룸과 테스트 룸은 `validate`만 받는다). 실패 메시지는 문제 칸의 `(x, y)`와 함께 주변 ±3행 ±12열 ASCII 덤프(열 눈금, 캐럿 포함)를 붙여 온다.
 7. **살아 있는 미리보기.** `npm run dev`는 `levels/`를 감시해 저장할 때마다 `npx tsx levels/build.ts`를 다시 돌리고 재발행한다(실패하면 덤프를 찍고 계속 돈다). 브라우저에서 `?shot=<id>&grid=1`을 열면 타일 격자·4칸마다 좌표·스폰 문자·체크포인트 구간 길이(`seg 1: 46 tiles (→46 ↑0)`)가 프레임 위에 그려진다. `&at=x,y`로 원하는 곳에 세우고, `&frames=N`으로 시간을 돌린다. 플래그 없이는 절대 켜지지 않는다.
-8. **초보 봇 히트맵.** `npx tsx tools/novice.ts <id>`(인자 없이 12존 전부)는 실제 `Sim` 위에서 단순 반응 정책의 잡음 섞인 에피소드 300회를 돈다 — 오른쪽 홀드, 1~3칸 앞의 구덩이·가시·벽·적에 0~12틱 반응 지연으로 점프, 정점 뒤 2단 점프(7번에 1번은 너무 이르게), 5칸 이상 구덩이와 토글에서는 대시(30%는 잊음), 90초 또는 25번 사망이면 포기. 존별 사망 좌표·원인·체크포인트 도달률·클리어율을 `levels/heatmap/<id>.json`에 쓰고 사망 밀도를 지형 위에 겹친 ASCII 오버레이와 상위 사망 클러스터(**hot spot**)를 출력한다. 텔레메트리(P1-3) 2주치 대신 쓰는 합성 대체물이므로 체크포인트는 이 hot spot 바로 앞에 둔다. `--levels=<다른 levels.generated.ts>`로 이전 지형과 전후 비교, `--seed`·`--episodes` 조절, `--guide=t1 --guide-checkpoint=2`는 잡음 없는 정책으로 두 번째 체크포인트까지 달린 입력 로그를 뽑아 `src/client/echo/guide.ts`의 길잡이 메아리 재녹화에 쓴다. `test/levels/heatmap.test.ts`가 존마다 현재 sim·rev의 히트맵이 있는지, 가장 뜨거운 클러스터 32칸 안에 `P`/`C`가 있는지 확인한다.
+8. **초보 봇 히트맵.** `npx tsx tools/novice.ts <id>`(인자 없이 등록된 16구역 전부)는 실제 `Sim` 위에서 단순 반응 정책의 잡음 섞인 에피소드 300회를 돈다 — 오른쪽 홀드, 1~3칸 앞의 구덩이·가시·벽·적에 0~12틱 반응 지연으로 점프, 정점 뒤 2단 점프(7번에 1번은 너무 이르게), 5칸 이상 구덩이와 토글에서는 대시(30%는 잊음), 90초 또는 25번 사망이면 포기. 존별 사망 좌표·원인·체크포인트 도달률·클리어율을 `levels/heatmap/<id>.json`에 쓰고 사망 밀도를 지형 위에 겹친 ASCII 오버레이와 상위 사망 클러스터(**hot spot**)를 출력한다. 텔레메트리(P1-3) 2주치 대신 쓰는 합성 대체물이므로 체크포인트는 이 hot spot 바로 앞에 둔다. `--levels=<다른 levels.generated.ts>`로 이전 지형과 전후 비교, `--seed`·`--episodes` 조절, `--guide=t1 --guide-checkpoint=2`는 잡음 없는 정책으로 두 번째 체크포인트까지 달린 입력 로그를 뽑아 `src/client/echo/guide.ts`의 길잡이 메아리 재녹화에 쓴다. `test/levels/heatmap.test.ts`가 존마다 현재 sim·rev의 히트맵이 있는지, 가장 뜨거운 클러스터 32칸 안에 `P`/`C`가 있는지 확인한다.
 9. **완주 증명.** `npm run solve -- <id>`로 솔버가 사망 0·파 120% 이내 클리어를 찾아 `levels/solutions/<id>.json`에 기록한다(못 찾으면 `PENDING.json`에 이유와 최고 진행 지점이 남는다). `test/levels/solutions.test.ts`가 모든 구역에 대해 "솔루션이 재생되어 클리어" 또는 "PENDING에 등재" 둘 중 하나를 요구하므로, 이후의 물리·지형 변경은 이 테스트에서 걸린다. 이어서 `npm run solve:par -- <id>`로 사람 속도(파의 95~110 %)의 **페이스 솔루션**을 `levels/solutions/par/<id>.json`에 만든다 — `npm run levels`가 이것을 `GOAL_ECHOES`로 묶어 클라이언트의 '목표' 메아리와 서버의 빈 보드 시딩에 쓴다(없으면 빠른 솔루션으로 폴백하며 경고).
 10. **플레이 테스트.** `npm run dev` → 구역 선택에서 열어 본다(해금 규칙은 앞 구역 클리어). `qa:smoke`가 16구역을 `?shot=`으로 캡처하니 새 구역은 `tools/qa/smoke.ts`의 `ZONES` 목록과 `tools/qa/mobile.ts`의 `ZONE_IDS`에도 넣는다.
 
@@ -233,7 +246,7 @@ npm run icons          # public/icons/icon.svg → PNG (Playwright; 결과는 �
 
 | 코퍼스 | 경로 | 속도 | 용도 |
 |---|---|---|---|
-| **빠른(fast)** | `levels/solutions/<zoneId>.json` | 파의 8~25 % (대시 연타) | 물리·레벨 변경의 **회귀망**(`test/levels/solutions.test.ts`). 사람이 따라갈 수 없는 속도라 메아리·시딩에는 쓰지 않는다. |
+| **빠른(fast)** | `levels/solutions/<zoneId>.json` | 파의 8~25 % (대시 연타) | 물리·레벨 변경의 **회귀망**(`test/levels/solutions.test.ts`). 검증된 페이스 해법이 없는 구역만 메아리·시딩의 폴백으로 사용하며 빌드 경고를 남긴다. |
 | **페이스(paced)** | `levels/solutions/par/<zoneId>.json` | 파의 **95~110 %** | `src/sim/echoes.generated.ts`의 `GOAL_ECHOES` → 클라이언트의 '목표' 메아리(`?shot=<id>&ghost=par`), 서버 부트 시딩(`putIfBoardEmpty`, 이름 `개발자`, `SEED_BOARDS=0`으로 끔). |
 
 왜 둘인가: 45초 파 구역에서 7초짜리 고스트는 낯선 플레이어가 따라갈 수 없고, 이길 수 없는 봇 1위는 보드를 죽인다(로드맵 P2-1 "파의 95~110 % 속도"). 페이스 코퍼스는 능숙한 사람처럼 보이게 만든다 — 전속력 달리기는 그대로, 대시는 지형이 요구하는 곳에만(대시마다 8칸의 잠재력 페널티), 남는 시간은 **안전한 지점에서의 의도적 멈춤**(바위 위에 서 있고, 움직이는 발판·크럼블·`=` 선반이 아니고, 200유닛 안에 적·톱날이 없고, 볼트가 날아오지 않고, 조류가 없는 곳)으로 채우며, 경로 근처의 파편은 집어 간다. `npm run levels`는 페이스 솔루션이 없거나 검증에 실패한 구역만 빠른 코퍼스로 **폴백**하고 경고를 찍는다(`test/levels/solutions.test.ts`가 그 규칙을 검사한다).
@@ -273,8 +286,10 @@ export CDK_DEFAULT_ACCOUNT=061525506239 CDK_DEFAULT_REGION=ap-northeast-2
 npm run deploy               # cdk deploy — ARM64 이미지 빌드·ECR 푸시·스택 생성, cdk-outputs.json 기록
 npm run postdeploy:check     # 엣지 경로 점검: 200·캐시 헤더·CSP/HSTS·/api·ALB 직접 접근 차단
 npm run postdeploy:smoke     # + 라이브 URL에 Playwright 스모크
-npm run destroy              # 전부 삭제 (테이블·로그·시크릿 포함, 데모용 RemovalPolicy)
+npm run destroy              # cdk destroy --force (DynamoDB 테이블은 RETAIN·삭제 보호)
 ```
+
+릴리스 순서와 실패 시 확인 사항은 [릴리스 런북](docs/runbooks/release.md), 리소스 보존 정책은 [인프라 참조](docs/reference/infrastructure.md)에 있습니다.
 
 컨텍스트(`cdk.json`): `vpcId`(가져올 VPC), `cloudfrontPrefixListId`(리전별 prefix list, 조회는 `aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing`), `desiredCount`, `domainName` + `certificateArn`(커스텀 도메인: us-east-1 ACM 인증서, 여기서는 기존 `*.whchoi.net` 와일드카드 재사용. DNS는 스택 밖에서 CNAME → 배포 도메인으로 관리하므로 Route 53 레코드는 만들지 않음). `cdk.context.json`(VPC 룩업 캐시)은 재현성을 위해 커밋합니다.
 
@@ -350,5 +365,7 @@ docker buildx build --platform linux/arm64 -t clawd-echo-tower:ci .
 | 콘텐츠 | 16구역(세로 존 4 포함) · 4바이옴 · 데일리 타워 · 끝없는 등반 · 적 7종 · 오브젝트 11종 |
 
 ## 크레딧 · 라이선스
+
+개발·운영 문서는 [문서 색인](docs/README.md), 변경 검증과 커밋 준비는 [기여 안내](CONTRIBUTING.md)를 참고하세요.
 
 CLAWD JUMP — Azure Ascent(MIT)의 물리 상수, 리그 드로잉, 블룸 파이프라인, Path2D 지형 병합, 오디오 그래프 설계를 참조해 TypeScript로 재작성했습니다. [MIT](LICENSE).

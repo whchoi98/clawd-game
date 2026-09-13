@@ -48,18 +48,21 @@ is 1. Screenshots are written to `tools/qa/out/` (git-ignored):
 | file | what |
 |---|---|
 | `01-title.png` | title screen after boot |
-| `02-select.png` | zone select after `Enter` on the title menu |
-| `03-play.png` | first zone running after `Enter` on zone select |
+| `02-select.png` | zone select after pausing and quitting the first run |
+| `03-play.png` | first zone running after one `Enter` on a fresh profile's title |
 | `04-offline.png` | title screen after a reload with the network cut, served by the service worker |
-| `shot-<zone>.png` | `?shot=<zone>&frames=240&hold=right&pulse=jump:26` for `t1 t2 t3 s1 s2 s3 v1 v2 v3` |
+| `shot-<zone>.png` | `?shot=<zone>&frames=240&hold=right&pulse=jump:26` for all 16 zones: `t1..t4`, `s1..s4`, `v1..v4`, `m1..m4` |
+| `shot-daily-band.png` | Daily tower capture after moving into a different biome band |
 
 ## What is asserted
 
 1. `GET /` renders and `#scr-title` becomes visible within 30 s.
 2. `canvas#world` is painted: 48 pixels sampled on an 8x6 grid contain at least
    4 distinct colours and are not all transparent. A flat or unsized canvas fails.
-3. `Enter` on the title opens `#scr-select`; `Enter` again opens `#scr-play`
-   and the canvas is painted with the world.
+3. For a fresh profile, one `Enter` on the title opens `#scr-play` and the canvas
+   is painted with the world. `Escape` opens pause; clicking quit returns to
+   `#scr-select`. The telemetry step checks the resulting events and a controlled
+   error without transmitting player identity.
 4. **offline**: back on `/`, the script polls (up to 20 s) until
    `navigator.serviceWorker.getRegistration()` has an active worker and a
    `cet-*` cache holds `/index.html` — that is, `/sw.js` installed and its
@@ -136,7 +139,7 @@ same input log on the server (Node / V8) and in every player's browser
 them would make a run cleared there fail the server's replay with
 `claim-mismatch`.
 
-- `src/client/selftest.ts` steps the nine bundled goal echoes (`GOAL_ECHOES`,
+- `src/client/selftest.ts` steps the 16 bundled goal echoes (`GOAL_ECHOES`,
   one paced developer clear per story zone) and two scripted daily towers
   (seeds 1 and 20260906, 3000 ticks of "hold right 60 ticks, tap jump") through
   a fresh `Sim` and reduces each final state to a digest:
@@ -162,11 +165,11 @@ them would make a run cleared there fail the server's replay with
   launcher's reason.
 
 `npm run qa:smoke` carries the same comparison as its `selftest` step (Chromium
-only, also with `--no-shots`). CI (`.github/workflows/ci.yml`) runs
-`selftest.ts --require=chromium,webkit` on ubuntu, where
-`npx playwright install --with-deps chromium webkit` works; on this Amazon
-Linux development host WebKit's system libraries are unavailable, so only
-Chromium is measured locally.
+only, also with `--no-shots`). CI ([workflow](../../.github/workflows/ci.yml)) runs
+`selftest.ts --require=chromium,webkit,firefox` after installing all three engines
+with `npx playwright install --with-deps chromium webkit firefox`.
+The development host's container setup and measured cross-engine results are
+recorded in [the quality report](../../docs/quality/2026-09-13-premium-report.md).
 
 ## Mobile layout QA
 
@@ -194,10 +197,6 @@ relative luminance of 0.62, so no highlight — not even pure white — can reac
 outline and drop shadow around every blade (luminance edge) plus the magenta
 rim (hue edge); the probe asserts both, and separately that the `spike.hi` tip
 highlight exists.
-
-## Readability QA
-
-`npm run qa:readability` (`BASE_URL` env) loads `?shot=` scenes and asserts pixel-level readability: the updraft column centre is at least 25/255 brighter than its background, spike tips keep a >= 3:1 contrast against the crust, and an off-screen goal produces a beacon pixel in the biome accent near the screen edge.
 
 ## Grid overlay QA
 
