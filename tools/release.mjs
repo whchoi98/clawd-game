@@ -10,7 +10,7 @@
  *   2. levels           npx tsx levels/build.ts --check   (generated level table is current)
  *   3. test             npx vitest run
  *   4. version          npm version <bump> + CHANGELOG (before compiling the version badge)
- *   5. build            npm run build
+ *   5. build            npm run build -- --prod
  *   6. deploy           npm run deploy                     (skipped with --no-deploy)
  *   7. postdeploy       node tools/postdeploy.mjs          (edge path + /api/health.simVersion)
  *   8. invalidate       aws cloudfront create-invalidation for / /index.html /sw.js
@@ -183,9 +183,9 @@ export const STEPS = [
     },
   },
   {
-    id: 'build', title: 'esbuild client + server + service worker',
-    commands: () => ['npm run build'],
-    run: (ctx) => { run(ctx, 'npm', ['run', 'build']); },
+    id: 'build', title: 'production client + server + service worker',
+    commands: () => ['npm run build -- --prod'],
+    run: (ctx) => { run(ctx, 'npm', ['run', 'build', '--', '--prod']); },
   },
   {
     id: 'deploy', title: 'cdk deploy',

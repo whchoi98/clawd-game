@@ -74,8 +74,8 @@ function harness(o: HarnessOpts): Harness {
     }
     if (line.startsWith('aws cloudfront create-invalidation')) return { status: 0, stdout: JSON.stringify({ Invalidation: { Id: 'I2ABCDEF', Status: 'InProgress' } }) };
     if (line.startsWith('aws cloudfront get-invalidation')) return { status: 0, stdout: JSON.stringify({ Invalidation: { Id: 'I2ABCDEF', Status: o.invalidationStatus ?? 'Completed' } }) };
-    if (line === 'npm run build' || line === 'npm run deploy') {
-      artifactVersions[line] = JSON.parse(files['package.json']).version;
+    if (line.startsWith('npm run build') || line === 'npm run deploy') {
+      artifactVersions[line.startsWith('npm run build') ? 'npm run build' : line] = JSON.parse(files['package.json']).version;
     }
     if (line.startsWith('npm version')) {
       const pkg = JSON.parse(files['package.json']);
@@ -199,7 +199,7 @@ describe('tools/release.mjs', () => {
         'npx tsx levels/build.ts --check',
         'npx vitest run',
         'npm version patch --no-git-tag-version',
-        'npm run build',
+        'npm run build -- --prod',
         'npm run deploy',
         `node tools/postdeploy.mjs --outputs ${outputsPath}`,
         `aws cloudfront create-invalidation --distribution-id E1EXAMPLE --paths ${INVALIDATION_PATHS.join(' ')} --output json`,
