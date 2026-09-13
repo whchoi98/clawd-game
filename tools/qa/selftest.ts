@@ -23,7 +23,7 @@
 import { chromium, firefox, webkit, type Browser, type BrowserType } from 'playwright';
 import type { CorpusDigest, EngineFamily } from '../../src/client/selftest.js';
 import {
-  FIXTURE_NAME, compareDigests, describeMismatches, loadFixture, parseSelftestStamp, type Comparison, type Fixture,
+  FIXTURE_NAME, compareDigests, describeMismatches, loadFixture, optionalFontDiagnostic, parseSelftestStamp, type Comparison, type Fixture,
 } from './corpus.js';
 
 const BASE_URL = (process.env.BASE_URL ?? 'http://127.0.0.1:8099').replace(/\/+$/, '');
@@ -44,6 +44,7 @@ interface EngineResult {
   note: string;
   rows: Comparison[];
   issues: string[];
+  warnings?: string[];
 }
 
 function parseArgs(argv: readonly string[]): { engines: EngineName[]; require: Set<EngineName> } {
@@ -86,6 +87,7 @@ async function launch(engine: EngineName): Promise<Browser> {
 async function runEngine(engine: EngineName, fixture: Fixture): Promise<EngineResult> {
   const t0 = Date.now();
   const issues: string[] = [];
+  const warnings: string[] = [];
   let browser: Browser;
   try {
     browser = await launch(engine);
@@ -105,6 +107,7 @@ async function runEngine(engine: EngineName, fixture: Fixture): Promise<EngineRe
       if (msg.type() !== 'error') return;
       const url = msg.location().url;
       if (url && !sameOrigin(url)) return;
+      if (!url && optionalFontDiagnostic(msg.text())) { warnings.push(`optional font: ${msg.text()}`); return; }
       issues.push(`console: ${msg.text()}`);
     });
     page.on('pageerror', (err) => issues.push(`pageerror: ${err.message}`));
@@ -130,7 +133,7 @@ async function runEngine(engine: EngineName, fixture: Fixture): Promise<EngineRe
     const ok = issues.length === 0 && passed === rows.length && rows.length > 0;
     return {
       engine, status: ok ? 'PASS' : 'FAIL', family: stamp.engine, ms: Date.now() - t0,
-      note: `${passed}/${rows.length} digests match ${FIXTURE_NAME}`, rows, issues,
+      note: `${passed}/${rows.length} digests match ${FIXTURE_NAME}`, rows, issues, warnings,
     };
   } catch (err) {
     issues.push(err instanceof Error ? err.message.split('\n')[0] : String(err));
@@ -174,6 +177,7 @@ async function main(argv: readonly string[]): Promise<number> {
       out.push(`${r.engine}: SKIP — ${r.note}`);
     } else {
       out.push(`${r.engine}: ${r.status} — ${r.note}`);
+      for (const warning of r.warnings ?? []) out.push(`  warning: ${warning}`);
     }
     for (const i of r.issues) out.push(`  ${i}`);
   }

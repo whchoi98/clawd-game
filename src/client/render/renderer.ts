@@ -39,6 +39,7 @@ import { Terrain } from './tiles.js';
 import { Particles } from './particles.js';
 import { GOAL_LOOK_TILES, SKINS, drawClawd, drawClawdPortrait, setLookTarget, skinById, type Skin } from './clawd.js';
 import { Actors, PlayerVisual, drawDeathMarks, drawGhost, type DeathMarkView } from './actors.js';
+import { drawTitleTower } from './title.js';
 
 /**
  * The slice of `Sim` the renderer reads. Structural, so tests can drive the
@@ -49,7 +50,7 @@ export interface SimView {
   readonly level: Level;
 }
 
-export type RendererOptions = StageOptions;
+export type RendererOptions = StageOptions & { reducedMotion?: () => boolean };
 
 const TITLE_SEEDS: Record<BiomeId, number> = { tidepool: 3, stormspire: 12, voidreef: 21, summit: 30 };
 
@@ -147,8 +148,11 @@ export class Renderer implements RendererPort {
   private titleBlink = 0;
   private titleBlinkT = 2;
   private titleAnim = 0;
+  private titleMotion = true;
+  private readonly reducedMotion: () => boolean;
 
   constructor(canvas: HTMLCanvasElement, opts: RendererOptions = {}) {
+    this.reducedMotion = opts.reducedMotion ?? (() => false);
     this.createCanvas = opts.createCanvas ?? defaultCreateCanvas;
     this.stage = new Stage(canvas, opts);
     this.skies = [new Sky(this.stage), new Sky(this.stage)];
@@ -234,6 +238,8 @@ export class Renderer implements RendererPort {
     this.stage.setSettings({ bloom: s.bloom, grain: s.grain, flashes: s.flashes, quality: s.quality });
     for (const sky of this.skies) sky.flashesAllowed = s.flashes;
     this.skinId = SKINS[s.skin] ? s.skin : 'clawd';
+    // Seeded from the same reduced-motion defaults as the rest of the game.
+    this.titleMotion = s.shake > 0 || s.flashes;
   }
 
   // ------------------------------------------------------------ band crossfade (P5-4b)
@@ -648,7 +654,9 @@ export class Renderer implements RendererPort {
   /** Title-screen backdrop: the biome's sky, a slow pan, a dark plateau and an idle Clawd. */
   drawTitle(t: number, dtFrame: number, biome: Biome): void {
     const st = this.stage;
-    const dt = Math.min(Math.max(0, dtFrame), 0.1);
+    const moving = this.titleMotion && !this.reducedMotion();
+    const dt = moving ? Math.min(Math.max(0, dtFrame), 0.1) : 0;
+    const visualT = moving ? t : 0;
     if (this.skyOwner !== 'title' || this.titleBiome !== biome.id) {
       this.endFade();
       this.skyCur.setBiome(biome, TITLE_SEEDS[biome.id] ?? 3);
@@ -674,6 +682,7 @@ export class Renderer implements RendererPort {
     const ctx = st.ctx;
     st.screen();
     const W = st.viewW, H = st.viewH;
+    drawTitleTower(ctx, W, H, visualT, st.quality);
 
     // foreground plateau, near-black so the type stays readable over it
     const pts = this.titleProfile;
@@ -699,7 +708,7 @@ export class Renderer implements RendererPort {
     ctx.stroke();
 
     // Clawd idles on the right third where the menu isn't; feet sample the plateau.
-    const cx = W * 0.76;
+    const cx = W * 0.86;
     const u = (((cx + off) / W) % 1 + 1) % 1;
     const pi = u * (pts.length - 1);
     const p0 = pts[Math.floor(pi)], p1 = pts[Math.min(pts.length - 1, Math.floor(pi) + 1)];
@@ -719,7 +728,7 @@ export class Renderer implements RendererPort {
     gctx.scale(s, s);
     drawClawd(ctx, gctx, {
       x: 0, y: 0, vx: 0, vy: 0, grounded: true, facing: -1, state: 'idle',
-      t, anim: this.titleAnim, squash: 0, invuln: 0, blink: this.titleBlink,
+      t: visualT, anim: this.titleAnim, squash: 0, invuln: 0, blink: this.titleBlink,
       skin: this.skin(), dashReady: true, dashFlash: 0, alpha: 1,
     });
     gctx.restore();

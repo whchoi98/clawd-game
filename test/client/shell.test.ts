@@ -1141,6 +1141,222 @@ describe('Scenes', () => {
     expect(clearAfter).toBeLessThanOrEqual(20);
   });
 
+  it('pins a goal without awarding anything and tracks it on the next run', () => {
+    const def = flatRoom();
+    const { scenes, ui, save } = makeScenes([def]);
+    scenes.bootSync();
+    ui.emit({ type: 'pinGoal', levelId: def.id, preference: 'par' });
+    expect(save.settings.goalTargets?.flat).toBe('par');
+    expect(scenes.run).toBeNull();
+    expect(save.progress.levels.flat?.medals).toBeUndefined();
+    ui.emit({ type: 'start', levelId: def.id });
+    scenes.frame(1 / 60);
+    expect(ui.huds.at(-1)?.objective).toMatchObject({ id: 'par', state: 'active' });
+  });
+
+  it('a no-death goal stays missed after checkpoint retry and resets on a whole-run restart', () => {
+    const def = checkpointRoom();
+    const { scenes, ui, input, renderer } = makeScenes([def]);
+    scenes.bootSync();
+    ui.emit({ type: 'pinGoal', levelId: def.id, preference: 'nodeath' });
+    ui.emit({ type: 'start', levelId: def.id });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => renderer.events.some((e) => e.type === 'checkpoint'));
+    ui.show('pause');
+    ui.emit({ type: 'checkpointRetry' });
+    runFrames(scenes, () => (ui.huds.at(-1)?.objective?.state === 'missed'), 90);
+    expect(ui.huds.at(-1)?.objective?.state).toBe('missed');
+    ui.emit({ type: 'restart' });
+    scenes.frame(1 / 60);
+    expect(ui.huds.at(-1)?.objective).toMatchObject({ id: 'nodeath', state: 'active' });
+  });
+
+  it('offers an attainable unearned goal after a clear and starts a focused retry', async () => {
+    const def = flatRoom();
+    def.rows[1] = `${def.rows[1].slice(0, 3)}R${def.rows[1].slice(4)}`;
+    const { scenes, ui, input, save } = makeScenes([def]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: def.id });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.result?.nextGoal?.id).toBe('relic');
+    const finished = scenes.run;
+    ui.emit({ type: 'retryGoal', goal: 'relic' });
+    expect(scenes.run).not.toBe(finished);
+    expect(ui.screen).toBe('play');
+    expect(save.settings.goalTargets?.flat).toBe('relic');
+    expect(ui.huds.at(-1)?.objective?.id).toBe('relic');
+  });
+
+  it('retains local medal earning in assist mode while leaderboard submission remains excluded', async () => {
+    const def = flatRoom();
+    const { scenes, ui, input, save, api } = makeScenes([def], { assist: true });
+    scenes.bootSync();
+    ui.emit({ type: 'pinGoal', levelId: def.id, preference: 'nodeath' });
+    ui.emit({ type: 'start', levelId: def.id });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.result?.objective).toMatchObject({ id: 'nodeath', state: 'complete', practice: false });
+    expect(save.progress.levels.flat.medals).toContain('nodeath');
+    expect(api.submissions).toHaveLength(0);
+  });
+
+  it.each([
+    { medals: ['nodeath'], next: 'relic' },
+    { medals: ['nodeath', 'par', 'relic'], next: undefined },
+  ])('does not recommend an already earned missed goal: $medals', async ({ medals, next }) => {
+    const def = flatRoom();
+    def.rows[1] = `${def.rows[1].slice(0, 3)}R${def.rows[1].slice(4)}`;
+    const { scenes, ui, input, save } = makeScenes([def]);
+    save.progress.levels[def.id] = {
+      done: true, bestTicks: 360, bestShards: 0, stars: 2, relics: 0, deaths: 0, medals,
+    };
+    save.progress.endingSeen = true;
+    scenes.bootSync();
+    ui.emit({ type: 'pinGoal', levelId: def.id, preference: 'nodeath' });
+    ui.emit({ type: 'start', levelId: def.id });
+    runFrames(scenes, () => scenes.run?.sim.state.phase === 'play');
+    ui.show('pause');
+    ui.emit({ type: 'checkpointRetry' });
+    runFrames(scenes, () => (scenes.run?.sim.state.stats.deaths ?? 0) > 0 && scenes.run?.sim.state.phase === 'play');
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await scenes.settle();
+    expect(ui.result?.summary.cleared).toBe(true);
+    expect(ui.result?.objective).toMatchObject({ id: 'nodeath', state: 'missed' });
+    expect(ui.result?.nextGoal?.id).toBe(next);
+    expect(save.settings.goalTargets?.[def.id]).toBe('nodeath');
+  });
+
+  it('refuses locked skin equipment and uses existing earned availability', () => {
+    const { scenes, ui, save, renderer } = makeScenes([flatRoom()]);
+    renderer.skins.azure = { name: 'AZURE', kr: '아마조니' };
+    scenes.bootSync();
+    ui.emit({ type: 'equipSkin', skin: 'azure' });
+    expect(save.settings.skin).toBe('clawd');
+    save.progress.unlockedSkins = ['azure'];
+    ui.emit({ type: 'equipSkin', skin: 'azure' });
+    expect(save.settings.skin).toBe('azure');
+  });
+
+  it('applies a remote mute after reconciling another local preference', () => {
+    const { scenes, ui, save, storage, audio } = makeScenes([flatRoom()]);
+    const applied: number[] = [];
+    audio.applySettings = (settings) => { applied.push(settings.master); };
+    scenes.bootSync();
+    save.flush();
+    const remote = new Save({ storage, defaultBinds: BINDS });
+    remote.settings.master = 0;
+    remote.flush();
+    // This tab changes another preference before discovering the remote mute.
+    save.settings.music = 0.2;
+    ui.emit({ type: 'settingsChanged' });
+    expect(applied.at(-1)).toBeGreaterThan(0);
+    save.flush();
+    expect(save.settings.master).toBe(0);
+    expect(applied.at(-1)).toBe(0);
+    expect(save.settings.music).toBe(0.2);
+  });
+
+  it('watching and seeking a goal replay from the campaign never creates or saves a run', () => {
+    const { scenes, ui, save, api } = makeScenes(REAL_LEVELS);
+    scenes.bootSync();
+    ui.show('select');
+    const progress = JSON.stringify(save.progress);
+    ui.emit({ type: 'watchReplay', levelId: 't1' });
+    expect(ui.screen).toBe('replay');
+    expect(scenes.playback).toBeTruthy();
+    for (let i = 0; i < 20; i++) scenes.frame(1 / 60);
+    expect(scenes.playback!.cursor).toBeGreaterThan(0);
+    ui.emit({ type: 'replaySeek', tick: scenes.playback!.duration });
+    expect(scenes.playback!.sim.summary().cleared).toBe(true);
+    expect(scenes.playback!.playing).toBe(false);
+    expect(scenes.run).toBeNull();
+    expect(JSON.stringify(save.progress)).toBe(progress);
+    expect(api.submissions).toHaveLength(0);
+    ui.emit({ type: 'closeReplay' });
+    expect(ui.screen).toBe('select');
+    expect(scenes.playback).toBeNull();
+  });
+
+  it('keeps the demonstrated player above the transport on a short viewport', () => {
+    const { scenes, ui, renderer } = makeScenes(REAL_LEVELS);
+    ui.replayInsets = () => ({ top: 0.2, bottom: 0.4 });
+    scenes.bootSync();
+    ui.show('select');
+    ui.emit({ type: 'watchReplay', levelId: 't1' });
+    ui.emit({ type: 'replaySeek', tick: scenes.playback!.duration });
+    const p = scenes.playback!.sim.state.player;
+    const view = renderer.lastView!;
+    const feet = (p.y + p.h - view.camY) / renderer.viewH + 0.5;
+    const head = (p.y - view.camY) / renderer.viewH + 0.5;
+    expect(head).toBeGreaterThanOrEqual(0.2);
+    expect(feet).toBeLessThanOrEqual(0.6);
+  });
+
+  it('returns from a demonstration to the exact paused run and its original camera', () => {
+    const { scenes, ui, save, input } = makeScenes(REAL_LEVELS);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: 't1' });
+    const run = scenes.run!;
+    runFrames(scenes, () => run.hintUntil > 0);
+    ui.show('pause');
+    const state = JSON.stringify(run.sim.state), log = [...run.masks.bytes()];
+    const camera = JSON.stringify(scenes.camera), progress = JSON.stringify(save.progress);
+    const hintCount = ui.hints.length, hintRemaining = run.hintUntil;
+    ui.emit({ type: 'watchReplay' });
+    expect(ui.screen).toBe('replay');
+    ui.emit({ type: 'replaySpeed', speed: 2 });
+    ui.emit({ type: 'replaySeek', tick: 1200 });
+    ui.emit({ type: 'replayToggle' });
+    for (let i = 0; i < 30; i++) scenes.frame(1 / 60);
+    expect(scenes.run).toBe(run);
+    expect(JSON.stringify(run.sim.state)).toBe(state);
+    expect([...run.masks.bytes()]).toEqual(log);
+    expect(JSON.stringify(scenes.camera)).toBe(camera);
+    expect(JSON.stringify(save.progress)).toBe(progress);
+    ui.emit({ type: 'closeReplay' });
+    expect(ui.screen).toBe('pause');
+    expect(JSON.stringify(run.sim.state)).toBe(state);
+    expect(run.hintUntil).toBe(hintRemaining);
+    expect(ui.hints.slice(hintCount)).toContain(run.hintText);
+    ui.emit({ type: 'resume' });
+    input.heldMask = IN.RIGHT;
+    scenes.frame(1 / 60);
+    expect(run.masks.length).toBeGreaterThan(log.length);
+  });
+
+  it('the pause checkpoint action resumes the same run and records a server-verifiable retry', async () => {
+    const def = checkpointRoom();
+    const { scenes, ui, input, renderer } = makeScenes([def]);
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: def.id });
+    const run = scenes.run!;
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => renderer.events.some((e) => e.type === 'checkpoint'));
+    const checkpoint = { ...run.sim.state.respawn };
+    const before = run.masks.length;
+    input.heldMask = 0;
+    ui.show('pause');
+    ui.emit({ type: 'checkpointRetry' });
+    expect(ui.screen).toBe('play');
+    runFrames(scenes, () => run.sim.stats.deaths > 0, 60);
+    expect(scenes.run).toBe(run);
+    expect(run.sim.stats.deaths).toBe(1);
+    expect([...run.masks.bytes().slice(before)].filter((m) => m & IN.RETRY)).toHaveLength(1);
+    runFrames(scenes, () => run.sim.state.phase === 'play', 120);
+    expect(run.sim.state.player.x + run.sim.state.player.w / 2).toBeCloseTo(checkpoint.x, 0);
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => run.summary !== null);
+    await scenes.settle();
+    expect(run.summary?.cleared).toBe(true);
+    const replay = verifyReplay(def, { v: SIM_VERSION, levelId: def.id, seed: def.seed, assist: false, masks: run.masks.bytes() });
+    expect(replay.ok).toBe(true);
+    if (replay.ok) expect(replay.summary).toEqual(run.summary);
+  });
+
   it('a tapped or held restart bind (IN.RETRY) is recorded in the mask log exactly like any other input', () => {
     const { scenes, ui, input } = makeScenes([openRoom()]);
     scenes.bootSync();
@@ -1375,6 +1591,27 @@ describe('Scenes offline queue', () => {
     if (opts.daily) api.levels.daily = { ...tide, id: 'daily' };
     return { scenes, ui, input, api, save, timers, storage, queue };
   }
+
+  it('persists a submission before a pending POST so a reload can recover it', async () => {
+    const def = flatRoom();
+    const { scenes, ui, input, api, storage, queue } = queuedScenes([def]);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const submit = api.submitRun.bind(api);
+    api.submitRun = async (body) => { await gate; return submit(body); };
+    scenes.bootSync();
+    ui.emit({ type: 'start', levelId: def.id });
+    input.heldMask = IN.RIGHT;
+    runFrames(scenes, () => ui.screen === 'result');
+    await Promise.resolve();
+    const recovered = new SubmitQueue({ storage, now: () => NOW });
+    expect(recovered.size()).toBe(1);
+    expect(JSON.parse(storage.getItem(QUEUE_KEY)!)[0].body.claim.cleared).toBe(true);
+    release();
+    await scenes.settle();
+    expect(queue.size()).toBe(0);
+    expect(ui.result?.submit.state).toBe('accepted');
+  });
 
   it('queues a story submission the server could not receive; flushQueue() sends it later, adopts the run id and settles the result line', async () => {
     const def = flatRoom();

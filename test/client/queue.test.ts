@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { RunResponse, RunSubmit } from '../../src/shared/protocol.js';
-import { ApiError } from '../../src/client/net/api.js';
+import { Api, ApiError } from '../../src/client/net/api.js';
 import { QUEUE_KEY, QUEUE_MAX, SubmitQueue, type FlushEvent } from '../../src/client/net/queue.js';
 import type { StorageLike } from '../../src/client/save.js';
 
@@ -52,6 +52,124 @@ function scriptedApi(script: (RunResponse | Error)[]) {
 }
 
 describe('SubmitQueue', () => {
+  it('skips live held entries while sending other runs, and holds never survive reload', async () => {
+    const storage = new MemStorage();
+    const q = new SubmitQueue({ storage });
+    const live = q.enqueue(body('LIVE'), { mode: 'story', board: 't1', levelId: 't1' });
+    expect(typeof q.hold).toBe('function');
+    expect(q.hold(live)).toBe(true);
+    q.enqueue(body('OLD-A'), { mode: 'story', board: 't2', levelId: 't2' });
+    q.enqueue(body('OLD-B'), { mode: 'story', board: 't3', levelId: 't3' });
+    const api = scriptedApi([]);
+    expect(await q.flush(api)).toEqual({ sent: 2, dropped: 0, kept: 1 });
+    expect(api.sent.map((run) => run.masks)).toEqual(['OLD-A', 'OLD-B']);
+    expect(new SubmitQueue({ storage }).list()[0].body.masks).toBe('LIVE');
+    // A new process has no live POST; it must retry this serialized entry.
+    const reloaded = new SubmitQueue({ storage });
+    const afterReload = scriptedApi([]);
+    expect(await reloaded.flush(afterReload)).toEqual({ sent: 1, dropped: 0, kept: 0 });
+    expect(afterReload.sent[0].masks).toBe('LIVE');
+    // Releasing in the original process also makes it eligible on the next pass.
+    q.release(live);
+    expect(await q.flush(api)).toEqual({ sent: 1, dropped: 0, kept: 0 });
+    expect(api.sent.map((run) => run.masks)).toEqual(['OLD-A', 'OLD-B', 'LIVE']);
+  });
+
+  it('an active flush skips a not-yet-sent entry held while its earlier request is pending', async () => {
+    const q = new SubmitQueue({ storage: null });
+    const first = q.enqueue(body('FIRST'), { mode: 'story', board: 't1', levelId: 't1' });
+    const live = q.enqueue(body('LIVE'), { mode: 'story', board: 't2', levelId: 't2' });
+    let finish!: (response: RunResponse) => void;
+    const gate = new Promise<RunResponse>((resolve) => { finish = resolve; });
+    const sent: string[] = [];
+    const api = { submitRun: async (run: RunSubmit) => { sent.push(run.masks); return gate; } };
+    const pass = q.flush(api);
+    expect(typeof q.hold).toBe('function');
+    expect(q.hold(first)).toBe(false); // Already dispatched: ownership cannot be taken back.
+    expect(q.hold(live)).toBe(true);
+    expect(q.flush(api)).toBe(pass);
+    finish(accepted('first-run'));
+    expect(await pass).toEqual({ sent: 1, dropped: 0, kept: 1 });
+    expect(sent).toEqual(['FIRST']);
+    q.release(live);
+    expect(await q.flush(api)).toEqual({ sent: 1, dropped: 0, kept: 0 });
+    expect(sent).toEqual(['FIRST', 'LIVE']);
+  });
+
+  it('holding a new write-ahead entry during a flush leaves it pending, and acknowledgement clears the hold', async () => {
+    const q = new SubmitQueue({ storage: null });
+    q.enqueue(body('OLD'), { mode: 'story', board: 't1', levelId: 't1' });
+    let finish!: (response: RunResponse) => void;
+    const pass = q.flush({ submitRun: () => new Promise((resolve) => { finish = resolve; }) });
+    const live = q.enqueue(body('LIVE'), { mode: 'story', board: 't2', levelId: 't2' });
+    expect(typeof q.hold).toBe('function');
+    expect(q.hold(live)).toBe(true);
+    finish(accepted('old-run'));
+    expect(await pass).toEqual({ sent: 1, dropped: 0, kept: 1 });
+    expect(q.acknowledge(live)).toBe(true);
+    q.release(live); // The direct request's finally is harmless after acknowledgement.
+    expect(q.hold(live)).toBe(false);
+    const cleared = q.enqueue(body('CLEARED'), { mode: 'story', board: 't3', levelId: 't3' });
+    q.hold(cleared);
+    q.clear();
+    expect(q.hold(cleared)).toBe(false);
+    const next = q.enqueue(body('CLEARED'), { mode: 'story', board: 't3', levelId: 't3' });
+    const api = scriptedApi([]);
+    await q.flush(api);
+    expect(api.sent).toEqual([next.body]);
+  });
+
+  it('retains an interrupted 200 through the real API and resubmits the same body', async () => {
+    const storage = new MemStorage();
+    const q = new SubmitQueue({ storage });
+    q.enqueue(body('AAA'), { mode: 'story', board: 't1', levelId: 't1' });
+    const broken = new Api({ fetch: async () => new Response('{"accepted":true,', { status: 200 }) });
+    expect(await q.flush(broken)).toEqual({ sent: 0, dropped: 0, kept: 1 });
+    const reloaded = new SubmitQueue({ storage });
+    expect(reloaded.list()[0].body).toEqual(body('AAA'));
+    const online = scriptedApi([]);
+    expect(await reloaded.flush(online)).toEqual({ sent: 1, dropped: 0, kept: 0 });
+    expect(online.sent[0]).toEqual(body('AAA'));
+  });
+
+  it.each([400, 413, 422])('drops an authoritative HTTP %i with a malformed body', async (status) => {
+    const q = new SubmitQueue({ storage: null });
+    q.enqueue(body('AAA'), { mode: 'story', board: 't1', levelId: 't1' });
+    const api = new Api({ fetch: async () => new Response('{', { status }) });
+    expect(await q.flush(api)).toEqual({ sent: 0, dropped: 1, kept: 0 });
+  });
+
+  it('acknowledges only the enqueue handle, persistently and idempotently', () => {
+    const storage = new MemStorage();
+    const q = new SubmitQueue({ storage });
+    const first = q.enqueue(body('SAME'), { mode: 'story', board: 't1', levelId: 't1' });
+    const other = q.enqueue(body('SAME', 'daily'), { mode: 'daily', board: '2026-09-06', levelId: 'daily' });
+    expect(typeof q.acknowledge).toBe('function');
+    expect(q.acknowledge(first)).toBe(true);
+    expect(q.acknowledge(first)).toBe(false);
+    expect(q.acknowledge({ ...other })).toBe(false);
+    expect(new SubmitQueue({ storage }).list()).toEqual([other]);
+    expect(q.acknowledge(other)).toBe(true);
+    expect(storage.getItem(QUEUE_KEY)).toBeNull();
+  });
+
+  it('does not send an acknowledged waiting entry or report an already acknowledged in-flight result', async () => {
+    const q = new SubmitQueue({ storage: null });
+    const first = q.enqueue(body('AAA'), { mode: 'story', board: 't1', levelId: 't1' });
+    const second = q.enqueue(body('BBB'), { mode: 'story', board: 't2', levelId: 't2' });
+    let release!: (value: RunResponse) => void;
+    const gate = new Promise<RunResponse>((resolve) => { release = resolve; });
+    const sent: string[] = [], events: FlushEvent[] = [];
+    const pass = q.flush({ submitRun: async (b) => { sent.push(b.masks); return gate; } }, (ev) => events.push(ev));
+    expect(typeof q.acknowledge).toBe('function');
+    q.acknowledge(first);
+    q.acknowledge(second);
+    release(accepted('run-1'));
+    expect(await pass).toEqual({ sent: 0, dropped: 0, kept: 0 });
+    expect(sent).toEqual(['AAA']);
+    expect(events).toEqual([]);
+  });
+
   it('persists queued bodies with their meta and reloads them in order', () => {
     const storage = new MemStorage();
     let t = 1000;

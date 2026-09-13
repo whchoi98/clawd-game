@@ -1,8 +1,9 @@
 /**
  * Persistence: two versioned documents in localStorage — `Settings` and
- * `Progress` — read once at boot, mutated in place by the UI and the shell,
- * and written back debounced. Both are defensively merged over their defaults
- * so a schema change never bricks an existing save.
+ * `Progress` — mutated in place by the UI and the shell, and written back
+ * debounced. A write reconciles edits since the last read with the latest
+ * stored document, so another tab's accomplishments are not overwritten.
+ * Both documents are defensively merged over their defaults at load.
  *
  * Everything environment-specific (storage, timers, the reduced-motion media
  * query, the id generator) is injectable so the layer runs in Node.
@@ -14,6 +15,7 @@ import type { LevelDef, Rank } from '../sim/types.js';
 import { SIM_VERSION, GEN_VERSION } from '../sim/types.js';
 import { BIND_ACTIONS, DEFAULT_BINDS, cloneBinds } from './input/binds.js';
 import { MEDAL_ORDER } from './ui/ceremony.js';
+import { normalizeGoalTargets, type GoalPreference } from './goal-settings.js';
 
 export const SETTINGS_KEY = 'clawd-echo.settings.v1';
 export const PROGRESS_KEY = 'clawd-echo.progress.v1';
@@ -385,6 +387,7 @@ export function defaultSettings(binds: Binds = DEFAULT_BINDS): Settings {
     echoSelf: true, echoWorld: true,
     echoWorldMode: DEFAULT_ECHO_WORLD_MODE,
     touch: { ...DEFAULT_TOUCH },
+    goalTargets: {},
     binds: cloneBinds(binds),
   };
   return s;
@@ -473,7 +476,7 @@ function repairBinds(raw: unknown, defaults: Binds): Binds {
 }
 
 export function repairSettings(raw: unknown, defaults: Settings): Settings {
-  const s = deepMerge(structuredClone(defaults), isObj(raw) ? { ...raw, binds: undefined } : {});
+  const s = deepMerge(structuredClone(defaults), isObj(raw) ? { ...raw, binds: undefined, goalTargets: undefined } : {});
   s.v = 1;
   s.master = num(s.master, 0, 1, defaults.master);
   s.music = num(s.music, 0, 1, defaults.music);
@@ -500,6 +503,7 @@ export function repairSettings(raw: unknown, defaults: Settings): Settings {
   if (!QUALITIES.has(s.quality as string)) s.quality = 'auto';
   if (typeof s.skin !== 'string' || !s.skin) s.skin = defaults.skin;
   s.binds = repairBinds(isObj(raw) ? raw.binds : undefined, defaults.binds);
+  s.goalTargets = normalizeGoalTargets(isObj(raw) && raw.goalTargets !== undefined ? raw.goalTargets : defaults.goalTargets);
   return s;
 }
 
@@ -593,6 +597,156 @@ export function repairProgress(raw: unknown, defaults: Progress): Progress {
   return p;
 }
 
+// ---------------------------------------------------------------- shared-storage reconciliation
+/** Reset/import boundaries are local persistence metadata; snapshots never export this field. */
+type SharedProgress = Progress & { _saveEpoch?: string };
+const saveEpoch = (p: Progress): string => {
+  const v = (p as SharedProgress)._saveEpoch;
+  return typeof v === 'string' ? v : '';
+};
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => sameValue(v, b[i]));
+  if (!isObj(a) || !isObj(b)) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && sameValue(a[k], b[k]));
+}
+
+/**
+ * Remember explicit choices, including assignments back to a baseline value.
+ * Accessors keep the public documents structured-cloneable (unlike a Proxy).
+ */
+function observeAssignments(
+  obj: object, onEdit: (path: string) => void, path: string[] = [], keys = Object.keys(obj),
+): void {
+  const record = obj as Record<string, unknown>;
+  for (const key of keys) {
+    const at = [...path, key];
+    let value = record[key];
+    if (isObj(value)) observeAssignments(value, onEdit, at);
+    Object.defineProperty(record, key, {
+      enumerable: true, configurable: true,
+      get: () => value,
+      set: (next: unknown) => {
+        value = next;
+        if (isObj(value)) observeAssignments(value, onEdit, at);
+        onEdit(at.join('.'));
+      },
+    });
+  }
+}
+
+/** Keep live document/record references intact, including intentional property deletions. */
+function replaceContents<T extends object>(target: T, next: T): void {
+  const out = target as Record<string, unknown>, src = next as Record<string, unknown>;
+  for (const key of Object.keys(out)) if (!Object.hasOwn(src, key)) delete out[key];
+  for (const [key, value] of Object.entries(src)) {
+    if (isObj(out[key]) && isObj(value)) replaceContents(out[key], value);
+    else out[key] = structuredClone(value);
+  }
+}
+
+/**
+ * Three-way merge: only changed fields are edits. Missing fields are deletions,
+ * settings arrays are replacements, and progress has a few domain-specific
+ * rules for accomplishments/counters. This is not the transfer merge: replays
+ * and install-local records must survive synchronization between browser tabs.
+ */
+function mergeEdits(
+  base: unknown, local: unknown, stored: unknown, progress = false, path: string[] = [], edits?: ReadonlySet<string>,
+): unknown {
+  const at = path.join('.');
+  if (edits?.has(at)) return structuredClone(local);
+  const editedBelow = edits && [...edits].some((key) => !path.length || key.startsWith(`${at}.`));
+  if (!editedBelow && sameValue(local, base)) return structuredClone(stored);
+  if (sameValue(stored, base)) return structuredClone(local);
+  // A deletion on either side must not be undone by the other side's old data.
+  if (local === undefined || stored === undefined) return undefined;
+
+  const key = path.at(-1);
+  const levelField = path[0] === 'levels' && path.length === 3;
+  const dailyField = path[0] === 'daily' && path.length === 3;
+  const endlessField = path[0] === 'endless' && path.length === 2;
+  if (progress) {
+    if (typeof local === 'number' && typeof stored === 'number') {
+      const old = typeof base === 'number' ? base : 0;
+      const counter = (path[0] === 'totals' && path.length === 2)
+        || (levelField && (key === 'deaths' || key === 'sessionDeaths'))
+        || (endlessField && key === 'runs') || (path.length === 1 && key === 'installCardDismissed');
+      if (counter && local >= old && stored >= old) return stored + local - old;
+      const best = (levelField && ['bestShards', 'stars', 'relics', 'bestCombo'].includes(key!))
+        || (dailyField && key === 'height') || (endlessField && key === 'bestShards')
+        || (path.length === 1 && key === 'playDays');
+      if (best && local >= old && stored >= old) return Math.max(local, stored);
+      if ((path.length === 1 && key === 'firstSeen') || (path[0] === 'levels' && path[2] === 'segBest' && path.length === 4)) {
+        return local > 0 && stored > 0 ? Math.min(local, stored) : Math.max(local, stored);
+      }
+    }
+    if (levelField && key === 'bestRank' && isRankValue(local) && isRankValue(stored)) {
+      return RANKS.indexOf(local) > RANKS.indexOf(stored) ? local : stored;
+    }
+    if (path.length === 1 && key === 'lastPlayDay' && typeof local === 'string' && typeof stored === 'string') {
+      return local > stored ? local : stored;
+    }
+    if (Array.isArray(local) && Array.isArray(stored)) {
+      const before = Array.isArray(base) ? base : [];
+      if ((levelField && key === 'medals') || (path.length === 1 && (key === 'unlockedSkins' || key === 'tiersBroken'))) {
+        // Union additions, but honor removals relative to the common baseline.
+        return [...new Set([...stored, ...local])].filter((v) => !before.includes(v) || (local.includes(v) && stored.includes(v)));
+      }
+      if (levelField && key === 'segBest') {
+        return Array.from({ length: Math.max(local.length, stored.length) }, (_, i) =>
+          mergeEdits(before[i], local[i], stored[i], true, [...path, String(i)], edits) ?? 0);
+      }
+    }
+  }
+  if (isObj(local) && isObj(stored)) {
+    const before = isObj(base) ? base : {};
+    const out: Record<string, unknown> = {};
+    for (const k of new Set([...Object.keys(before), ...Object.keys(local), ...Object.keys(stored)])) {
+      const value = mergeEdits(before[k], local[k], stored[k], progress, [...path, k], edits);
+      if (value !== undefined) Object.defineProperty(out, k, { value, enumerable: true, writable: true, configurable: true });
+    }
+    if (progress && ((path.length === 2 && (path[0] === 'levels' || path[0] === 'daily')) || (path.length === 1 && path[0] === 'endless'))) {
+      mergeReplay(out, before, local, stored, path[0]);
+    }
+    return out;
+  }
+  // Two explicit edits of the same scalar/setting: the current writer wins.
+  return structuredClone(local);
+}
+
+/** A best's timing, replay and server id belong together; never combine competing runs. */
+function mergeReplay(
+  out: Record<string, unknown>, base: Record<string, unknown>, local: Record<string, unknown>, stored: Record<string, unknown>, kind: string,
+): void {
+  const endless = kind === 'endless', daily = kind === 'daily';
+  const identity = endless ? ['bestHeight', 'bestMasks', 'bestSeed', 'bestSim', 'bestGen']
+    : daily ? ['cleared', 'bestTicks', 'seed', 'masks', 'sim'] : ['bestTicks', 'masks', 'sim'];
+  const sameRun = (a: Record<string, unknown>, b: Record<string, unknown>): boolean =>
+    identity.every((k) => sameValue(a[k], b[k])) && (!daily || a.cleared === true || sameValue(a.height, b.height));
+  // Compatible edits (e.g. an accepted run id plus a new medal) already merged field by field.
+  if (sameRun(local, stored)) return;
+  let winner = stored;
+  if (sameRun(stored, base)) winner = local;
+  else if (!sameRun(local, base)) {
+    const ticks = (r: Record<string, unknown>): number => int(r.bestTicks) || Infinity;
+    if (endless) {
+      if (Number(local.bestHeight) > Number(stored.bestHeight)) winner = local;
+    } else if (daily) {
+      if (local.cleared && !stored.cleared) winner = local;
+      else if (!!local.cleared === !!stored.cleared
+        && (local.cleared ? ticks(local) < ticks(stored) : Number(local.height) > Number(stored.height))) winner = local;
+    } else if (ticks(local) < ticks(stored)) winner = local;
+  }
+  const fields = endless ? identity : [...identity, 'runId', 'rank'];
+  for (const k of fields) {
+    if (winner[k] === undefined) delete out[k];
+    else out[k] = structuredClone(winner[k]);
+  }
+}
+
 // ---------------------------------------------------------------- save
 function defaultStorage(): StorageLike | null {
   try {
@@ -616,6 +770,13 @@ export class Save {
   private readonly newId: () => string;
   private setTimer: unknown = null;
   private prgTimer: unknown = null;
+  private settingsBase: Settings;
+  private progressBase: Progress;
+  private hadProgress: boolean;
+  private readonly settingsEdits = new Set<string>();
+  private readonly progressEdits = new Set<string>();
+  private readonly settingsAdopters = new Set<() => void>();
+  private adopting = false;
 
   constructor(opts: SaveOptions = {}) {
     this.storage = opts.storage === undefined ? defaultStorage() : opts.storage;
@@ -629,7 +790,9 @@ export class Save {
     this.settings = repairSettings(rawSettings, defaultSettings(this.defaultBinds));
     // Never chosen: the device decides (touch → on, reduced motion → off); persisted with the next settings write.
     if (typeof this.settings.haptics !== 'boolean') this.settings.haptics = defaultHaptics(!!opts.coarsePointer, !!opts.reducedMotion);
-    this.progress = repairProgress(this.read(PROGRESS_KEY), defaultProgress(this.newId()));
+    const rawProgress = this.read(PROGRESS_KEY);
+    this.progress = repairProgress(rawProgress, defaultProgress(this.newId()));
+    this.hadProgress = isObj(rawProgress);
 
     // The stylesheet honours prefers-reduced-motion for UI animation, but the
     // game's own motion lives in the canvas: seed those toggles from the OS
@@ -640,6 +803,10 @@ export class Save {
       this.settings.grain = false;
       this.write(SETTINGS_KEY, this.settings);
     }
+    this.settingsBase = structuredClone(this.settings);
+    this.progressBase = structuredClone(this.progress);
+    observeAssignments(this.settings, (path) => { if (!this.adopting) this.settingsEdits.add(path); });
+    observeAssignments(this.progress, (path) => { if (!this.adopting) this.progressEdits.add(path); }, [], ['player', 'lastLevel']);
   }
 
   // ------------------------------------------------------------ io
@@ -654,27 +821,81 @@ export class Save {
     }
   }
 
-  private write(key: string, doc: unknown): void {
-    if (!this.storage) return;
-    try { this.storage.setItem(key, JSON.stringify(doc)); } catch { /* private mode / quota */ }
+  private write(key: string, doc: unknown): boolean {
+    if (!this.storage) return false;
+    try { this.storage.setItem(key, JSON.stringify(doc)); return true; } catch { /* private mode / quota */ return false; }
+  }
+
+  private adopt<T extends object>(target: T, next: T, edits: Set<string>): void {
+    this.adopting = true;
+    try { replaceContents(target, next); } finally { this.adopting = false; }
+    edits.clear();
+  }
+
+  private commitSettings(): void {
+    const raw = this.read(SETTINGS_KEY);
+    const latest = isObj(raw) ? repairSettings(raw, defaultSettings(this.defaultBinds)) : undefined;
+    // A saved haptics default may still be absent on disk until the first edit.
+    if (latest && typeof latest.haptics !== 'boolean') latest.haptics = this.settingsBase.haptics;
+    const next = latest ? mergeEdits(this.settingsBase, this.settings, latest, false, [], this.settingsEdits) as Settings : structuredClone(this.settings);
+    if ((latest && sameValue(next, latest)) || this.write(SETTINGS_KEY, next)) {
+      const changed = !sameValue(this.settings, next);
+      this.adopt(this.settings, next, this.settingsEdits);
+      this.settingsBase = structuredClone(next);
+      if (changed) for (const cb of this.settingsAdopters) {
+        try { cb(); } catch { /* a subscriber cannot undo an already persisted document */ }
+      }
+    }
+  }
+
+  /** Live subsystems cache settings; reapply when a merge adopts another tab's edits. */
+  onSettingsAdopt(cb: () => void): () => void {
+    this.settingsAdopters.add(cb);
+    return () => { this.settingsAdopters.delete(cb); };
+  }
+
+  private commitProgress(): void {
+    const raw = this.read(PROGRESS_KEY);
+    const latest = isObj(raw) ? repairProgress(raw, defaultProgress(this.progress.player.id, this.progress.player.name)) : undefined;
+    const localBoundary = saveEpoch(this.progress) !== saveEpoch(this.progressBase);
+    const storedBoundary = latest && (saveEpoch(latest) !== saveEpoch(this.progressBase)
+      || (this.hadProgress && latest.player.id !== this.progressBase.player.id));
+    const next = !latest || localBoundary ? structuredClone(this.progress)
+      : storedBoundary ? latest : mergeEdits(this.progressBase, this.progress, latest, true, [], this.progressEdits) as Progress;
+    if ((latest && sameValue(next, latest)) || this.write(PROGRESS_KEY, next)) {
+      this.adopt(this.progress, next, this.progressEdits);
+      this.progressBase = structuredClone(next);
+      this.hadProgress = true;
+    }
   }
 
   saveSettings(): void {
     if (this.setTimer !== null) this.cancel(this.setTimer);
-    this.setTimer = this.schedule(() => { this.setTimer = null; this.write(SETTINGS_KEY, this.settings); }, SAVE_DEBOUNCE_MS);
+    this.setTimer = this.schedule(() => { this.setTimer = null; this.commitSettings(); }, SAVE_DEBOUNCE_MS);
+  }
+
+  /** A per-zone edit must not replace targets changed by another browser tab. */
+  setGoalTarget(levelId: string, preference: GoalPreference): boolean {
+    const safe = normalizeGoalTargets({ [levelId]: preference });
+    if (!Object.hasOwn(safe, levelId)) return false;
+    const targets = this.settings.goalTargets ??= {};
+    targets[levelId] = safe[levelId];
+    this.settingsEdits.add(`goalTargets.${levelId}`);
+    this.saveSettings();
+    return true;
   }
 
   saveProgress(): void {
     if (this.prgTimer !== null) this.cancel(this.prgTimer);
-    this.prgTimer = this.schedule(() => { this.prgTimer = null; this.write(PROGRESS_KEY, this.progress); }, SAVE_DEBOUNCE_MS);
+    this.prgTimer = this.schedule(() => { this.prgTimer = null; this.commitProgress(); }, SAVE_DEBOUNCE_MS);
   }
 
   /** Write both documents now (pagehide / before a reload). */
   flush(): void {
     if (this.setTimer !== null) { this.cancel(this.setTimer); this.setTimer = null; }
     if (this.prgTimer !== null) { this.cancel(this.prgTimer); this.prgTimer = null; }
-    this.write(SETTINGS_KEY, this.settings);
-    this.write(PROGRESS_KEY, this.progress);
+    this.commitSettings();
+    this.commitProgress();
   }
 
   // ------------------------------------------------------------ records
@@ -709,6 +930,7 @@ export class Save {
 
   /** Wipe zones, daily, endless and totals; the player identity (id, name) survives. */
   resetProgress(): void {
+    this.commitProgress();
     const fresh = defaultProgress(this.progress.player.id, this.progress.player.name);
     Object.assign(this.progress, fresh);
     // Optional flags are not in the defaults, so Object.assign leaves them: a wiped save must earn its ceremonies again (P3-9)
@@ -716,8 +938,9 @@ export class Save {
     delete this.progress.tiersBroken;
     delete this.progress.endingSeen;
     delete this.progress.unlockedSkins;
+    (this.progress as SharedProgress)._saveEpoch = newPlayerId();
     if (this.prgTimer !== null) { this.cancel(this.prgTimer); this.prgTimer = null; }
-    this.write(PROGRESS_KEY, this.progress);
+    this.commitProgress();
   }
 
   // ------------------------------------------------------------ transfer (P3-5)
@@ -728,9 +951,11 @@ export class Save {
 
   /** Restore a snapshot from another device into this save (see mergeProgress) and write it through at once. */
   importSnapshot(snap: TransferGetResponse): void {
+    this.commitProgress();
     mergeProgress(this.progress, snap);
+    (this.progress as SharedProgress)._saveEpoch = newPlayerId();
     if (this.prgTimer !== null) { this.cancel(this.prgTimer); this.prgTimer = null; }
-    this.write(PROGRESS_KEY, this.progress);
+    this.commitProgress();
   }
 }
 

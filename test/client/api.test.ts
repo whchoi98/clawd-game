@@ -3,7 +3,7 @@
  * parsing of both responses, and the status → ApiError mapping the UI turns
  * into '이미 사용된 코드다' / '코드가 틀렸다' / offline.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MAX_TRANSFER_BYTES, TransferCode } from '../../src/shared/protocol.js';
 import type { TransferCreateRequest } from '../../src/shared/protocol.js';
 import { Api, ApiError } from '../../src/client/net/api.js';
@@ -111,5 +111,75 @@ describe('Api · transfer (P3-5)', () => {
     const err = await caught(api.transferGet('ABCDEFGH'));
     expect(err.status).toBe(0);
     expect(err.offline).toBe(true);
+  });
+});
+
+describe('Api · response-body failures and deadlines', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('times out after headers even when the response body never finishes', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | null | undefined;
+    const api = new Api({
+      timeoutMs: 20,
+      fetch: async (_url, init) => {
+        signal = init?.signal;
+        return new Response(new ReadableStream(), { status: 200 });
+      },
+    });
+    let failure: unknown;
+    void api.health().catch((err: unknown) => { failure = err; });
+    await vi.advanceTimersByTimeAsync(21);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({ status: 0, reason: 'timeout', offline: true });
+    expect(signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('uses one deadline for fetching headers and consuming the body', async () => {
+    vi.useFakeTimers();
+    const api = new Api({
+      timeoutMs: 20,
+      fetch: () => new Promise((resolve) => {
+        setTimeout(() => resolve(new Response(new ReadableStream(), { status: 200 })), 15);
+      }),
+    });
+    let failure: unknown;
+    void api.health().catch((err: unknown) => { failure = err; });
+    await vi.advanceTimersByTimeAsync(19);
+    expect(failure).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(2);
+    expect(failure).toMatchObject({ status: 0, reason: 'timeout' });
+  });
+
+  it.each([
+    ['truncated JSON', () => new Response('{"ok":', { status: 200 })],
+    ['invalid schema', () => json({ unexpected: true })],
+    ['disconnected body', () => new Response(new ReadableStream({
+      start(controller) { controller.error(new TypeError('connection reset')); },
+    }), { status: 200 })],
+  ])('treats %s in a success response as ambiguous instead of a final refusal', async (_label, response) => {
+    const api = new Api({ fetch: async () => response() });
+    const err = await caught(api.health());
+    expect(err.offline || err.retryable).toBe(true);
+  });
+
+  it.each([400, 413, 422])('keeps HTTP %i authoritative even if its body stalls', async (status) => {
+    vi.useFakeTimers();
+    const api = new Api({
+      timeoutMs: 20,
+      fetch: async () => new Response(new ReadableStream(), { status }),
+    });
+    let failure: unknown;
+    void api.transferCreate(REQ).catch((err: unknown) => { failure = err; });
+    await vi.advanceTimersByTimeAsync(21);
+    expect(failure).toMatchObject({ status, offline: false, retryable: false });
+  });
+
+  it('cancels the deadline after a complete response', async () => {
+    vi.useFakeTimers();
+    const api = new Api({ fetch: async () => json({ ok: true, version: 'test', uptime: 1 }) });
+    await expect(api.health()).resolves.toMatchObject({ ok: true });
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

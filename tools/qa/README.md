@@ -1,5 +1,30 @@
 # QA: Playwright smoke
 
+## Campaign, replay and mastery quality
+
+`npm run qa:premium` drives the shipped UI on fresh desktop (1440×900),
+landscape phone (750×340) and portrait phone (390×844) browser contexts.
+It checks readable locked-zone names and unlock instructions, the selected
+zone's preview, replay pause/speed/seeking/checkpoint controls, preservation of
+the suspended run, checkpoint retry recording, and native Tab focus in settings.
+The journal checks cover all 16 zones and eight skins, readable unlock conditions,
+goal selection without awarding progress, a real reload, reversible goal changes
+while paused, and a whole-run restart after a missed no-death goal. Tab and
+Shift+Tab must remain inside the journal. Each engine runs 39 steps.
+Actions go through real controls; browser evaluation only reads diagnostics.
+Same-origin errors fail the run. Captures are written to
+`tools/qa/out/premium-*.png`. Use `BASE_URL` to point at a running built server.
+`npm run qa:webkit` runs the same journeys in WebKit; its screenshots go to
+`tools/qa/out/webkit/`. Each virtual device receives a distinct synthetic
+CloudFront viewer address on API requests, so the real server applies its
+normal per-viewer limits independently to each profile. API responses are real.
+
+Install browser dependencies on a supported Linux host with
+`npx playwright install --with-deps chromium webkit firefox`. The isolated
+container procedure and measured results are recorded in
+`docs/quality/2026-09-13-premium-report.md` and
+`docs/quality/2026-09-13-mastery-report.md`.
+
 `tools/qa/smoke.ts` drives a real Chromium against a running server and fails
 on anything a player would notice on the first screen: a console error, an
 uncaught exception, a blank canvas, a menu that does not open, a zone that does

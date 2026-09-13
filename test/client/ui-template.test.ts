@@ -25,7 +25,7 @@ const html = readFileSync(resolve(here, '../../public/index.html'), 'utf8');
 const css = readFileSync(resolve(here, '../../public/styles.css'), 'utf8');
 const svg = readFileSync(resolve(here, '../../public/favicon.svg'), 'utf8');
 
-const SCREENS: Screen[] = ['boot', 'title', 'select', 'daily', 'settings', 'credits', 'data', 'play', 'pause', 'result', 'over', 'name', 'assist'];
+const SCREENS: Screen[] = ['boot', 'title', 'select', 'daily', 'settings', 'credits', 'journal', 'data', 'play', 'replay', 'pause', 'result', 'over', 'name', 'assist'];
 
 describe('public/index.html', () => {
   it('has a section for every Screen id', () => {
@@ -79,7 +79,6 @@ describe('public/index.html', () => {
     const nag = html.slice(html.indexOf('id="nag-rotate"'), html.indexOf('</noscript>'));
     expect(nag).toContain('data-act="dismissNag"');
     expect(nag).toContain('그래도 계속');
-    expect(nag).toContain('data-nonav');
     expect(html).not.toMatch(/(주세요|합니다|습니다|해요|어요|아요)[.!…]?</);
     expect(html).toContain('이 게임은 JavaScript가 필요하다.');
   });
@@ -155,8 +154,9 @@ describe('public/index.html', () => {
     const acts = [...menu.matchAll(/data-act="([^"]+)"/g)].map((m) => m[1]);
     expect(acts.at(-1)).toBe('install');
     expect(acts).toContain('openSelect');
-    expect(acts).toContain('openCredits');
+    expect(acts).toContain('openJournal');
     const foot = title.slice(title.indexOf('class="title__foot"'));
+    expect(foot).toContain('data-act="openCredits"');
     expect(foot).toMatch(/<span class="badge badge--offline" id="offline-badge"[^>]*hidden>오프라인<\/span>/);
     expect(foot).toMatch(/id="ios-hint"[^>]*hidden>공유 → 홈 화면에 추가 하면 전체 화면으로 플레이할 수 있다/);
     expect(foot).toContain('data-act="dismissIos"');

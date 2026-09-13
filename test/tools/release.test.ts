@@ -1,7 +1,7 @@
 /**
  * tools/release.mjs drives the whole release with an injected exec / fetch, so
- * the sequence (typecheck → levels → test → build → deploy → postdeploy →
- * invalidation → assets → version) is verified here without touching AWS,
+ * the sequence (typecheck → levels → test → version → build → deploy → postdeploy →
+ * invalidation → assets → tag) is verified here without touching AWS,
  * git or the network. Also covers the sim-version parser the post-deploy
  * check uses.
  */
@@ -47,6 +47,7 @@ interface Harness {
   commands: string[];
   fetched: string[];
   written: Record<string, string>;
+  artifactVersions: Record<string, string>;
   ctx: Parameters<typeof release>[1];
 }
 
@@ -63,6 +64,7 @@ function harness(o: HarnessOpts): Harness {
   const calls: Call[] = [];
   const fetched: string[] = [];
   const written: Record<string, string> = {};
+  const artifactVersions: Record<string, string> = {};
   const rounds = new Map<string, number>();
   const exec = (cmd: string, args: string[]): ExecResult => {
     calls.push({ cmd, args });
@@ -72,7 +74,15 @@ function harness(o: HarnessOpts): Harness {
     }
     if (line.startsWith('aws cloudfront create-invalidation')) return { status: 0, stdout: JSON.stringify({ Invalidation: { Id: 'I2ABCDEF', Status: 'InProgress' } }) };
     if (line.startsWith('aws cloudfront get-invalidation')) return { status: 0, stdout: JSON.stringify({ Invalidation: { Id: 'I2ABCDEF', Status: o.invalidationStatus ?? 'Completed' } }) };
-    if (line.startsWith('npm version')) return { status: 0, stdout: `v${nextVersion('0.1.0', args[1] as 'patch' | 'minor')}\n` };
+    if (line === 'npm run build' || line === 'npm run deploy') {
+      artifactVersions[line] = JSON.parse(files['package.json']).version;
+    }
+    if (line.startsWith('npm version')) {
+      const pkg = JSON.parse(files['package.json']);
+      pkg.version = nextVersion(pkg.version, args[1] as 'patch' | 'minor');
+      files['package.json'] = JSON.stringify(pkg);
+      return { status: 0, stdout: `v${pkg.version}\n` };
+    }
     return { status: 0, stdout: '' };
   };
   const fetch = async (url: string): Promise<FetchResponseLike> => {
@@ -94,6 +104,7 @@ function harness(o: HarnessOpts): Harness {
     commands: [] as string[],
     fetched,
     written,
+    artifactVersions,
     ctx: {
       exec,
       fetch,
@@ -158,7 +169,7 @@ describe('tools/release.mjs', () => {
 
     it('plan lists the steps in order, drops deploy with --no-deploy and the git lines with --no-tag', () => {
       const ids = plan(opts(), '0.1.0').map((s) => s.id);
-      expect(ids).toEqual(['typecheck', 'levels', 'test', 'build', 'deploy', 'postdeploy', 'invalidate', 'assets', 'version']);
+      expect(ids).toEqual(['typecheck', 'levels', 'test', 'version', 'build', 'deploy', 'postdeploy', 'invalidate', 'assets', 'tag']);
       expect(ids).toEqual(STEPS.map((s) => s.id));
       expect(plan(opts({ deploy: false })).map((s) => s.id)).not.toContain('deploy');
       const full = formatPlan(opts(), '0.1.0');
@@ -180,19 +191,20 @@ describe('tools/release.mjs', () => {
       expect(result.ok).toBe(true);
       expect(result.exitCode).toBe(0);
       expect(result.version).toBe('0.1.1');
-      expect(result.steps.map((s) => s.id)).toEqual(['typecheck', 'levels', 'test', 'build', 'deploy', 'postdeploy', 'invalidate', 'assets', 'version']);
+      expect(h.artifactVersions).toEqual({ 'npm run build': '0.1.1', 'npm run deploy': '0.1.1' });
+      expect(result.steps.map((s) => s.id)).toEqual(['typecheck', 'levels', 'test', 'version', 'build', 'deploy', 'postdeploy', 'invalidate', 'assets', 'tag']);
       expect(result.steps.every((s) => s.ok)).toBe(true);
       expect(lines(h)).toEqual([
         'npm run typecheck',
         'npx tsx levels/build.ts --check',
         'npx vitest run',
+        'npm version patch --no-git-tag-version',
         'npm run build',
         'npm run deploy',
         `node tools/postdeploy.mjs --outputs ${outputsPath}`,
         `aws cloudfront create-invalidation --distribution-id E1EXAMPLE --paths ${INVALIDATION_PATHS.join(' ')} --output json`,
         'aws cloudfront wait invalidation-completed --distribution-id E1EXAMPLE --id I2ABCDEF',
         'aws cloudfront get-invalidation --distribution-id E1EXAMPLE --id I2ABCDEF --output json',
-        'npm version patch --no-git-tag-version',
         'git add package.json package-lock.json CHANGELOG.md',
         'git commit -m release: v0.1.1',
         'git tag -a v0.1.1 -m v0.1.1',
@@ -235,19 +247,22 @@ describe('tools/release.mjs', () => {
       expect(lines(b).some((l) => l.startsWith('git '))).toBe(false);
       expect(lines(b)).toContain('npm version minor --no-git-tag-version');
       expect(b.written['CHANGELOG.md']).toContain('## [0.2.0] - 2026-09-06');
-      expect(rb.steps.find((s) => s.id === 'version')?.note).toBe('v0.2.0 (not tagged)');
+      expect(rb.steps.find((s) => s.id === 'version')?.note).toBe('v0.2.0 prepared');
+      expect(rb.steps.map((s) => s.id)).not.toContain('tag');
+      expect(b.artifactVersions).toEqual({ 'npm run build': '0.2.0', 'npm run deploy': '0.2.0' });
     });
 
-    it('fails the asset step when any of the 20 fetches is not 200, before the version is touched', async () => {
+    it('fails the asset step when any fetch is not 200 and never tags the prepared version', async () => {
       const h = harness({ outputsPath, fetchFail: { suffix: '/assets/app.9f8e7d6c.js', status: 404, nth: 17 } });
       const result = await release(opts({ outputsPath }), h.ctx);
       expect(result.ok).toBe(false);
       const assets = result.steps.find((s) => s.id === 'assets')!;
       expect(assets.ok).toBe(false);
       expect(assets.error).toMatch(/1 asset fetches were not 200: \/assets\/app\.9f8e7d6c\.js → 404 \(round 17\)/);
-      expect(result.steps.map((s) => s.id)).not.toContain('version');
-      expect(lines(h).some((l) => l.startsWith('npm version') || l.startsWith('git '))).toBe(false);
-      expect(h.written).toEqual({});
+      expect(result.steps.map((s) => s.id)).not.toContain('tag');
+      expect(lines(h).some((l) => l.startsWith('git '))).toBe(false);
+      expect(result.version).toBe('0.1.1');
+      expect(h.written['CHANGELOG.md']).toContain('## [0.1.1] - 2026-09-06');
     });
 
     it('fails the invalidation step when CloudFront does not report Completed', async () => {
@@ -275,6 +290,7 @@ describe('tools/release.mjs', () => {
       expect(result.steps.at(-1)).toMatchObject({ id: 'version', ok: false });
       expect(result.steps.at(-1)!.error).toMatch(/empty/);
       expect(lines(h).some((l) => l.startsWith('npm version'))).toBe(false);
+      expect(h.artifactVersions).toEqual({});
     });
   });
 

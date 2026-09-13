@@ -9,14 +9,14 @@
  *   1. typecheck        npm run typecheck
  *   2. levels           npx tsx levels/build.ts --check   (generated level table is current)
  *   3. test             npx vitest run
- *   4. build            npm run build
- *   5. deploy           npm run deploy                     (skipped with --no-deploy)
- *   6. postdeploy       node tools/postdeploy.mjs          (edge path + /api/health.simVersion)
- *   7. invalidate       aws cloudfront create-invalidation for / /index.html /sw.js
+ *   4. version          npm version <bump> + CHANGELOG (before compiling the version badge)
+ *   5. build            npm run build
+ *   6. deploy           npm run deploy                     (skipped with --no-deploy)
+ *   7. postdeploy       node tools/postdeploy.mjs          (edge path + /api/health.simVersion)
+ *   8. invalidate       aws cloudfront create-invalidation for / /index.html /sw.js
  *                       /manifest.webmanifest, then waits until it is Completed
- *   8. assets           GET /index.html and every /assets/* it references, 20 times each, all 200
- *   9. version          npm version <bump> → CHANGELOG.md [Unreleased] → [x.y.z] - date
- *                       → git commit + annotated tag vx.y.z        (git part skipped with --no-tag)
+ *   9. assets           GET /index.html and every /assets/* it references, 20 times each, all 200
+ *  10. tag              git commit + annotated tag vx.y.z        (skipped with --no-tag)
  *
  * Every step is a plain function over a `ctx` ({ exec, fetch, readFile, writeFile,
  * log, now, root }) so the tests drive the whole sequence with a fake exec and a
@@ -37,9 +37,9 @@ export const USAGE = [
   'usage: node tools/release.mjs [patch|minor] [--no-deploy] [--no-tag] [--dry-run]',
   '                              [--outputs cdk-outputs.json] [--region ap-northeast-2]',
   '',
-  '  typecheck → levels --check → vitest → build → cdk deploy → postdeploy:check →',
-  '  CloudFront invalidation (waits for Completed) → /assets/* × 20 → npm version + CHANGELOG + git tag',
-  '  --no-deploy   skip `npm run deploy` (re-verify and tag an already deployed build)',
+  '  typecheck → levels --check → vitest → npm version + CHANGELOG → build → cdk deploy →',
+  '  postdeploy:check → CloudFront invalidation (waits for Completed) → /assets/* × 20 → git tag',
+  '  --no-deploy   skip `npm run deploy`; version preparation, build and checks still run',
   '  --no-tag      bump package.json and CHANGELOG.md but do not git commit / tag',
   '  --dry-run     print the plan and run nothing',
 ].join('\n');
@@ -161,6 +161,28 @@ export const STEPS = [
     run: (ctx) => { run(ctx, 'npx', ['vitest', 'run']); },
   },
   {
+    id: 'version', title: 'prepare npm version + CHANGELOG before building',
+    commands: (opts, current) => {
+      const next = current ? nextVersion(current, opts.bump) : `<${opts.bump}>`;
+      return [
+        `npm version ${opts.bump} --no-git-tag-version   (${current ?? '?'} → ${next})`,
+        `CHANGELOG.md: [Unreleased] → [${next}] - <today>`,
+      ];
+    },
+    run: (ctx, opts, state) => {
+      const current = parseJson(ctx.readFile(resolve(ctx.root, 'package.json')), 'package.json').version;
+      const next = nextVersion(current, opts.bump);
+      const changelogPath = resolve(ctx.root, 'CHANGELOG.md');
+      // Missing notes must stop the release before a build or AWS mutation.
+      const bumped = bumpChangelog(ctx.readFile(changelogPath), next, isoDate(ctx.now()));
+      const printed = run(ctx, 'npm', ['version', opts.bump, '--no-git-tag-version'], { capture: true }).trim();
+      if (printed && printed !== `v${next}`) fail(`npm version printed ${printed}, expected v${next}`);
+      ctx.writeFile(changelogPath, bumped);
+      state.version = next;
+      return `v${next} prepared`;
+    },
+  },
+  {
     id: 'build', title: 'esbuild client + server + service worker',
     commands: () => ['npm run build'],
     run: (ctx) => { run(ctx, 'npm', ['run', 'build']); },
@@ -227,28 +249,17 @@ export const STEPS = [
     },
   },
   {
-    id: 'version', title: 'npm version + CHANGELOG + git tag',
+    id: 'tag', title: 'commit and tag the verified release',
+    when: (opts) => opts.tag,
     commands: (opts, current) => {
       const next = current ? nextVersion(current, opts.bump) : `<${opts.bump}>`;
-      const lines = [
-        `npm version ${opts.bump} --no-git-tag-version   (${current ?? '?'} → ${next})`,
-        `CHANGELOG.md: [Unreleased] → [${next}] - <today>`,
-      ];
-      if (opts.tag) lines.push('git add package.json package-lock.json CHANGELOG.md', `git commit -m "release: v${next}"`, `git tag -a v${next} -m "v${next}"`);
-      return lines;
+      return ['git add package.json package-lock.json CHANGELOG.md', `git commit -m "release: v${next}"`, `git tag -a v${next} -m "v${next}"`];
     },
     run: (ctx, opts, state) => {
-      const pkgPath = resolve(ctx.root, 'package.json');
-      const current = parseJson(ctx.readFile(pkgPath), 'package.json').version;
-      const next = nextVersion(current, opts.bump);
-      const changelogPath = resolve(ctx.root, 'CHANGELOG.md');
-      // Validate the changelog before touching package.json so a failure leaves nothing half-bumped.
-      const bumped = bumpChangelog(ctx.readFile(changelogPath), next, isoDate(ctx.now()));
-      const printed = run(ctx, 'npm', ['version', opts.bump, '--no-git-tag-version'], { capture: true }).trim();
-      if (printed && printed !== `v${next}`) fail(`npm version printed ${printed}, expected v${next}`);
-      ctx.writeFile(changelogPath, bumped);
-      state.version = next;
-      if (!opts.tag) return `v${next} (not tagged)`;
+      const next = state.version;
+      if (typeof next !== 'string') fail('release version was not prepared');
+      const current = parseJson(ctx.readFile(resolve(ctx.root, 'package.json')), 'package.json').version;
+      if (current !== next) fail(`package.json changed during release: ${current}, expected ${next}`);
       run(ctx, 'git', ['add', 'package.json', 'package-lock.json', 'CHANGELOG.md']);
       run(ctx, 'git', ['commit', '-m', `release: v${next}`]);
       run(ctx, 'git', ['tag', '-a', `v${next}`, '-m', `v${next}`]);

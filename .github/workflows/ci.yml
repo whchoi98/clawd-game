@@ -66,15 +66,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: playwright-all-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
-      - name: Install Playwright browsers (Chromium + WebKit) and their system libraries
+      - name: Install Playwright browsers and their system libraries
         if: steps.pw-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium webkit
+        run: npx playwright install --with-deps chromium webkit firefox
 
       - name: Install Playwright system libraries (browsers restored from cache)
         if: steps.pw-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium webkit
+        run: npx playwright install-deps chromium webkit firefox
 
       - name: Start the built server
         run: |
@@ -93,8 +93,17 @@ jobs:
       - name: QA mobile layouts
         run: npx tsx tools/qa/mobile.ts
 
-      - name: QA determinism selftest (Chromium + WebKit vs. Node fixture)
-        run: npx tsx tools/qa/selftest.ts --require=chromium,webkit
+      - name: QA journal, saved goals, replay, checkpoint retry and native focus
+        run: npm run qa:premium
+
+      - name: QA WebKit journal, goals and replay input
+        run: npm run qa:webkit
+
+      - name: QA rendered music and SFX mute (Chromium WebAudio)
+        run: npm run qa:audio
+
+      - name: QA determinism selftest (three engines vs. Node fixture)
+        run: npx tsx tools/qa/selftest.ts --require=chromium,webkit,firefox
 
       - name: QA readability
         run: npx tsx tools/qa/readability.ts
@@ -114,7 +123,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: qa-screenshots
-          path: tools/qa/out/*.png
+          path: tools/qa/out/**/*.png
           if-no-files-found: ignore
           retention-days: 14
 

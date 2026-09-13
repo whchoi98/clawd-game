@@ -187,12 +187,12 @@ describe('AudioEngine', () => {
     const master = gains.find((n) => n.outputs.includes(comp[0]));
     expect(master).toBeDefined();
     const intoMaster = gains.filter((n) => n.outputs.includes(master!));
-    expect(intoMaster.length).toBeGreaterThanOrEqual(2); // sfxBus + fx wet return
+    expect(intoMaster.length).toBeGreaterThanOrEqual(1); // SFX wet/dry share the volume bus
     const filters = nodesOf('filter') as FakeFilter[];
     expect(filters.some((f) => f.outputs.includes(master!) && f.type === 'lowpass')).toBe(true); // musLp
-    // two-tap feedback delay: two delay lines each with a lowpass in the loop
+    // Each category owns a two-tap delay, with independent lowpass feedback.
     const delays = nodesOf('delay') as FakeDelay[];
-    expect(delays).toHaveLength(2);
+    expect(delays).toHaveLength(4);
     for (const d of delays) {
       expect(d.delayTime.value).toBeGreaterThan(0);
       const lp = d.outputs.find((n) => n.kind === 'filter') as FakeFilter | undefined;
@@ -341,6 +341,82 @@ describe('AudioEngine', () => {
     expect(gains.some((n) => n.gain.value === 0.4)).toBe(true);
     expect(gains.some((n) => n.gain.value === 0.3)).toBe(true);
     expect(gains.some((n) => n.gain.value === 0.2)).toBe(true);
+  });
+
+  /** A muted path cannot reach the speaker, including sends through feedback loops. */
+  function reachesSpeaker(source: FakeNode): boolean {
+    const seen = new Set<FakeNode>();
+    const visit = (node: FakeNode): boolean => {
+      if (seen.has(node) || (node instanceof FakeGain && node.gain.value === 0)) return false;
+      if (node === ctxOf().destination) return true;
+      seen.add(node);
+      return node.outputs.some(visit);
+    };
+    return visit(source);
+  }
+
+  it.each(['before init', 'after init'] as const)('SFX zero mutes every recipe and its reverb, leaving music audible (%s)', (when) => {
+    if (when === 'after init') engine.init();
+    engine.applySettings(makeSettings({ master: 1, sfx: 0, music: 1 }));
+    engine.init();
+    const ctx = ctxOf();
+    for (const name of Object.keys(SFX) as SfxName[]) {
+      ctx.currentTime += 1;
+      const before = sources(ctx).length;
+      engine.play(name, { vol: 1, pan: 0.4 });
+      const made = sources(ctx).slice(before);
+      expect(made.length, name).toBeGreaterThan(0);
+      expect(made.some(reachesSpeaker), `${name} leaks around SFX volume`).toBe(false);
+    }
+    engine.setTrack('title');
+    const before = sources(ctx).length;
+    engine.tick();
+    expect(sources(ctx).slice(before).some(reachesSpeaker)).toBe(true);
+  });
+
+  it.each(['before init', 'after init'] as const)('music zero mutes every track and its reverb, leaving SFX audible (%s)', (when) => {
+    if (when === 'after init') engine.init();
+    engine.applySettings(makeSettings({ master: 1, sfx: 1, music: 0 }));
+    engine.init();
+    const ctx = ctxOf();
+    for (const key of Object.keys(TRACKS)) {
+      ctx.currentTime += 5;
+      engine.setTrack(key);
+      const before = sources(ctx).length;
+      engine.tick();
+      const made = sources(ctx).slice(before);
+      expect(made.length, key).toBeGreaterThan(0);
+      expect(made.some(reachesSpeaker), `${key} leaks around music volume`).toBe(false);
+    }
+    const before = sources(ctx).length;
+    engine.play('shard', { vol: 1, pan: -0.4 });
+    expect(sources(ctx).slice(before).some(reachesSpeaker)).toBe(true);
+  });
+
+  it('channel volume changes also mute and unmute already connected effect sends', () => {
+    engine.init();
+    const ctx = ctxOf();
+    engine.play('shard', { vol: 1, pan: 0 });
+    const made = sources(ctx);
+    expect(made.some(reachesSpeaker)).toBe(true);
+    engine.applySettings(makeSettings({ master: 1, sfx: 0, music: 1 }));
+    expect(made.some(reachesSpeaker)).toBe(false);
+    engine.applySettings(makeSettings({ master: 1, sfx: 1, music: 0 }));
+    expect(made.some(reachesSpeaker)).toBe(true);
+  });
+
+  it('a completed track fade disconnects its wet send as well as its dry voices', () => {
+    engine.init();
+    const ctx = ctxOf();
+    engine.setTrack('title');
+    ctx.currentTime = 1;
+    engine.tick();
+    const oldVoices = sources(ctx);
+    expect(oldVoices.some(reachesSpeaker)).toBe(true);
+    engine.setTrack(null);
+    ctx.currentTime = 4;
+    engine.tick();
+    expect(oldVoices.some(reachesSpeaker)).toBe(false);
   });
 
   it('setTrack cross-fades: the old track gain ramps down while the new one ramps up', () => {

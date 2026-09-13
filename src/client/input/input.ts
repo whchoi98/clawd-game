@@ -85,6 +85,11 @@ function isEditableTarget(t: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
 }
 
+function isRangeTarget(t: EventTarget | null): boolean {
+  const el = t as { tagName?: string; type?: string } | null;
+  return el?.tagName?.toUpperCase() === 'INPUT' && el.type === 'range';
+}
+
 interface KeyEv { code: string; down: boolean }
 
 // ---------------------------------------------------------------- class
@@ -207,6 +212,7 @@ export class Input implements InputPort {
     this.captureFn = cb;
   }
 
+  /** Clear pending input and notify a rebind owner that its capture was cancelled. */
   reset(): void {
     // keyboard
     this.queue.length = 0;
@@ -230,6 +236,7 @@ export class Input implements InputPort {
     this.heldMask = 0;
     this.latched = 0;
     this.menu = [];
+    this.cancelCapture(true);
   }
 
   get lastDevice(): Device {
@@ -254,8 +261,11 @@ export class Input implements InputPort {
     return this.captureFn !== null;
   }
 
-  cancelCapture(): void {
+  /** Drop capture silently by default; lifecycle cancellation also notifies its owner. */
+  cancelCapture(notify = false): void {
+    const fn = this.captureFn;
     this.captureFn = null;
+    if (notify) fn?.(null);
   }
 
   /** True while at least one gamepad is reported by the platform. */
@@ -307,7 +317,20 @@ export class Input implements InputPort {
       fn(code === 'Escape' ? null : code);
       return;
     }
-    if (isEditableTarget(e.target)) return;
+    if (isEditableTarget(e.target)) {
+      // Sliders retain native arrows, but Escape must still close their menu.
+      // Text fields (including IME composition) keep their existing handlers.
+      if (isRangeTarget(e.target) && code === 'Escape' && !e.isComposing && e.keyCode !== 229
+        && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        if (!e.repeat && !this.physDown.has(code)) {
+          this.physDown.add(code);
+          this._lastDevice = 'keyboard';
+          this.press(['cancel']);
+        }
+      }
+      return;
+    }
     // Space/arrows scroll the page and steal focus from the canvas otherwise —
     // including their auto-repeats, so this runs before the repeat filter.
     if (this.owned.has(code)) e.preventDefault();
@@ -329,11 +352,15 @@ export class Input implements InputPort {
 
   private readonly onBlur = (): void => {
     this.releaseKeys();
+    this.cancelCapture(true);
   };
 
   private readonly onVisibility = (): void => {
     const d = this.doc as { visibilityState?: string } | null;
-    if (d && d.visibilityState === 'hidden') this.releaseKeys();
+    if (d && d.visibilityState === 'hidden') {
+      this.releaseKeys();
+      this.cancelCapture(true);
+    }
   };
 
   private readonly onPadConnected = (): void => {

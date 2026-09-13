@@ -1,0 +1,119 @@
+{
+  "date": "2026-09-13",
+  "baselineCommit": "ab2d975",
+  "applicationBuild": "2f522e8a",
+  "simulation": 4,
+  "generator": 2,
+  "unitTests": 1601,
+  "testFiles": 86,
+  "payload": {
+    "baseline": {
+      "bytes": 515065,
+      "gzipBytes": 156512
+    },
+    "upgrade": {
+      "bytes": 543431,
+      "gzipBytes": 166306
+    }
+  },
+  "renderTiming": {
+    "viewport": "1280x800 @1",
+    "browser": "153.0.8010.12",
+    "quality": "high",
+    "measurement": "CPU time spent in renderer draw calls; not end-to-end frame time",
+    "samples": [
+      {
+        "version": "baseline",
+        "scene": "title",
+        "frames": 180,
+        "cpuP50": 1.8,
+        "cpuP95": 2.2,
+        "cpuMax": 2.5
+      },
+      {
+        "version": "baseline",
+        "scene": "play",
+        "frames": 180,
+        "cpuP50": 3,
+        "cpuP95": 3.4,
+        "cpuMax": 7.3
+      },
+      {
+        "version": "upgrade",
+        "scene": "title",
+        "frames": 180,
+        "cpuP50": 2,
+        "cpuP95": 2.3,
+        "cpuMax": 2.8
+      },
+      {
+        "version": "upgrade",
+        "scene": "play",
+        "frames": 180,
+        "cpuP50": 3,
+        "cpuP95": 3.4,
+        "cpuMax": 6.4
+      }
+    ]
+  },
+  "reducedMotion": {
+    "changedPixels": 0,
+    "skyClock": 0,
+    "cameraX": 0,
+    "animation": 0,
+    "grain": false,
+    "playTicks": 36,
+    "moved": 23.77986111111109,
+    "quality": "high",
+    "observationMs": 700
+  },
+  "image": {
+    "architecture": "arm64",
+    "bytes": 175713642,
+    "user": "node",
+    "image": "sha256:db7ff98eee2613df400817e75aa2924c2f7487575c91ee95bc98b30f4fa2c6a9"
+  },
+  "checks": {
+    "typecheck": "pass",
+    "generatedLevels": "current",
+    "corpus": "current",
+    "chromiumUserFlows": {
+      "passed": 27,
+      "total": 27,
+      "issues": 0
+    },
+    "webkitUserFlows": {
+      "passed": 27,
+      "total": 27,
+      "issues": 0
+    },
+    "smoke": {
+      "passed": 23,
+      "total": 23
+    },
+    "mobile": {
+      "passed": 54,
+      "total": 54
+    },
+    "readability": {
+      "passed": 10,
+      "total": 10
+    },
+    "grid": "pass",
+    "determinism": {
+      "chromium": {
+        "passed": 18,
+        "total": 18
+      },
+      "webkit": {
+        "passed": 18,
+        "total": 18
+      },
+      "firefox": {
+        "passed": 18,
+        "total": 18
+      }
+    },
+    "containerHealth": "healthy"
+  }
+}

@@ -16,7 +16,7 @@
  */
 import type {
   AudioPort, Binds, Device, HudState, InputPort, MenuAction, Progress, ResultView, Screen, Settings, TouchState,
-  UIAction, UIPort, UiSound,
+  UIAction, UIPort, UiSound, ReplayView,
 } from '../contracts.js';
 import type { LevelDef, RunSummary } from '../../sim/types.js';
 import type { DailyResponse, LeaderboardResponse, RejectReason } from '../../shared/protocol.js';
@@ -44,6 +44,13 @@ import {
 } from './ceremony.js';
 import type { StingerKind } from '../audio/sfx.js';
 import { isShotHarness } from '../pwa.js';
+import { goalMasksFor } from '../echo/goal.js';
+import { CHAPTER_COPY, campaignInfo, nextObjective, terrainPreview, unlockHint } from './campaign.js';
+import { ReplayPanel } from './replay.js';
+import { JournalPanel } from './journal.js';
+import { ObjectivePanel } from './objective.js';
+import { GOAL_DESCRIPTIONS } from '../goals.js';
+import type { GoalId } from '../goal-settings.js';
 
 /** Seconds the restart bind must stay held during play to restart the whole zone (a tap is a checkpoint retry inside the sim). */
 export const RESTART_HOLD_S = 0.6;
@@ -174,7 +181,7 @@ export const NAG_DISMISSED_KEY = 'clawd-echo.nag-dismissed';
 export const IOS_HINT_DISMISSED_KEY = 'clawd-echo.ios-hint-dismissed';
 const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
-const HOVER_SELECTOR = '.menu__item,.card,.tab,.chip,.echo,.bindbtn,.switch,.seg button,.icon-btn';
+const HOVER_SELECTOR = '.menu__item,.card,.tab,.chip,.echo,.bindbtn,.switch,.seg button,.icon-btn,.replay__button,.replay__speed,.campaign__start,.campaign__watch,.goal-picker__toggle,.goal-picker__button,.journal-zone__mode,.journal-zone__medal,.journal-skin__equip,.res-objective__retry';
 
 /** '2026-09-06' → '2026년 9월 6일 (일)'. */
 export function fmtDateKr(date: string): string {
@@ -199,6 +206,9 @@ export class UI implements UIPort {
   private readonly screens: ScreenStack;
   private readonly nav: Navigator;
   private readonly hudCtl: Hud;
+  private readonly replayPanel: ReplayPanel;
+  private readonly journalPanel: JournalPanel;
+  private readonly objectivePanel: ObjectivePanel;
   private readonly settingsPanel: SettingsPanel;
   /** 다른 기기로 옮기기 widgets of the data pane (P3-5). */
   private readonly transferPanel: TransferPanel;
@@ -259,6 +269,7 @@ export class UI implements UIPort {
   private unlockSoundPending = false;
   /** What the title's first entry starts: the last zone, or the first zone on a fresh save. */
   private continueId: string | null = null;
+  private campaignId: string | null = null;
   /** Seconds left of the gamepad auto-hide of the virtual pad (P3-7); 0 = not hiding. */
   private gamepadHideT = 0;
   /** Seconds left of the touch layout preview over the settings (P3-7); 0 = none. */
@@ -292,13 +303,25 @@ export class UI implements UIPort {
 
     this.screens = new ScreenStack(this.doc);
     this.hudCtl = new Hud(this.doc);
+    this.replayPanel = new ReplayPanel(this.doc, (action) => this.emit(action));
     this.touchCtl = new TouchControls(this.doc, this.doc.getElementById('hud-touch'));
     this.touch = this.touchCtl.state;
     this.nav = new Navigator(this.doc, {
-      onMove: () => this.sound('move'),
+      onMove: () => { this.sound('move'); if (this.screens.top === 'select') this.updateCampaignPreview(); },
       onConfirm: (target) => this.confirm(target),
       onCancel: () => this.cancel(),
       onAdjust: (target, dir) => this.adjust(target, dir),
+    });
+    const onGoal: ConstructorParameters<typeof ObjectivePanel>[1] = (levelId, preference) => {
+      this.sound('toggle');
+      this.emit({ type: 'pinGoal', levelId, preference });
+    };
+    this.objectivePanel = new ObjectivePanel(this.doc, onGoal, () => this.nav.refresh(this.screens.el(this.screens.top), true));
+    this.journalPanel = new JournalPanel({
+      doc: this.doc,
+      onGoal,
+      onEquip: (skin) => { this.sound('confirm'); this.emit({ type: 'equipSkin', skin }); },
+      portrait: () => this.portrait,
     });
     this.transferPanel = new TransferPanel({ doc: this.doc, sound: (n) => this.sound(n), onSubmit: () => this.importTransfer() });
     this.settingsPanel = new SettingsPanel({
@@ -312,6 +335,7 @@ export class UI implements UIPort {
         this.input.capture(cb);
         return true;
       },
+      cancelCapture: () => this.input?.reset(),
       defaultBinds: () => this.defaultBinds,
       onChange: () => this.emit({ type: 'settingsChanged' }),
       onRebind: (binds) => {
@@ -349,6 +373,7 @@ export class UI implements UIPort {
   }
 
   show(screen: Screen): void {
+    if (screen !== 'settings') this.settingsPanel.cancelCapture();
     // The data notice lives outside the screen stack (ScreenStack does not
     // register it): it is an overlay opened here and closed by any other show().
     if (screen === 'data') { this.openData(); return; }
@@ -375,9 +400,21 @@ export class UI implements UIPort {
 
     const edges = input.takeMenu();
     const actions = new Set<MenuAction>(edges);
-    if (this.settingsPanel.capturing) return;
+    if (this.settingsPanel.capturing) {
+      if (actions.has('cancel') || actions.has('pause')) {
+        this.settingsPanel.cancelCapture();
+        this.sound('cancel');
+      }
+      return;
+    }
     const top = this.screens.top;
     if (top === 'boot') return;
+    if (top === 'replay') {
+      // Escape belongs to both default pause and cancel binds. Closing wins;
+      // a dedicated pause key or controller Start still toggles playback.
+      if (actions.has('cancel')) { this.goBack(); return; }
+      if (actions.has('pause')) { this.emit({ type: 'replayToggle' }); return; }
+    }
     // Ceremony overlays (P3-9) own the frame: the tier card skips on any edge; the ending reveal skips, then its menu takes the edges.
     if (this.tierTimeline) { this.tickTierCard(step, edges.length > 0); return; }
     if (this.endingOpen && !MODAL_SCREENS.has(top)) { this.tickEnding(step, edges, input); return; }
@@ -526,6 +563,7 @@ export class UI implements UIPort {
       if (stage === 'done') this.endTierCard();
     }, !opts.hold && isShotHarness(this.win));
     this.tierTimeline = tl;
+    this.screens.setFocusRoot(sec);
     this.nav.refresh(null);
     this.updateTouchVisibility();
     // the 'done' stage (also what an instant start jumps to) ends the card from its handler; a held preview waits for a key
@@ -547,6 +585,7 @@ export class UI implements UIPort {
     this.tierDone = null;
     if (!tl) return;
     this.leave(this.doc.getElementById('scr-tier'));
+    this.screens.setFocusRoot(null);
     this.updateTouchVisibility();
     done?.();
   }
@@ -589,6 +628,7 @@ export class UI implements UIPort {
       if (stage === 'done') this.nav.refresh(sec);
     }, isShotHarness(this.win));
     this.endingTimeline = tl;
+    this.screens.setFocusRoot(sec);
     this.nav.refresh(sec);
     this.updateTouchVisibility();
     this.syncUpdateBar();
@@ -634,6 +674,7 @@ export class UI implements UIPort {
     this.endingOpen = false;
     this.endingTimeline = null;
     this.leave(this.doc.getElementById('scr-ending'));
+    this.screens.setFocusRoot(null);
   }
 
   /** Deactivate an overlay section with the leave animation (the same beat as ScreenStack.deactivate). */
@@ -674,7 +715,14 @@ export class UI implements UIPort {
   hud(h: HudState): void {
     this.lastHud = h;
     this.hudCtl.update(h);
+    this.objectivePanel.live(h.objective ?? null);
   }
+
+  setReplay(view: ReplayView): void {
+    if (this.replayPanel.update(view) && this.screens.top === 'replay') this.nav.refresh(this.screens.el('replay'), true);
+  }
+
+  replayInsets(): { top: number; bottom: number } { return this.replayPanel.insets(); }
 
   /**
    * Show a hint template ({move} {jump} {dash} {stomp} {down} tokens) rendered
@@ -738,8 +786,10 @@ export class UI implements UIPort {
 
   /** Boot progress: 0..1 and an optional status line. */
   boot(k: number, label?: string): void {
+    const percent = Math.round(Math.min(1, Math.max(0, k)) * 100);
     const fill = this.doc.getElementById('boot-fill');
-    if (fill) fill.style.width = `${Math.round(Math.min(1, Math.max(0, k)) * 100)}%`;
+    if (fill) fill.style.width = `${percent}%`;
+    this.doc.querySelector('.boot__bar')?.setAttribute('aria-valuenow', String(percent));
     const hint = this.doc.getElementById('boot-hint');
     if (hint && label) hint.textContent = label;
   }
@@ -750,8 +800,12 @@ export class UI implements UIPort {
    * screen is up, otherwise the moment it next appears.
    */
   refreshSelect(progress: Progress, levels: LevelDef[], justUnlocked?: Iterable<string>): void {
+    const selected = this.screens.base === 'select' || this.screens.base === 'replay' ? this.campaignId : null;
+    const cursor = this.nav.current;
+    const cursorZone = this.screens.top === 'select' && cursor?.classList.contains('card') ? cursor.dataset.id : null;
     this.progress = progress;
     this.levels = levels;
+    this.campaignId = null;
     this.playerName = progress.player.name;
     if (justUnlocked) {
       for (const id of justUnlocked) this.unlocking.add(id);
@@ -777,6 +831,12 @@ export class UI implements UIPort {
           if (rec?.done) { done++; tierDone++; }
           const isOpen = unlocked.has(lv.id);
           const card = this.card(lv, i, rec, isOpen, t.biome);
+          if (!isOpen) {
+            const reason = unlockHint(lv, levels, progress);
+            card.setAttribute('aria-label', `${lv.name} · ${reason}`);
+            const lock = card.querySelector('.card__lock span');
+            if (lock) lock.textContent = reason;
+          }
           if (isOpen) {
             lastUnlocked = card;
             if (!rec?.done && !nextUp) nextUp = card;
@@ -799,8 +859,16 @@ export class UI implements UIPort {
         tier.style.setProperty('--tier-d', t.biome.ridge[2]);
         host.appendChild(tier);
       });
-      const cursorCard = (nextUp ?? lastUnlocked) as HTMLElement | null;
-      if (cursorCard) cursorCard.setAttribute('data-default', '');
+      const remembered = selected
+        ? [...host.querySelectorAll<HTMLButtonElement>('.card')].find((card) => card.dataset.id === selected && !card.disabled)
+        : null;
+      const cursorCard = (remembered ?? nextUp ?? lastUnlocked) as HTMLElement | null;
+      cursorCard?.setAttribute('data-default', '');
+      const recommended = nextUp as HTMLElement | null;
+      if (recommended) {
+        recommended.classList.add('card--next');
+        recommended.appendChild(el(this.doc, 'span', { class: 'card__next' }, '다음 도전'));
+      }
       const prog = this.doc.getElementById('sel-progress');
       if (prog) prog.textContent = `${done} / ${levels.length} 구역 돌파 · ${unlocked.size} 해금`;
       // "별 N/36 · 메달 N/48" — the denominators follow LEVELS (a new zone widens them by 3 and 4).
@@ -812,9 +880,16 @@ export class UI implements UIPort {
     this.refreshTitle();
     this.renderDailyStrip();
     if (this.screens.top === 'select') {
-      this.nav.refresh(this.screens.el('select'));
+      const previousCard = cursorZone
+        ? [...(host?.querySelectorAll<HTMLButtonElement>('.card') ?? [])].find((card) => card.dataset.id === cursorZone && !card.disabled)
+        : undefined;
+      if (previousCard) this.screens.setFocusRoot(null, previousCard);
+      this.nav.refresh(this.screens.el('select'), true);
       this.revealUnlocks();
     }
+    const keepSelection = selected && unlockedZones(levels, progress).has(selected);
+    this.updateCampaignPreview(keepSelection ? selected : nextObjective(levels, progress)?.id ?? levels[0]?.id);
+    this.refreshGoalSurfaces();
   }
 
   /** The select screen is visible with the freshly opened cards: sound once, then forget them. */
@@ -879,6 +954,7 @@ export class UI implements UIPort {
     const next = d.querySelector<HTMLElement>('#scr-result [data-act="next"]');
     if (next) next.hidden = !view.nextLevelId;
     this.paintMedals(view);
+    this.objectivePanel.result(view);
     this.paintVersus();
     this.paintSubmission('res-submit', 'res-lb', view);
     this.paintInstallCard();
@@ -1066,6 +1142,7 @@ export class UI implements UIPort {
     // The pad layout is CSSOM on the real elements; the mute chip mirrors the master volume.
     this.touchCtl.applyLayout(touchLayout(s));
     this.syncMute();
+    this.refreshGoalSurfaces();
   }
 
   // ================================================================ touch layout · mute (P3-7)
@@ -1113,6 +1190,7 @@ export class UI implements UIPort {
   setPortraitPainter(fn: PortraitPainter): void {
     this.portrait = fn;
     if (this.settings) this.settingsPanel.build();
+    if (this.screens.top === 'journal') this.paintJournal();
   }
 
   // ================================================================ PWA surfaces
@@ -1245,6 +1323,7 @@ export class UI implements UIPort {
   // ================================================================ screens
   private afterShow(): void {
     const top = this.screens.top;
+    if (top !== 'settings' || this.dataOpen) this.settingsPanel.cancelCapture();
     // Leaving the modal the inline name prompt sits on is a skip (the run still goes out under the fallback name).
     if (this.inlineName && top !== this.inlineName.screen) this.resolveInlineName(null);
     switch (top) {
@@ -1254,14 +1333,24 @@ export class UI implements UIPort {
       case 'name': this.prepName(); break;
       case 'daily': this.renderDaily(); break;
       case 'settings': this.resetArmed = false; break;
+      case 'journal': this.paintJournal(); break;
       default: break;
     }
     this.updateTouchVisibility();
     this.syncUpdateBar();
-    const root = this.dataOpen ? this.doc.getElementById('scr-data')
+    const nag = this.doc.getElementById('nag-rotate');
+    const overlay = nag && !nag.hidden ? nag
+      : this.tierTimeline ? this.doc.getElementById('scr-tier')
+        : this.dataOpen ? this.doc.getElementById('scr-data')
       : this.endingOpen && !MODAL_SCREENS.has(top) ? this.doc.getElementById('scr-ending')
-        : top === 'play' || top === 'boot' ? null : this.screens.el(top);
+        : null;
+    this.screens.setFocusRoot(overlay);
+    const root = overlay ?? (top === 'play' || top === 'boot' ? null : this.screens.el(top));
     this.nav.refresh(root);
+    if (top === 'select') {
+      this.updateCampaignPreview();
+      this.nav.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    }
     if (top !== 'name' && this.doc.activeElement === this.nameInput()) this.nameInput()?.blur();
   }
 
@@ -1273,7 +1362,7 @@ export class UI implements UIPort {
     this.dataOpen = true;
     e.classList.remove('is-leaving');
     e.classList.add('is-active');
-    this.nav.refresh(e);
+    this.afterShow();
   }
 
   private closeData(): void {
@@ -1284,6 +1373,7 @@ export class UI implements UIPort {
     e.classList.add('is-leaving');
     const timer = this.win?.setTimeout ?? setTimeout;
     timer(() => e.classList.remove('is-leaving'), LEAVE_MS);
+    this.screens.setFocusRoot(null);
   }
 
   /** The run ids of this player's accepted bests — what a deletion request has to quote (the player tag cannot be computed here). */
@@ -1316,6 +1406,7 @@ export class UI implements UIPort {
 
   /** Back / Escape: pop a modal or return to the title; the shell hears `back` either way. */
   private goBack(): void {
+    this.settingsPanel.cancelCapture();
     if (this.dataOpen) {
       this.sound('cancel');
       this.closeData();
@@ -1324,6 +1415,7 @@ export class UI implements UIPort {
       return;
     }
     const top = this.screens.top;
+    if (top === 'replay') { this.emit({ type: 'closeReplay' }); return; }
     if (top === 'pause') { this.emit({ type: 'resume' }); return; }
     // Backing out of the assist offer is 이번엔 괜찮다: the shell resumes the run.
     if (top === 'assist') { this.sound('cancel'); this.emit({ type: 'assistDecline', never: false }); return; }
@@ -1367,19 +1459,21 @@ export class UI implements UIPort {
       if (!btn || (btn as HTMLButtonElement).disabled) return;
       try { this.audio?.init(); } catch { /* first-gesture unlock is best-effort */ }
       this.onAct(btn.dataset.act ?? '', btn);
-      // A pointer click leaves the button DOM-focused; drop that focus so the
-      // menu cursor stays the only thing Enter / Space can activate.
-      try { btn.blur(); } catch { /* detached or non-focusable */ }
+      // Input already suppresses native Enter/Space activation. Preserve DOM
+      // focus so Tab and assistive technology agree with the visible cursor.
     });
     this.doc.addEventListener('pointerenter', (e) => {
       const t = e.target as Element | null;
       const n = (t?.closest?.(HOVER_SELECTOR) ?? null) as HTMLElement | null;
       if (n) this.nav.hover(n);
+      const card = t?.closest?.('.card') as HTMLElement | null;
+      if (card?.dataset.id && !(card as HTMLButtonElement).disabled && this.screens.top === 'select') this.updateCampaignPreview(card.dataset.id);
     }, true);
     // Tab users: the cursor follows DOM focus onto any navigable element.
     this.doc.addEventListener('focusin', (e) => {
       const t = e.target as Element | null;
       if (t && this.nav.els.includes(t as HTMLElement)) this.nav.hover(t);
+      if (this.screens.top === 'select') this.updateCampaignPreview();
     });
   }
 
@@ -1398,10 +1492,31 @@ export class UI implements UIPort {
       case 'daily': this.sound('confirm'); this.emit({ type: 'daily' }); break;
       case 'endless': this.sound('confirm'); this.emit({ type: 'endless' }); break;
       case 'resume': this.sound('cancel'); this.emit({ type: 'resume' }); break;
+      case 'checkpointRetry': this.sound('confirm'); this.emit({ type: 'checkpointRetry' }); break;
+      case 'watchReplay':
+        this.sound('confirm');
+        this.emit({ type: 'watchReplay', levelId: btn.dataset.id });
+        break;
+      case 'closeReplay': this.sound('cancel'); this.emit({ type: 'closeReplay' }); break;
+      case 'replayToggle': this.emit({ type: 'replayToggle' }); break;
+      case 'replayRestart': this.emit({ type: 'replayRestart' }); break;
+      case 'replaySpeed': {
+        const speed = Number(btn.dataset.speed);
+        if (speed === 0.5 || speed === 1 || speed === 2) this.emit({ type: 'replaySpeed', speed });
+        break;
+      }
+      case 'replayPrev': this.emit({ type: 'replayCheckpoint', direction: -1 }); break;
+      case 'replayNext': this.emit({ type: 'replayCheckpoint', direction: 1 }); break;
       case 'restart': this.sound('confirm'); this.emit({ type: 'restart' }); break;
       case 'quit': this.sound('cancel'); this.emit({ type: 'quit' }); break;
       case 'next': this.sound('confirm'); this.emit({ type: 'next' }); break;
       case 'retry': this.sound('confirm'); this.emit({ type: 'retry' }); break;
+      case 'retryGoal':
+        if (btn.dataset.goal && Object.hasOwn(GOAL_DESCRIPTIONS, btn.dataset.goal)) {
+          this.sound('confirm');
+          this.emit({ type: 'retryGoal', goal: btn.dataset.goal as GoalId });
+        }
+        break;
       case 'sameTower': this.sound('confirm'); this.emit({ type: 'sameTower' }); break;
       case 'newTower': this.sound('confirm'); this.emit({ type: 'newTower' }); break;
       case 'retryYesterday': this.sound('confirm'); this.emit({ type: 'retryYesterday' }); break;
@@ -1413,6 +1528,9 @@ export class UI implements UIPort {
       case 'openSelect': this.sound('confirm'); this.show('select'); this.emit({ type: 'openSelect' }); break;
       case 'openDaily': this.sound('confirm'); this.show('daily'); this.emit({ type: 'openDaily' }); break;
       case 'openSettings': this.sound('confirm'); this.show('settings'); this.emit({ type: 'openSettings' }); break;
+      case 'openJournal': this.sound('confirm'); this.show('journal'); this.emit({ type: 'openJournal' }); break;
+      case 'journalZones': this.jumpJournal('.journal__summary'); break;
+      case 'journalSkins': this.jumpJournal('.journal__skins'); break;
       case 'openCredits': this.sound('confirm'); this.show('credits'); this.emit({ type: 'openCredits' }); break;
       case 'openData': this.sound('confirm'); this.show('data'); break;
       case 'back':
@@ -1524,6 +1642,7 @@ export class UI implements UIPort {
     const tabs = [...this.doc.querySelectorAll<HTMLElement>('#set-tabs .tab')];
     for (const tab of tabs) {
       tab.addEventListener('click', () => {
+        this.settingsPanel.cancelCapture();
         for (const t of tabs) {
           const on = t === tab;
           t.classList.toggle('is-active', on);
@@ -1576,7 +1695,12 @@ export class UI implements UIPort {
   private updateNag(): void {
     const nag = this.doc.getElementById('nag-rotate');
     if (!nag) return;
+    const wasHidden = nag.hidden;
     nag.hidden = this.nagDismissed || !(this.touchCtl.coarse && wantsRotatePrompt(this.win));
+    if (wasHidden !== nag.hidden) {
+      if (!nag.hidden) this.pause();
+      this.afterShow();
+    }
   }
 
   private dismissNag(): void {
@@ -1626,6 +1750,23 @@ export class UI implements UIPort {
       hook.hidden = !seen;
       hook.textContent = seen ? TITLE_HOOK : '';
     }
+    const route = this.doc.getElementById('title-route');
+    if (route && prog) {
+      const tiers = BIOME_ORDER.filter((b) => this.levels.some((l) => l.biome === b));
+      route.replaceChildren(...tiers.map((b) => {
+        const levels = this.levels.filter((l) => l.biome === b);
+        const done = levels.filter((l) => prog.levels[l.id]?.done).length;
+        const point = el(this.doc, 'span', {
+          class: `title__route-stop${done === levels.length ? ' is-done' : ''}`,
+          title: `${BIOMES[b].kr} · ${done}/${levels.length}`,
+        }, el(this.doc, 'i', { 'aria-hidden': 'true' }), BIOMES[b].kr);
+        point.style.setProperty('--stop-c', BIOMES[b].accent);
+        return point;
+      }));
+      const status = this.doc.getElementById('title-journey-progress');
+      const done = this.levels.filter((l) => prog.levels[l.id]?.done).length;
+      if (status) status.textContent = done ? `${done} / ${this.levels.length} 구역 돌파` : '첫 도약을 기다리는 탑';
+    }
     this.refreshDailyNote();
     if (this.screens.top === 'title') this.nav.refresh(this.screens.el('title'), true);
   }
@@ -1658,6 +1799,76 @@ export class UI implements UIPort {
   }
 
   // ================================================================ select
+  private updateCampaignPreview(id?: string): void {
+    const focused = this.nav.current;
+    const target = id ?? (focused?.classList.contains('card') ? focused.dataset.id : this.campaignId);
+    if (!target || target === this.campaignId || !this.progress) return;
+    const def = this.levels.find((l) => l.id === target);
+    const panel = this.doc.getElementById('campaign-detail');
+    if (!def || !panel) return;
+    this.campaignId = target;
+    const d = this.doc, biome = BIOMES[def.biome], info = campaignInfo(def);
+    panel.style.setProperty('--preview-c', biome.accent);
+    panel.dataset.level = target;
+    const set = (key: string, text: string): void => { const node = d.getElementById(key); if (node) node.textContent = text; };
+    set('campaign-chapter', `${BIOME_ORDER.indexOf(def.biome) + 1}층 · ${biome.kr}`);
+    set('campaign-name', def.name);
+    set('campaign-story', CHAPTER_COPY[def.biome]);
+    d.getElementById('campaign-map')?.replaceChildren(terrainPreview(d, def, biome.accent));
+    d.getElementById('campaign-techniques')?.replaceChildren(...info.techniques.map((t) => el(d, 'span', {}, t)));
+    const rec = this.progress.levels[target];
+    const stat = (label: string, value: string): HTMLElement => el(d, 'div', {}, el(d, 'dt', {}, label), el(d, 'dd', {}, value));
+    d.getElementById('campaign-stats')?.replaceChildren(
+      stat('목표 시간', fmtTime(def.par)), stat('내 최고', rec?.bestTicks ? fmtTicks(rec.bestTicks) : '아직 미도전'),
+      stat('파편 · 유물', `${info.shards} · ${info.relics}`), stat('체크포인트', `${info.checkpoints}곳`),
+    );
+    const reason = unlockHint(def, this.levels, this.progress);
+    set('campaign-status', reason ?? (rec?.done ? `돌파 완료 · ${info.direction}` : `다음 도전 · ${info.direction}`));
+    const start = d.getElementById('campaign-start') as HTMLButtonElement | null;
+    if (start) { start.dataset.id = target; start.disabled = reason !== null; }
+    const watch = d.getElementById('campaign-watch') as HTMLButtonElement | null;
+    if (watch) {
+      watch.dataset.id = target;
+      watch.disabled = reason !== null || goalMasksFor(def) === null;
+    }
+    this.paintGoalPicker('campaign-goal', target);
+    if (this.screens.top === 'select') this.nav.refresh(this.screens.el('select'), true);
+  }
+
+  private paintGoalPicker(hostId: string, levelId: string | undefined | null): void {
+    const host = this.doc.getElementById(hostId);
+    if (!host) return;
+    const def = this.levels.find((level) => level.id === levelId);
+    const available = !!def && !!this.progress && !!this.settings && unlockedZones(this.levels, this.progress).has(def.id);
+    host.hidden = !available;
+    if (available && def && this.progress && this.settings) {
+      this.objectivePanel.picker(hostId, def, this.progress.levels[def.id], this.settings.goalTargets?.[def.id] ?? 'auto');
+    }
+  }
+
+  private refreshGoalSurfaces(): void {
+    this.paintGoalPicker('campaign-goal', this.campaignId);
+    this.paintGoalPicker('pause-goal', this.lastHud?.levelId);
+    const top = this.screens.top;
+    if (top === 'journal') this.paintJournal();
+    if (top === 'select' || top === 'pause' || top === 'journal') this.nav.refresh(this.screens.el(top), true);
+  }
+
+  private paintJournal(): void {
+    if (this.progress && this.settings) this.journalPanel.update(this.progress, this.settings, this.levels, this.skins);
+  }
+
+  private jumpJournal(selector: string): void {
+    if (this.screens.top !== 'journal') return;
+    const section = this.doc.querySelector<HTMLElement>(`#journal-body ${selector}`);
+    if (!section) return;
+    this.sound('move');
+    const button = (selector === '.journal__summary' ? this.doc.getElementById('journal-body') : section)
+      ?.querySelector<HTMLButtonElement>('button:not(:disabled)');
+    button?.focus({ preventScroll: true });
+    section.scrollIntoView?.({ block: 'start', behavior: prefersReducedMotion(this.win) ? 'auto' : 'smooth' });
+  }
+
   private card(lv: LevelDef, idx: number, rec: Progress['levels'][string] | undefined, unlocked: boolean, biome: Biome): HTMLButtonElement {
     const d = this.doc;
     const card = el(d, 'button', {
@@ -1733,6 +1944,10 @@ export class UI implements UIPort {
     const stats = this.doc.getElementById('pause-stats');
     if (!stats) return;
     const h = this.lastHud;
+    const watch = this.doc.getElementById('pause-watch');
+    const def = this.levels.find((l) => l.id === h?.levelId);
+    if (watch) watch.hidden = !def || goalMasksFor(def) === null;
+    this.paintGoalPicker('pause-goal', h?.levelId);
     const stat = (v: string, label: string) => el(this.doc, 'div', {}, el(this.doc, 'b', {}, v), label);
     stats.replaceChildren(
       stat(fmtTime(h?.time ?? 0), '경과'),

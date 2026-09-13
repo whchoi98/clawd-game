@@ -11,6 +11,17 @@ import type { CorpusDigest, EngineFamily } from '../../src/client/selftest.js';
 export const FIXTURE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'corpus-digests.json');
 export const FIXTURE_NAME = 'test/fixtures/corpus-digests.json';
 
+/**
+ * WebKit/Firefox omit the source URL for these network diagnostics. Optional
+ * webfonts can fail in offline/isolated QA without affecting the simulation.
+ * Call only for diagnostics without a source: same-origin errors still fail.
+ */
+export function optionalFontDiagnostic(text: string): boolean {
+  if (!/https:\/\/fonts\.(?:googleapis|gstatic)\.com\//.test(text)) return false;
+  return text.startsWith('Failed to preconnect to https://')
+    || (text.includes('Cross-Origin Request Blocked:') && text.includes('CORS request did not succeed'));
+}
+
 export interface Fixture { sim: number; gen: number; engine: string; digests: CorpusDigest[] }
 
 export interface SelftestStampData {

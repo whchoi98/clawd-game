@@ -109,7 +109,7 @@ async function start(): Promise<void> {
   const shot = spec !== null || isShotHarness(window);
 
   const save = new Save({ defaultBinds: DEFAULT_BINDS, reducedMotion: reducedMotion(), coarsePointer: coarsePointer() });
-  const renderer = new Renderer(canvas);
+  const renderer = new Renderer(canvas, { reducedMotion });
   // ?fps=1: frame statistics (p50 / p95 / display Hz / tier) as canvas text — never without the flag.
   renderer.showFps = new URLSearchParams(location.search).get('fps') === '1';
   const audio = createAudio();

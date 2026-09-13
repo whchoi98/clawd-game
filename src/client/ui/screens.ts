@@ -2,7 +2,7 @@
  * Screen registry, the modal stack and the unified menu cursor.
  *
  * Every readable surface is a `<section class="screen" id="scr-<name>">`.
- * Base screens (boot, title, select, daily, play) replace each other; modal
+ * Base screens (boot, title, select, daily, play, replay) replace each other; modal
  * screens (pause, result, over, settings, credits, name) stack on top of the
  * current base so the world — or the pause menu — stays visible behind the blur.
  *
@@ -15,9 +15,9 @@
 import type { InputPort, MenuAction, Screen } from '../contracts.js';
 
 export const SCREENS: readonly Screen[] = [
-  'boot', 'title', 'select', 'daily', 'settings', 'credits', 'play', 'pause', 'result', 'over', 'name', 'assist',
+  'boot', 'title', 'select', 'daily', 'settings', 'credits', 'journal', 'play', 'replay', 'pause', 'result', 'over', 'name', 'assist',
 ];
-export const MODAL_SCREENS: ReadonlySet<Screen> = new Set<Screen>(['pause', 'result', 'over', 'settings', 'credits', 'name', 'assist']);
+export const MODAL_SCREENS: ReadonlySet<Screen> = new Set<Screen>(['pause', 'result', 'over', 'settings', 'credits', 'journal', 'name', 'assist']);
 /** How long the leaving animation keeps a screen in the layout. */
 export const LEAVE_MS = 280;
 
@@ -78,12 +78,13 @@ export function lockSvg(doc: Document): SVGElement {
  */
 export function isVisible(node: Element, root: Element): boolean {
   let n: Element | null = node;
-  while (n && n !== root) {
-    if (n.hasAttribute('hidden')) return false;
+  while (n) {
+    if (n.hasAttribute('hidden') || n.hasAttribute('inert')) return false;
     if (n.classList.contains('pane') && !n.classList.contains('is-active')) return false;
+    if (n === root) return true;
     n = n.parentElement;
   }
-  return true;
+  return false;
 }
 
 /** Restart a CSS animation class on an element. */
@@ -110,11 +111,24 @@ export function validateName(raw: string): string | null {
 }
 
 // ---------------------------------------------------------------- screen stack
+const FOCUS_SELECTOR = 'a[href],button,input:not([type="hidden"]),select,textarea,[tabindex],[contenteditable="true"]';
+
+function focusable(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(FOCUS_SELECTOR)]
+    .filter((n) => (!n.hasAttribute('tabindex') || n.tabIndex >= 0) && !n.matches(':disabled') && isVisible(n, root));
+}
+
+function focusElement(node: HTMLElement): void {
+  try { node.focus({ preventScroll: true }); } catch { /* detached or unavailable DOM */ }
+}
+
 export class ScreenStack {
   base: Screen = 'boot';
   readonly modals: Screen[] = [];
   private readonly els = new Map<Screen, HTMLElement>();
   private readonly doc: Document;
+  private focusRoot: HTMLElement | null = null;
+  private readonly rememberedFocus = new WeakMap<HTMLElement, HTMLElement>();
 
   constructor(doc: Document) {
     this.doc = doc;
@@ -125,7 +139,9 @@ export class ScreenStack {
     // Adopt whatever the template marks active as the starting base.
     for (const [s, e] of this.els) {
       if (!MODAL_SCREENS.has(s) && e.classList.contains('is-active')) this.base = s;
+      if (MODAL_SCREENS.has(s) && !e.hasAttribute('role')) e.setAttribute('role', 'dialog');
     }
+    this.setFocusRoot(null);
   }
 
   el(s: Screen): HTMLElement | null { return this.els.get(s) ?? null; }
@@ -145,6 +161,7 @@ export class ScreenStack {
       this.base = name;
     }
     this.activate(name);
+    this.setFocusRoot(null);
     return baseChanged;
   }
 
@@ -153,8 +170,85 @@ export class ScreenStack {
     const m = this.modals.pop();
     if (!m) return null;
     this.deactivate(m);
+    this.setFocusRoot(null);
     return m;
   }
+
+  /**
+   * Hand focus to a manually managed overlay after it becomes visible.
+   * Pass null to return to the regular top screen. show()/pop() do this
+   * automatically; a UI returning to an ending/data overlay should reapply
+   * its root before refreshing the Navigator. The last focused control in
+   * each surface is restored when it is still available.
+   */
+  setFocusRoot(root: HTMLElement | null, preferred?: HTMLElement | null): void {
+    const previous = this.focusRoot;
+    const active = this.doc.activeElement as HTMLElement | null;
+    if (previous && active && previous.contains(active)) this.rememberedFocus.set(previous, active);
+    previous?.removeEventListener('keydown', this.onTab);
+    const next = root ?? this.el(this.top);
+    this.focusRoot = next;
+
+    if (next) {
+      next.removeAttribute('inert');
+      next.removeAttribute('aria-hidden');
+      if (next.getAttribute('role') === 'dialog' || next.getAttribute('role') === 'alertdialog') {
+        next.setAttribute('aria-modal', 'true');
+      }
+      next.addEventListener('keydown', this.onTab);
+      const gameplay = next.id === 'scr-play' || next.id === 'scr-boot';
+      const saved = preferred ?? (gameplay ? next : active && next.contains(active) ? active : this.rememberedFocus.get(next));
+      const canRestore = saved && next.contains(saved) && isVisible(saved, next) && !saved.matches(':disabled');
+      if (canRestore) {
+        if (saved === next && !next.hasAttribute('tabindex')) next.setAttribute('tabindex', '-1');
+        focusElement(saved);
+      }
+      else this.focusInitial(next);
+    }
+
+    // Move focus first, then hide covered surfaces from keyboard and AT.
+    // Leaving animations can remain visible without keeping live controls.
+    for (const e of this.els.values()) if (e !== next) this.makeInert(e);
+    if (previous && previous !== next) this.makeInert(previous);
+  }
+
+  private makeInert(root: HTMLElement): void {
+    root.setAttribute('inert', '');
+    root.setAttribute('aria-hidden', 'true');
+    root.removeAttribute('aria-modal');
+  }
+
+  private focusInitial(root: HTMLElement): void {
+    // Native button activation must not turn Enter/Space into a pause on entry.
+    const controls = root.id === 'scr-play' || root.id === 'scr-boot' ? [] : focusable(root);
+    const target = controls.find((n) => n.hasAttribute('autofocus'))
+      ?? controls.find((n) => n.hasAttribute('data-default'))
+      ?? controls.find((n) => n.classList.contains('menu__item'))
+      ?? controls.find((n) => n.classList.contains('card'))
+      ?? controls[0];
+    if (target) focusElement(target);
+    else {
+      if (!root.hasAttribute('tabindex')) root.setAttribute('tabindex', '-1');
+      focusElement(root);
+    }
+  }
+
+  private readonly onTab = (e: KeyboardEvent): void => {
+    const root = this.focusRoot;
+    if (!root || e.key !== 'Tab' || e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Base screens may let Tab leave the application. Modals and explicitly
+    // handed-off overlays own focus until their close/cancel action runs.
+    if (root === this.el(this.top) && !MODAL_SCREENS.has(this.top)) return;
+    const controls = focusable(root);
+    const index = controls.indexOf(this.doc.activeElement as HTMLElement);
+    if (!controls.length) {
+      e.preventDefault();
+      this.focusInitial(root);
+    } else if (index < 0 || (e.shiftKey ? index === 0 : index === controls.length - 1)) {
+      e.preventDefault();
+      focusElement(controls[e.shiftKey ? controls.length - 1 : 0]);
+    }
+  };
 
   private activate(s: Screen): void {
     const e = this.els.get(s);
@@ -207,19 +301,26 @@ export class Navigator {
    * Re-collect navigable elements under `root` (null clears the cursor). With
    * `keep`, the cursor stays on the same element when it is still there;
    * otherwise it prefers `[data-default]`, then the first menu item or card.
+   * Restore lost DOM focus to the new cursor, preserving live controls and editors.
    */
   refresh(root: HTMLElement | null, keep = false): void {
     const prev = this.current;
+    const active = this.doc.activeElement as HTMLElement | null;
     this.els = root
       ? [...root.querySelectorAll<HTMLElement>(NAV_SELECTOR)].filter((n) => isVisible(n, root))
       : [];
     let i = -1;
     if (keep && prev) i = this.els.indexOf(prev);
+    if (i < 0) i = this.els.indexOf(active as HTMLElement);
     if (i < 0) i = this.els.findIndex((n) => n.hasAttribute('data-default'));
     if (i < 0) i = this.els.findIndex((n) => n.classList.contains('menu__item'));
     if (i < 0) i = this.els.findIndex((n) => n.classList.contains('card'));
     this.index = Math.max(0, i);
     this.paint();
+    const hasFocus = active && active !== this.doc.body && active !== this.doc.documentElement
+      && active.isConnected && !active.matches(':disabled') && isVisible(active, this.doc.documentElement);
+    const current = this.current;
+    if (root?.isConnected && current && !hasFocus) focusElement(current);
   }
 
   paint(): void {
@@ -273,6 +374,7 @@ export class Navigator {
     if (!target || target === cur) return false;
     this.index = this.els.indexOf(target);
     this.paint();
+    focusElement(target);
     target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     this.hooks.onMove?.();
     return true;

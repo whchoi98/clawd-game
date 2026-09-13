@@ -21,7 +21,7 @@ export const APP_PORT = 8080;
  * and public/ with tools/build.mjs + tools/lib.mjs; nothing else is needed.
  */
 export const IMAGE_CONTEXT_EXCLUDE: readonly string[] = [
-  'node_modules', 'dist', 'cdk.out', '.git', '.github', '.gitignore', '.claude', '.superpowers', 'docs', 'test', 'levels',
+  'node_modules', 'dist', 'cdk.out', '.git', '.github', '.gitignore', '.claude', '.agents', '.codex', '.superpowers', 'docs', 'test', 'levels',
   'tools/dev.mjs', 'tools/qa', 'tools/load', 'tools/postdeploy.*', 'tools/icons.*', 'tools/release.*', 'tools/stats.*', 'tools/solve.ts', 'tools/hash-corpus.ts', 'infra', 'cdk.json', 'cdk.context.json',
   'cdk-outputs.json', 'vitest.config.ts', 'clawd-jump.tar.gz', 'LICENSE', '**/*.md', '*.log', '.env',
 ];

@@ -167,11 +167,13 @@ async function withProfile(
     try {
       const note = await fn();
       rows.push({ profile: profile.id, step: name, ok: true, ms: Date.now() - t0, note: note ?? '' });
+      process.stdout.write(`PASS ${profile.id}/${name}${note ? `: ${note}` : ''}\n`);
       return true;
     } catch (err) {
       const text = (err instanceof Error ? err.message : String(err)).split('\n')[0];
       rows.push({ profile: profile.id, step: name, ok: false, ms: Date.now() - t0, note: text });
       issues.push({ profile: profile.id, step: name, kind: 'assert', text });
+      process.stdout.write(`FAIL ${profile.id}/${name}: ${text}\n`);
       return false;
     }
   };
@@ -191,16 +193,22 @@ async function playProfile(browser: Browser, profile: Profile, rows: Row[], issu
       await page.goto(`${BASE_URL}/`, { waitUntil: 'domcontentloaded' });
       await page.locator('#scr-title').waitFor({ state: 'visible' });
       await page.waitForTimeout(SETTLE_MS);
-      const climb = await boxOf(page, '#title-menu [data-act="openSelect"]');
-      const credits = await boxOf(page, '#title-menu [data-act="openCredits"]');
+      const entries = [
+        ['openSelect', '탑 오르기'], ['openJournal', '도전 수첩'],
+        ['openSettings', '설정'], ['openCredits', '크레딧'],
+      ];
+      const boxes = await Promise.all(entries.map(async ([action, label]) => ({
+        label, box: await boxOf(page, `#scr-title [data-act="${action}"]`),
+      })));
       await page.screenshot({ path: join(OUT_DIR, `mobile-${profile.id}-title.png`) });
-      check(insideViewport(climb, vp), `탑 오르기 ${fmtBox(climb)} leaves the ${vp.width}x${vp.height} viewport`);
-      check(insideViewport(credits, vp), `만든 것들 ${fmtBox(credits)} leaves the ${vp.width}x${vp.height} viewport`);
+      for (const { label, box } of boxes) {
+        check(insideViewport(box, vp), `${label} ${fmtBox(box)} leaves the ${vp.width}x${vp.height} viewport`);
+      }
       const scrollable = await page.evaluate(() => {
         const s = document.getElementById('scr-title');
         return s ? s.scrollHeight - s.clientHeight : 0;
       });
-      return `탑 오르기 ${fmtBox(climb)} · 만든 것들 ${fmtBox(credits)}${scrollable > 1 ? ` · title scrolls ${Math.round(scrollable)}px` : ''}`;
+      return `${boxes.map(({ label, box }) => `${label} ${fmtBox(box)}`).join(' · ')}${scrollable > 1 ? ` · title scrolls ${Math.round(scrollable)}px` : ''}`;
     });
     if (!titleOk) return;
 

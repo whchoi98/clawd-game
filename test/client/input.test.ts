@@ -188,6 +188,48 @@ describe('Input — keyboard', () => {
     field.remove();
   });
 
+  it('Escape on a focused range emits one cancel without gameplay or pause input', () => {
+    const range = document.createElement('input');
+    range.type = 'range';
+    document.body.appendChild(range);
+    range.focus();
+    const escape = new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true, cancelable: true });
+    range.dispatchEvent(escape);
+    range.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', repeat: true, bubbles: true }));
+    input.poll();
+    expect(escape.defaultPrevented).toBe(true);
+    expect(input.takeMenu()).toEqual(['cancel']);
+    expect(input.held()).toBe(0);
+    expect(input.takeLatched()).toBe(0);
+    up('Escape');
+    input.poll();
+    expect(input.takeMenu()).toEqual([]);
+    range.remove();
+  });
+
+  it('keeps range arrows native and leaves text-field or composing Escape alone', () => {
+    const range = document.createElement('input');
+    range.type = 'range';
+    const text = document.createElement('input');
+    text.type = 'text';
+    document.body.append(range, text);
+    for (const code of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+      const e = new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true });
+      range.dispatchEvent(e);
+      expect(e.defaultPrevented).toBe(false);
+    }
+    for (const [target, isComposing] of [[text, false], [text, true], [range, true]] as const) {
+      const e = new KeyboardEvent('keydown', { code: 'Escape', bubbles: true, cancelable: true, isComposing });
+      target.dispatchEvent(e);
+      expect(e.defaultPrevented).toBe(false);
+    }
+    input.poll();
+    expect(input.takeMenu()).toEqual([]);
+    expect(input.takeLatched()).toBe(0);
+    range.remove();
+    text.remove();
+  });
+
   it('leaves browser shortcuts (ctrl / meta combos) alone', () => {
     down('KeyR', { ctrlKey: true });
     down('KeyR', { metaKey: true });
@@ -537,6 +579,29 @@ describe('Input — rebind capture', () => {
     down('KeyM');
     expect(cb).not.toHaveBeenCalled();
     expect(input.capturing).toBe(false);
+  });
+
+  it('reset cancels a pending capture once and lets the next key navigate normally', () => {
+    const captured: (string | null)[] = [];
+    input.capture((code) => captured.push(code));
+    input.reset();
+    input.reset();
+    down('ArrowDown');
+    input.poll();
+    expect(captured).toEqual([null]);
+    expect(input.capturing).toBe(false);
+    expect(input.takeMenu()).toEqual(['down']);
+  });
+
+  it('losing focus cancels capture instead of rebinding the first key after returning', () => {
+    const captured: (string | null)[] = [];
+    input.capture((code) => captured.push(code));
+    window.dispatchEvent(new Event('blur'));
+    down('Enter');
+    input.poll();
+    expect(captured).toEqual([null]);
+    expect(input.capturing).toBe(false);
+    expect(input.takeMenu()).toEqual(['confirm']);
   });
 });
 

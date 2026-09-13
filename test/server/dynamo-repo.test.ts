@@ -459,40 +459,90 @@ describe('DynamoRepo', () => {
       expect(again[2].Delete).toEqual({ TableName: TABLE, Key: { pk: 'CODE#OLDCODE1', sk: 'META' } });
     });
 
-    it('takeSnapshot consumes the CODE item with a conditional delete, reads the snapshot and removes it', async () => {
+    it('takeSnapshot reads both items consistently before consuming them in a conditional transaction', async () => {
       const { client, repo } = setup(() => 1_760_000_000_000);
       client.responses.push(
-        { Attributes: { pk: 'CODE#ABCDEFGH', sk: 'META', playerId: 'p1', ttl: 1_760_600_000 } },
+        { Item: { pk: 'CODE#ABCDEFGH', sk: 'META', playerId: 'p1', ttl: 1_760_600_000 } },
         { Item: { pk: 'PLAYER#p1', sk: 'SNAPSHOT', code: 'ABCDEFGH', blob: '{"a":1}', ttl: 1_760_600_000 } },
         {},
       );
       expect(await repo.takeSnapshot('ABCDEFGH')).toEqual({ playerId: 'p1', blob: '{"a":1}' });
-      expect(client.sent.map((s) => s.name)).toEqual([DeleteCommand.name, GetCommand.name, DeleteCommand.name]);
+      expect(client.sent.map((s) => s.name)).toEqual([GetCommand.name, GetCommand.name, TransactWriteCommand.name]);
       expect(client.sent[0].input).toEqual({
-        TableName: TABLE, Key: { pk: 'CODE#ABCDEFGH', sk: 'META' }, ConditionExpression: 'attribute_exists(pk)', ReturnValues: 'ALL_OLD',
+        TableName: TABLE, Key: { pk: 'CODE#ABCDEFGH', sk: 'META' }, ConsistentRead: true,
       });
-      expect(client.sent[1].input).toMatchObject({ Key: { pk: 'PLAYER#p1', sk: 'SNAPSHOT' } });
-      expect(client.sent[2].input).toMatchObject({
-        Key: { pk: 'PLAYER#p1', sk: 'SNAPSHOT' }, ConditionExpression: 'code = :code', ExpressionAttributeValues: { ':code': 'ABCDEFGH' },
+      expect(client.sent[1].input).toEqual({
+        TableName: TABLE, Key: { pk: 'PLAYER#p1', sk: 'SNAPSHOT' }, ConsistentRead: true,
+      });
+      const items = client.sent[2].input.TransactItems as TxItem[];
+      expect(items).toHaveLength(2);
+      expect(items[0].Delete).toEqual({
+        TableName: TABLE, Key: { pk: 'CODE#ABCDEFGH', sk: 'META' },
+        ConditionExpression: 'playerId = :playerId AND #ttl = :ttl AND #ttl > :now',
+        ExpressionAttributeNames: { '#ttl': 'ttl' },
+        ExpressionAttributeValues: { ':playerId': 'p1', ':ttl': 1_760_600_000, ':now': 1_760_000_000 },
+      });
+      expect(items[1].Delete).toEqual({
+        TableName: TABLE, Key: { pk: 'PLAYER#p1', sk: 'SNAPSHOT' },
+        ConditionExpression: 'code = :code AND #blob = :blob AND #ttl = :ttl AND #ttl > :now',
+        ExpressionAttributeNames: { '#blob': 'blob', '#ttl': 'ttl' },
+        ExpressionAttributeValues: { ':code': 'ABCDEFGH', ':blob': '{"a":1}', ':ttl': 1_760_600_000, ':now': 1_760_000_000 },
       });
     });
 
-    it('takeSnapshot is null for an unknown / used code (condition failed), an expired code, or a snapshot that moved on', async () => {
+    it('takeSnapshot is null without writing for an unknown / used code, an expired code, or a snapshot that moved on', async () => {
       const { client, repo } = setup(() => 1_760_000_000_000);
-      client.responses.push(conditionFailed());
+      client.responses.push({});
       expect(await repo.takeSnapshot('ABCDEFGH')).toBeNull();
       expect(client.sent).toHaveLength(1);
       // expired (TTL deletion is lazy)
-      client.responses.push({ Attributes: { playerId: 'p1', ttl: 1_759_000_000 } });
+      client.responses.push({ Item: { playerId: 'p1', ttl: 1_759_000_000 } });
       expect(await repo.takeSnapshot('ABCDEFGH')).toBeNull();
       expect(client.sent).toHaveLength(2);
       // the player made a newer code: the snapshot no longer belongs to this one
-      client.responses.push({ Attributes: { playerId: 'p1', ttl: 1_760_600_000 } }, { Item: { code: 'NEWCODE2', blob: '{}', ttl: 1_760_600_000 } });
+      client.responses.push({ Item: { playerId: 'p1', ttl: 1_760_600_000 } }, { Item: { code: 'NEWCODE2', blob: '{}', ttl: 1_760_600_000 } });
       expect(await repo.takeSnapshot('ABCDEFGH')).toBeNull();
       expect(client.sent).toHaveLength(4);
+      expect(client.sent.every((s) => s.name === GetCommand.name)).toBe(true);
       // other store errors surface
       client.responses.push(Object.assign(new Error('boom'), { name: 'ProvisionedThroughputExceededException' }));
       await expect(repo.takeSnapshot('ABCDEFGH')).rejects.toThrow('boom');
+    });
+
+    it('a failed snapshot read leaves the code available for retry', async () => {
+      const { client, repo } = setup(() => 1_760_000_000_000);
+      const meta = { playerId: 'p1', ttl: 1_760_600_000 };
+      // Return both shapes so the old destructive implementation reaches the failing read too.
+      client.responses.push({ Item: meta, Attributes: meta }, new Error('read unavailable'));
+      await expect(repo.takeSnapshot('ABCDEFGH')).rejects.toThrow('read unavailable');
+      expect(client.sent.map((s) => s.name)).toEqual([GetCommand.name, GetCommand.name]);
+      client.responses.push({ Item: meta }, { Item: { code: 'ABCDEFGH', blob: '{"a":1}', ttl: meta.ttl } }, {});
+      await expect(repo.takeSnapshot('ABCDEFGH')).resolves.toEqual({ playerId: 'p1', blob: '{"a":1}' });
+    });
+
+    it.each([
+      ['ConditionalCheckFailed', 'None'],
+      ['None', 'ConditionalCheckFailed'],
+    ])('refuses a concurrent consume or replacement atomically (%s, %s)', async (first, second) => {
+      const { client, repo } = setup(() => 1_760_000_000_000);
+      client.responses.push(
+        { Item: { playerId: 'p1', ttl: 1_760_600_000 } },
+        { Item: { code: 'ABCDEFGH', blob: '{"a":1}', ttl: 1_760_600_000 } },
+        cancelled([first, second]),
+      );
+      expect(await repo.takeSnapshot('ABCDEFGH')).toBeNull();
+      expect(client.sent.map((s) => s.name)).toEqual([GetCommand.name, GetCommand.name, TransactWriteCommand.name]);
+    });
+
+    it('propagates transient transaction failures instead of reporting the code as gone', async () => {
+      const { client, repo } = setup(() => 1_760_000_000_000);
+      const err = cancelled(['ProvisionedThroughputExceeded', 'None']);
+      client.responses.push(
+        { Item: { playerId: 'p1', ttl: 1_760_600_000 } },
+        { Item: { code: 'ABCDEFGH', blob: '{"a":1}', ttl: 1_760_600_000 } },
+        err,
+      );
+      await expect(repo.takeSnapshot('ABCDEFGH')).rejects.toBe(err);
     });
   });
 

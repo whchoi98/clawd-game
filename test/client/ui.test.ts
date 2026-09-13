@@ -342,6 +342,86 @@ describe('UI menu navigation', () => {
   });
 });
 
+describe('UI mastery journeys', () => {
+  it('opens the journal over pause and returns focus to its opener without resuming', () => {
+    const { ui, input, actions } = setup();
+    ui.refreshSelect(makeProgress(), REAL_LEVELS);
+    ui.hud(makeHud({ levelId: 't1' }));
+    ui.show('play');
+    ui.show('pause');
+    const opener = $('#scr-pause [data-act="openJournal"]');
+    opener.focus();
+    opener.click();
+    expect(ui.screen).toBe('journal');
+    expect(active('pause')).toBe(true);
+    expect($('#scr-journal').getAttribute('aria-modal')).toBe('true');
+    expect(document.querySelectorAll('[data-journal-zone]')).toHaveLength(16);
+    input.queue.push('cancel');
+    ui.frame(1 / 60, input);
+    expect(ui.screen).toBe('pause');
+    expect(document.activeElement).toBe(opener);
+    expect(actions.some((action) => action.type === 'resume')).toBe(false);
+  });
+
+  it('emits a controlled goal selection and preserves focus through a settings refresh', () => {
+    const { ui, settings, actions } = setup();
+    ui.refreshSelect(makeProgress(), REAL_LEVELS);
+    ui.show('journal');
+    const key = 'goal:t1:nodeath';
+    const button = $(`[data-journal-key="${key}"]`);
+    button.focus();
+    button.click();
+    expect(actions.at(-1)).toEqual({ type: 'pinGoal', levelId: 't1', preference: 'nodeath' });
+    expect(settings.goalTargets).toBeUndefined();
+    settings.goalTargets = { t1: 'nodeath' };
+    ui.applySettings(settings);
+    expect(document.activeElement?.getAttribute('data-journal-key')).toBe(key);
+    expect($(`[data-journal-key="${key}"]`).getAttribute('aria-pressed')).toBe('true');
+    $(`[data-journal-key="${key}"]`).click();
+    expect(actions.at(-1)).toEqual({ type: 'pinGoal', levelId: 't1', preference: 'free' });
+  });
+
+  it('repaints campaign goals without changing the selected zone and keeps resume the pause default', () => {
+    const { ui, settings, input, actions } = setup();
+    ui.refreshSelect(makeProgress(['t1']), REAL_LEVELS);
+    ui.show('select');
+    $('#sel-tiers [data-id="t2"]').focus();
+    $('#campaign-goal .goal-picker__toggle').click();
+    $('#campaign-goal [data-goal-choice="par"]').focus();
+    settings.goalTargets = { t2: 'par' };
+    ui.applySettings(settings);
+    expect($('#campaign-detail').dataset.level).toBe('t2');
+    expect($('#campaign-goal [data-goal-choice="par"]').getAttribute('aria-pressed')).toBe('true');
+    expect(document.activeElement).toBe($('#campaign-goal [data-goal-choice="par"]'));
+    ui.hud(makeHud({ levelId: 't2' }));
+    ui.show('play');
+    ui.show('pause');
+    expect($('#pause-goal').textContent).toContain(MEDAL_KR.par);
+    input.queue.push('confirm');
+    ui.frame(1 / 60, input);
+    expect(actions.at(-1)).toEqual({ type: 'resume' });
+  });
+
+  it('shows actual goal feedback and emits the result target without changing the save', () => {
+    const { ui, settings, actions } = setup();
+    const objective = { id: 'shards' as const, label: MEDAL_KR.shards, detail: '파편 20 / 20개 · 수집 완료', progress: 1, state: 'ready' as const, practice: false };
+    ui.show('play');
+    ui.hud(makeHud({ objective }));
+    expect($('#hud-objective').hidden).toBe(false);
+    expect($('#hud-objective').dataset.state).toBe('ready');
+    ui.hud(makeHud());
+    expect($('#hud-objective').hidden).toBe(true);
+    ui.showResult({
+      summary: makeSummary(), levelName: '첫 물결', personalBest: false, stars: 2, submit: { state: 'idle' },
+      objective: { ...objective, state: 'complete' },
+      nextGoal: { id: 'nodeath', label: MEDAL_KR.nodeath, detail: '한 번도 쓰러지지 않고 클리어' },
+    });
+    $('#res-objective [data-act="retryGoal"]').click();
+    expect(actions.at(-1)).toEqual({ type: 'retryGoal', goal: 'nodeath' });
+    expect(settings.goalTargets).toBeUndefined();
+  });
+});
+
 describe('UI HUD', () => {
   beforeEach(() => { document.body.innerHTML = ''; });
 
@@ -923,6 +1003,20 @@ describe('UI settings', () => {
     expect($('#pane-ctrl [data-bind="jump"][data-slot="0"]').textContent).toBe('Space');
   });
 
+  it('a controller cancel stops rebinding without leaving settings or changing the key', () => {
+    const { ui, input, actions } = setup();
+    ui.show('settings');
+    $('#set-tabs [data-tab="ctrl"]').click();
+    const bind = $('#pane-ctrl [data-bind="jump"][data-slot="0"]');
+    bind.click();
+    input.queue.push('cancel');
+    ui.frame(1 / 60, input);
+    expect(bind.classList.contains('listening')).toBe(false);
+    expect(bind.textContent).toBe('Space');
+    expect(ui.screen).toBe('settings');
+    expect(actions.some((a) => a.type === 'rebind')).toBe(false);
+  });
+
   it('progress reset needs two presses', () => {
     const { ui, actions } = setup();
     ui.show('settings');
@@ -1048,15 +1142,16 @@ describe('UI rotate prompt', () => {
 
   it('shows on a portrait touch device and "그래도 계속" dismisses it for the session', () => {
     portraitPhone();
-    const { ui } = setup();
+    const { ui, input } = setup();
     // a real finger makes the device coarse
     document.dispatchEvent(new Event('touchstart'));
     const nag = $('#nag-rotate');
     expect(nag.hidden).toBe(false);
-    // the prompt's button is not part of the menu cursor
+    // The prompt owns confirmation while the underlying title is inert.
     ui.show('title');
-    expect(document.querySelector('.nag__skip.is-cursor')).toBeNull();
-    $('#nag-rotate [data-act="dismissNag"]').click();
+    expect(document.querySelector('.nag__skip.is-cursor')).not.toBeNull();
+    input.queue.push('confirm');
+    ui.frame(1 / 60, input);
     expect(nag.hidden).toBe(true);
     expect(sessionStorage.getItem(NAG_DISMISSED_KEY)).toBe('1');
     // a rotation re-check keeps it hidden
@@ -1514,6 +1609,76 @@ describe('UI with the real input layer', () => {
     expect(e.defaultPrevented).toBe(false);
     input.poll();
     expect(input.takeMenu()).toEqual([]);
+  });
+
+  it('closing settings with a pointer cancels the real pending input capture', () => {
+    const { ui, actions } = realSetup();
+    ui.show('title');
+    ui.show('settings');
+    $('#set-tabs [data-tab="ctrl"]').click();
+    $('#pane-ctrl [data-bind="jump"][data-slot="0"]').click();
+    expect(input.capturing).toBe(true);
+    $('#scr-settings [data-act="close"]').click();
+    expect(ui.screen).toBe('title');
+    expect(input.capturing).toBe(false);
+    const rebinds = actions.filter((a) => a.type === 'rebind').length;
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', bubbles: true }));
+    expect(actions.filter((a) => a.type === 'rebind')).toHaveLength(rebinds);
+  });
+
+  it('the data notice takes focus from credits and makes the covered controls inert', () => {
+    const { ui } = realSetup();
+    ui.show('credits');
+    $('#scr-credits [data-act="openData"]').click();
+    const notice = $('#scr-data');
+    expect(notice.contains(document.activeElement)).toBe(true);
+    expect($('#scr-credits').hasAttribute('inert')).toBe(true);
+    expect(notice.hasAttribute('inert')).toBe(false);
+    $('#scr-data [data-act="close"]').click();
+    expect(ui.screen).toBe('credits');
+    expect($('#scr-credits').contains(document.activeElement)).toBe(true);
+  });
+
+  it('keeps the chosen campaign zone when a background record refresh arrives at the Start button', () => {
+    const { ui } = realSetup();
+    ui.show('select');
+    $('#sel-tiers .card[data-id="t3"]').focus();
+    const start = $<HTMLButtonElement>('#campaign-start');
+    expect(start.dataset.id).toBe('t3');
+    start.focus();
+    const updated = settledProgress();
+    updated.levels.t1.bestTicks = 4800;
+    ui.refreshSelect(updated, LEVELS);
+    expect(start.dataset.id).toBe('t3');
+    expect($('#campaign-watch').dataset.id).toBe('t3');
+    expect($('#campaign-detail').dataset.level).toBe('t3');
+    expect(document.activeElement).toBe(start);
+  });
+
+  it('Escape closes a replay while a pause-only key toggles playback', () => {
+    const { ui, actions } = realSetup();
+    ui.show('replay');
+    $('#replay-toggle').focus();
+    $('#replay-toggle').dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true, cancelable: true }));
+    input.poll();
+    ui.frame(1 / 60, input);
+    expect(actions.at(-1)).toEqual({ type: 'closeReplay' });
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Escape', bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyP', key: 'p', bubbles: true }));
+    input.poll();
+    ui.frame(1 / 60, input);
+    expect(actions.at(-1)).toEqual({ type: 'replayToggle' });
+  });
+
+  it('keeps the campaign selection when a record refresh arrives while watching a replay', () => {
+    const { ui } = realSetup();
+    ui.show('select');
+    $('#sel-tiers .card[data-id="t3"]').focus();
+    ui.show('replay');
+    ui.refreshSelect(settledProgress(), LEVELS);
+    ui.show('select');
+    expect($('#campaign-start').dataset.id).toBe('t3');
+    expect($('#campaign-watch').dataset.id).toBe('t3');
   });
 });
 

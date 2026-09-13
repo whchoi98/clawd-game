@@ -83,6 +83,8 @@ export interface SettingsPanelDeps {
   keyLabel: (code: string) => string;
   /** Start a rebind capture through the input layer; false when no input layer is attached yet. */
   capture: (cb: (code: string | null) => void) => boolean;
+  /** Detach a pending input capture. The existing InputPort.reset() supplies this hook. */
+  cancelCapture?: () => void;
   defaultBinds: () => Binds;
   onChange: () => void;
   onRebind: (binds: Binds) => void;
@@ -105,6 +107,7 @@ export interface SettingsPanelDeps {
 
 export class SettingsPanel {
   private listening: HTMLButtonElement | null = null;
+  private captureId = 0;
   private readonly clashTimers = new WeakMap<HTMLButtonElement, ReturnType<typeof setTimeout>>();
   private readonly d: SettingsPanelDeps;
 
@@ -114,6 +117,21 @@ export class SettingsPanel {
 
   /** True while a rebind button waits for a key: menu navigation must stand still. */
   get capturing(): boolean { return this.listening !== null; }
+
+  /**
+   * Cancel before a menu/tab exit or on a controller cancel edge. Silent so
+   * the caller can own the navigation sound; stale callbacks cannot rebind.
+   */
+  cancelCapture(): boolean {
+    const b = this.listening;
+    if (!b) return false;
+    this.listening = null;
+    this.captureId++;
+    b.classList.remove('listening');
+    b.textContent = this.labelFor(b.dataset.bind as BindAction, Number(b.dataset.slot ?? 0));
+    this.d.cancelCapture?.();
+    return true;
+  }
 
   /** Whether build() has populated the panes at least once. */
   get built(): boolean { return this.wasBuilt; }
@@ -188,6 +206,7 @@ export class SettingsPanel {
   }
 
   build(): void {
+    this.cancelCapture();
     const s = this.d.settings();
     const doc = this.d.doc;
     const av = doc.getElementById('pane-av');
@@ -195,8 +214,6 @@ export class SettingsPanel {
     const a11y = doc.getElementById('pane-a11y');
     const data = doc.getElementById('pane-data');
     if (!s || !av || !ctrl || !a11y || !data) return;
-    this.listening = null;
-
     av.replaceChildren(
       this.sliderRow('마스터 볼륨', 'master'),
       this.sliderRow('음악', 'music'),
@@ -456,11 +473,16 @@ export class SettingsPanel {
   private listen(b: HTMLButtonElement, action: BindAction, slot: number): void {
     if (this.listening) return;
     this.clearClash(b);
-    const started = this.d.capture((code) => this.captured(b, action, slot, code));
-    if (!started) { this.d.sound('error'); return; }
+    const captureId = ++this.captureId;
     this.listening = b;
     b.classList.add('listening');
     b.textContent = '입력…';
+    const started = this.d.capture((code) => {
+      if (captureId !== this.captureId || this.listening !== b) return;
+      this.captureId++;
+      this.captured(b, action, slot, code);
+    });
+    if (!started) { this.cancelCapture(); this.d.sound('error'); }
   }
 
   private captured(b: HTMLButtonElement, action: BindAction, slot: number, code: string | null): void {

@@ -75,6 +75,15 @@ function reasonFor(status: number, body: unknown): string {
   return 'server-error';
 }
 
+/** No complete response means no verdict; the identical submission may safely be retried. */
+function transportError(err: unknown): ApiError {
+  if (err instanceof ApiError) return err;
+  const name = (err as { name?: string } | null)?.name;
+  if (name === 'AbortError') return new ApiError('request timed out', 0, 'timeout');
+  if (name === 'SyntaxError') return new ApiError('invalid response JSON', 0, 'bad-response');
+  return new ApiError('network error', 0, 'network');
+}
+
 export class Api implements ApiPort {
   private readonly base: string;
   private readonly fetchFn: FetchLike;
@@ -160,32 +169,47 @@ export class Api implements ApiPort {
     path: string, init: RequestInit, schema: S, okStatuses: number[] = [],
   ): Promise<z.infer<S>> {
     const ctl = typeof AbortController === 'function' ? new AbortController() : null;
-    const timer = ctl ? setTimeout(() => ctl.abort(), this.timeoutMs) : null;
-    let res: Response;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Race both stages against the same deadline, including fetch adapters whose
+    // body streams do not react to AbortSignal. Native fetch is also cancelled.
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new ApiError('request timed out', 0, 'timeout'));
+        ctl?.abort();
+      }, this.timeoutMs);
+    });
     try {
-      res = await this.fetchFn(`${this.base}${path}`, {
-        ...init,
-        headers: { accept: 'application/json', ...(init.headers as Record<string, string> | undefined) },
-        signal: ctl?.signal,
-        credentials: 'same-origin',
-      });
-    } catch (err) {
-      const aborted = (err as { name?: string } | null)?.name === 'AbortError';
-      throw new ApiError(aborted ? 'request timed out' : 'network error', 0, aborted ? 'timeout' : 'network');
+      let res: Response;
+      try {
+        res = await Promise.race([this.fetchFn(`${this.base}${path}`, {
+          ...init,
+          headers: { accept: 'application/json', ...(init.headers as Record<string, string> | undefined) },
+          signal: ctl?.signal,
+          credentials: 'same-origin',
+        }), deadline]);
+      } catch (err) {
+        throw transportError(err);
+      }
+
+      let body: unknown = null;
+      try {
+        body = await Promise.race([res.json(), deadline]);
+      } catch (err) {
+        if (res.ok) throw transportError(err);
+        // A known HTTP refusal remains authoritative even when its error body
+        // is missing, malformed or timed out (429 / 5xx still retain their status).
+      }
+
+      if (!res.ok && !okStatuses.includes(res.status)) {
+        let headers: { get(name: string): string | null } | null = null;
+        try { headers = res.headers ?? null; } catch { headers = null; }
+        throw new ApiError(`HTTP ${res.status}`, res.status, reasonFor(res.status, body), body, retryAfterOf(headers, body));
+      }
+      const parsed = schema.safeParse(body);
+      if (!parsed.success) throw new ApiError('unexpected response shape', res.ok ? 0 : res.status, 'bad-response', body);
+      return parsed.data as z.infer<S>;
     } finally {
-      if (timer !== null) clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
     }
-
-    let body: unknown = null;
-    try { body = await res.json(); } catch { body = null; }
-
-    if (!res.ok && !okStatuses.includes(res.status)) {
-      let headers: { get(name: string): string | null } | null = null;
-      try { headers = res.headers ?? null; } catch { headers = null; }
-      throw new ApiError(`HTTP ${res.status}`, res.status, reasonFor(res.status, body), body, retryAfterOf(headers, body));
-    }
-    const parsed = schema.safeParse(body);
-    if (!parsed.success) throw new ApiError('unexpected response shape', res.status, 'bad-response', body);
-    return parsed.data as z.infer<S>;
   }
 }

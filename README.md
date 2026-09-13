@@ -9,8 +9,8 @@
 [![play](https://img.shields.io/badge/▶_PLAY-clawd--game.whchoi.net-E8825C?style=for-the-badge&labelColor=07060B)](https://clawd-game.whchoi.net/)
 
 [![sim](https://img.shields.io/badge/simulation-isomorphic_·_120Hz-5BD8E0?labelColor=15121F)](#결정론적-시뮬레이션이-백엔드를-정당화한다)
-[![tests](https://img.shields.io/badge/tests-1054_passing-8BE86A?labelColor=15121F)](#테스트)
-[![payload](https://img.shields.io/badge/client-396_KB_·_120_KB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
+[![tests](https://img.shields.io/badge/tests-1727_passing-8BE86A?labelColor=15121F)](#테스트)
+[![payload](https://img.shields.io/badge/client-547_KiB_·_168_KiB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
 [![pwa](https://img.shields.io/badge/PWA-installable_·_offline-8B7BF0?labelColor=15121F)](#pwa-설치와-오프라인)
 [![infra](https://img.shields.io/badge/edge-CloudFront_→_ALB_→_Fargate-FF9900?labelColor=15121F)](#아키텍처)
 [![license](https://img.shields.io/badge/license-MIT-8B7BF0?labelColor=15121F)](LICENSE)
@@ -33,6 +33,18 @@
 
 ## 참조작을 어떻게 넘어섰나
 
+### 2026-09-13 품질 개선
+
+- **탑이 보이는 첫 화면** — 네 층의 색, 정상 비콘과 올라가는 메아리를 절차적으로 그린다. 층별 진행을 표시하며, 동작 줄이기 설정에서는 움직임을 멈춘다.
+- **구역을 고르기 전에 살펴보기** — 실제 지형과 시작·체크포인트·도착 지점을 보여 준다. 필요한 기술, 목표 시간, 수집품, 내 기록과 해금 조건을 함께 표시한다. 배경에서 순위가 갱신돼도 선택한 구역과 초점을 유지한다.
+- **길잡이 보기** — 구역 선택이나 일시정지에서 16개 구역의 검증된 공략을 볼 수 있다. 0.5×·1×·2× 배속, 위치 이동, 체크포인트 이동과 조작 표시를 제공한다. 현재 도전의 위치·시간·기록은 보존하고, 돌아오면 안내 문구도 복원한다.
+- **터치에서도 체크포인트 재도전** — 일시정지 메뉴에서 현재 구간을 다시 시도한다. 기존 `IN.RETRY`로 기록하므로 서버 재생으로 그대로 검증된다.
+- **도전 수첩** — 16구역의 메달 조건과 획득 상태, 여덟 가지 모습의 해금 진행을 보여 준다. 수첩에서 목표를 고르고 해금한 모습을 착용하며, 닫으면 원래 화면으로 돌아간다.
+- **다시 오를 목표** — 무사 통과·목표 시간·파편·유물 중 하나를 고정하거나 자유 등반을 고른다. 첫 클리어 후에는 남은 메달을 자동 추천한다. HUD는 이번 도전의 실제 상태를 표시하고, 결과에서는 다음 목표로 바로 재도전한다. 목표 선택은 재접속과 탭 사이에서도 유지된다.
+- **저장·입력·소리의 신뢰성** — 탭 사이의 진행도 덮어쓰기, 전송 중 새로고침으로 기록이 유실되는 문제, 응답 본문 타임아웃, 이전 코드 소모 시점, 음량 0%의 잔향과 모달 초점 문제를 수정했다.
+
+`npm run qa:premium`과 `npm run qa:webkit`은 각각 39개 사용자 흐름을 실제 입력으로 검사한다. `npm run qa:audio`는 실제 WebAudio 출력의 무음을 검사한다. [화면·안정성 보고서](docs/quality/2026-09-13-premium-report.md)와 [도전 목표·보상 보고서](docs/quality/2026-09-13-mastery-report.md)에 변경과 검증 결과를 기록한다. 변경분은 `CHANGELOG.md`의 **Unreleased**에 해당한다.
+
 | | CLAWD JUMP (참조) | ECHO TOWER |
 |---|---|---|
 | 호스팅 | S3 + CloudFront (정적) | CloudFront → prefix-list SG ALB → ECS Fargate (Graviton) → DynamoDB |
@@ -43,7 +55,7 @@
 | 입력 | 이벤트 큐 → 프레임당 엣지 소비 (역사적으로 버그 원인) | **틱당 마스크 1바이트**, 엣지는 sim 내부에서 `mask & ~prev`로 유도 |
 | 언어 | JS + Python 레벨 빌더 | TypeScript 단일 툴체인 (클라이언트·sim·서버·인프라·레벨 DSL) |
 | 배포 산출물 | 해시 없는 파일, 5분 TTL + 전체 무효화 | 콘텐츠 해시 에셋 1년 immutable, `index.html` no-cache |
-| 테스트 | CDK 스택 8개 | sim·레벨·클라이언트·서버·인프라 **1,476개** + Playwright 스모크 + 배포 후 점검 |
+| 테스트 | CDK 스택 8개 | sim·레벨·클라이언트·서버·인프라 **1,727개** + Playwright 사용자 흐름·오디오·배포 후 점검 |
 
 ## 아키텍처
 
@@ -98,7 +110,7 @@ DynamoDB 단일 테이블(`pk`/`sk`): `LB#<mode>#<board>` / `<score 12자리>#<9
 
 `docs/superpowers/plans/2026-09-06-top-chart-roadmap.md`에 3단계 30개 항목의 로드맵이 있습니다(North star: 익명 D1 복귀율 35%). Phase 1은 모든 플레이어가 겪는 실패 루프·온보딩·폴리시입니다.
 
-- **SIM_VERSION 4** — 물리·페이즈 타이밍·지형이 바뀌면 리플레이와 보드가 함께 버전됩니다. 서버는 다른 버전의 제출을 재생 전에 거절(`sim-version`)하고, 스토리 보드 키는 `LB#story#<zone>#s4r<rev>`. 릴리스 절차는 `npm run release:dry`로 계획을 보고 `npm run release -- minor`(typecheck → 테스트 → 빌드 → 배포 → 점검 → CloudFront 무효화 → 에셋 확인 → 버전 태그·CHANGELOG). 롤백은 `docs/runbooks/rollback.md`.
+- **SIM_VERSION 4** — 물리·페이즈 타이밍·지형이 바뀌면 리플레이와 보드가 함께 버전됩니다. 서버는 다른 버전의 제출을 재생 전에 거절(`sim-version`)하고, 스토리 보드 키는 `LB#story#<zone>#s4r<rev>`. 릴리스 절차는 `npm run release:dry`로 계획을 보고 `npm run release -- minor`(typecheck → 테스트 → 버전·CHANGELOG 준비 → 빌드 → 배포 → 점검 → CloudFront 무효화 → 에셋 확인 → 버전 태그). 롤백은 `docs/runbooks/rollback.md`.
 - **무료 실패** — 죽음 → 조작 복귀 약 0.6초(dying 0.45s + 리스폰 인트로 0.15s). `R` 탭은 마지막 체크포인트로 즉시 재도전하며 **입력 로그의 `RETRY` 비트로 기록**되어 서버 재생에서도 재현됩니다. `R`을 0.6초 홀드하면 존 재시작.
 - **익명 텔레메트리** — `POST /api/events`: 세션 id(부팅마다 랜덤)와 이벤트만. 플레이어 id·이름·IP는 클라이언트가 보내지 않고 서버 로그도 남기지 않습니다(테스트로 고정). `tools/stats.mjs`가 퍼널·D1 버킷·존별 사망 히트맵을 뽑습니다. 크레딧 옆 '데이터 안내' 화면에 수집/미수집 항목을 밝힙니다.
 - **첫 실행 바로 시작** — 새 프로필은 타이틀에서 Enter 한 번에 새벽 물가로 들어가고, 첫 클리어 후 탑 구조와 해금 연출을 봅니다.
@@ -254,7 +266,7 @@ npm run icons          # public/icons/icon.svg → PNG (Playwright; 결과는 �
 
 ## 배포
 
-현재 배포: v0.4.1 (2026-09-07) — `ClawdEchoTowerStack` (ap-northeast-2), CloudFront `E38DW91AO2DWTB` → https://clawd-game.whchoi.net/ (배포 도메인 https://d24frhamecczl7.cloudfront.net/ 도 유효)
+CHANGELOG의 마지막 배포 기록: v0.5.0 (2026-09-07) — `ClawdEchoTowerStack` (ap-northeast-2), CloudFront `E38DW91AO2DWTB` → https://clawd-game.whchoi.net/ (배포 도메인 https://d24frhamecczl7.cloudfront.net/). 이후 개발 변경은 Unreleased와 품질 보고서에서 구분한다.
 
 ```bash
 export CDK_DEFAULT_ACCOUNT=061525506239 CDK_DEFAULT_REGION=ap-northeast-2
@@ -290,7 +302,7 @@ sim은 플레이어의 브라우저(V8·JavaScriptCore·SpiderMonkey)와 기록�
 - `?shot=selftest` — 브라우저가 같은 코퍼스를 동기적으로 돌려 `<html data-shot>`에 `{ phase: 'selftest', engine: 'v8' | 'jsc' | 'spidermonkey', ua, sim, gen, corpus, selftest: [...] }`를 새깁니다(캡처 없음). `engine`은 UA에서 추정하며 iOS의 모든 브라우저는 `jsc`입니다.
 - `npx tsx tools/qa/selftest.ts` — Playwright로 Chromium·WebKit·Firefox를 차례로 띄워 스탬프를 픽스처와 필드별로 비교하고 **엔진 × 구역 표**를 출력합니다. 설치되지 않은 엔진은 SKIP(이유 표시), `--require=chromium,webkit`이면 그 엔진이 없을 때 실패. 다이제스트 불일치·같은 출처 콘솔 오류·sim/gen 버전 불일치·실행된 엔진 0개는 exit 1. `npm run qa:smoke`에도 같은 비교를 하는 `selftest` 단계(Chromium)가 들어 있습니다.
 
-이 개발 호스트(Amazon Linux)에는 WebKit의 시스템 의존성이 없어 Chromium만 실측했고(11/11 Node와 일치), **V8 ↔ JSC 증명은 CI(ubuntu)의 WebKit 단계**가 맡습니다. iOS 실기기 실측은 남은 과제입니다.
+이 개발 호스트(Amazon Linux)의 WebKit 시스템 의존성은 공식 Playwright ARM64 컨테이너로 분리했습니다. Chromium·WebKit·Firefox 각각 18개 다이제스트가 Node와 일치했고, Chromium과 WebKit의 실제 사용자 흐름도 각각 27개를 확인했습니다. 재현 조건은 품질 보고서에 있으며, iOS 실기기 실측은 별도 과제입니다.
 
 ### GitHub Actions (`.github/workflows/ci.yml`)
 
@@ -298,7 +310,7 @@ sim은 플레이어의 브라우저(V8·JavaScriptCore·SpiderMonkey)와 기록�
 
 | job | 내용 |
 |---|---|
-| `web` | Node 22 · `npm ci` → `npm run typecheck` → `npm run levels -- --check` → `npx tsx tools/hash-corpus.ts --check` → `npm test` → `npm run build` → Playwright Chromium+WebKit 설치(`~/.cache/ms-playwright` 캐시) → 빌드된 서버 기동(`PORT=8099 STATIC_DIR=dist/public DAILY_SECRET=ci`, `/healthz` 대기) → `tools/qa/smoke.ts --no-shots` · `mobile.ts` · `selftest.ts --require=chromium,webkit` · `readability.ts` · `grid.ts` → 서버 종료(로그 tail) → `tools/qa/out/*.png`를 아티팩트 `qa-screenshots`로 업로드(실패 시에도) |
+| `web` | Node 22 · `npm ci` → typecheck · levels/hash 검사 · `npm test` · build → Playwright Chromium+WebKit+Firefox 설치 → 빌드된 서버 기동 → smoke · mobile · `qa:premium` · `qa:webkit` · `qa:audio` · `selftest --require=chromium,webkit,firefox` · readability · grid → 서버 종료 → `tools/qa/out/**/*.png`를 `qa-screenshots`로 업로드 |
 | `infra` | `npx tsc -p infra --noEmit` → `npx cdk synth --quiet --no-lookups --no-notices` — **AWS 자격 증명 없이**. `Vpc.fromLookup`은 커밋된 `cdk.context.json` 캐시에서 해결되는데 캐시 키가 계정·리전을 포함하므로(`vpc-provider:account=061525506239:…:region=ap-northeast-2:…`) job이 `CDK_DEFAULT_ACCOUNT=061525506239`, `CDK_DEFAULT_REGION`/`AWS_REGION=ap-northeast-2`를 고정합니다. 더미 계정을 쓰면 키가 달라져 룩업이 필요해지고 `--no-lookups`가 "Missing context keys"로 즉시 실패합니다(자격 증명을 찾아 헤매지 않음). `AWS_EC2_METADATA_DISABLED=true`로 자격 증명 탐색을 빨리 포기시키고 `CDK_DOCKER=echo`로 이미지 빌드를 무력화합니다. 마지막으로 템플릿에 ECS Service·CloudFront Distribution·DynamoDB GlobalTable이 있는지 확인. 저장소 시크릿 불필요 — VPC를 바꾸면 자격 증명이 있는 곳에서 `cdk synth` 후 갱신된 `cdk.context.json`을 커밋해야 CI가 다시 초록이 됩니다. |
 | `docker` | `docker/setup-qemu-action`(arm64) + `docker/setup-buildx-action` + `docker/build-push-action`으로 `linux/arm64` 이미지를 빌드(`push: false`, `load: true`, GHA 레이어 캐시) → `docker image inspect`로 아키텍처 `arm64`와 크기 ≤ 200 MB 단언(현재 약 174 MB). |
 
@@ -308,10 +320,11 @@ CI는 배포하지 않습니다 — 배포는 `npm run release`(수동)입니다
 
 ```bash
 npm ci && npm run typecheck && npm run levels -- --check && npx tsx tools/hash-corpus.ts --check && npm test && npm run build
-npx playwright install --with-deps chromium webkit        # ubuntu · Amazon Linux는 chromium만 가능
+npx playwright install --with-deps chromium webkit firefox  # 지원되는 Linux 호스트
 PORT=8099 STATIC_DIR=dist/public DAILY_SECRET=ci node dist/server/index.js &
 npx tsx tools/qa/smoke.ts --no-shots && npx tsx tools/qa/mobile.ts && npx tsx tools/qa/selftest.ts \
   && npx tsx tools/qa/readability.ts && npx tsx tools/qa/grid.ts
+npm run qa:premium && npm run qa:webkit && npm run qa:audio
 npx tsc -p infra --noEmit
 CDK_DEFAULT_ACCOUNT=061525506239 CDK_DEFAULT_REGION=ap-northeast-2 AWS_REGION=ap-northeast-2 \
   AWS_EC2_METADATA_DISABLED=true CDK_DOCKER=echo npx cdk synth --quiet --no-lookups
@@ -332,8 +345,8 @@ docker buildx build --platform linux/arm64 -t clawd-echo-tower:ci .
 
 | | |
 |---|---|
-| 테스트 | 1,476개 (80 파일) |
-| 플레이어가 내려받는 것 | JS 503 KB (gz 153 KB) · CSS 65 KB · HTML 29 KB · SW 2 KB · 폰트 외 외부 요청 0 |
+| 테스트 | 1,727개 (90 파일, 실제 브라우저 오디오 시험 포함) |
+| 플레이어가 내려받는 것 | JS 547 KiB (gz 168 KiB) · CSS 90 KiB · HTML 36 KiB · SW 2 KiB · 폰트 외 외부 요청 0 |
 | 콘텐츠 | 16구역(세로 존 4 포함) · 4바이옴 · 데일리 타워 · 끝없는 등반 · 적 7종 · 오브젝트 11종 |
 
 ## 크레딧 · 라이선스

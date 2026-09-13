@@ -34,8 +34,12 @@ import {
   DEFAULT_NAME, MS_PER_DAY, PERSIST_ASKED_KEY, Save, clearWorldRank, echoMasks, echoWorldMode, fallbackName, isValidName, markEcho,
   recordBestCombo, recordBestRank, recordSegmentBest, retentionBuckets, segmentBests, setWorldRank, unlockedZones, utcDateStr,
 } from './save.js';
-import { medalsFor, mergeMedals, newMedals, syncUnlockedSkins } from './unlocks.js';
+import { medalsFor, mergeMedals, newMedals, skinAvailable, syncUnlockedSkins } from './unlocks.js';
+import { availableGoals, evaluateGoal, GOAL_DESCRIPTIONS, resolveGoal, type GoalView } from './goals.js';
+import type { GoalId, GoalPreference } from './goal-settings.js';
+import { MEDAL_KR } from './ui/ceremony.js';
 import { cloneBinds } from './input/binds.js';
+import { ReplayPlayback } from './echo/playback.js';
 import type { HapticsPort } from './haptics.js';
 import { ApiError } from './net/api.js';
 import { TRANSFER_KR } from './ui/transfer.js';
@@ -43,7 +47,7 @@ import type { FlushEvent, FlushResult, QueuedRun, SubmitQueue } from './net/queu
 import type { TelemetryData, TelemetryPort } from './net/telemetry.js';
 import { Echo, checkpointKey } from './echo/echo.js';
 import { GUIDE_COLOR, GUIDE_DELAY, GUIDE_LABEL, guideDropX, guideFor } from './echo/guide.js';
-import { GOAL_LABEL, goalEchoFor } from './echo/goal.js';
+import { GOAL_LABEL, goalEchoFor, goalMasksFor } from './echo/goal.js';
 import {
   RIVAL_LABEL, SPLIT_NONE, SPLIT_SECONDS, TOP_LABEL, fmtSplit, pickWorldEcho, withPersonalRow, worldEchoLabel, type SplitSign, type WorldEchoKind,
 } from './echo/rival.js';
@@ -351,6 +355,8 @@ export interface Run {
   eligible: boolean;
   /** The run can be kept as a self echo (no assist / invincible). */
   echoSafe: boolean;
+  /** Captured focus stays stable when finishing updates earned medals. */
+  goal: GoalId | null;
   /** Encoded mask log of the finished run (echoSafe only); matches queued / stored records. */
   encoded: string | null;
   /** An eligible run whose submission waits for the inline name prompt on the result screen. */
@@ -454,6 +460,18 @@ export class Scenes {
   private muffled = false;
   /** A latched RETRY press waiting for a frame that runs ticks (see frame()). */
   private retryCarry: InputMask = 0;
+  /** Menu retry always includes a release tick before its recorded press edge. */
+  private menuRetryTicks = 0;
+  private replaySession: {
+    transport: ReplayPlayback;
+    def: LevelDef;
+    from: 'select' | 'pause';
+    camera: Camera;
+    fx: FxBus;
+  } | null = null;
+
+  /** Read-only access to the standalone transport for QA and the local console. */
+  get playback(): ReplayPlayback | null { return this.replaySession?.transport ?? null; }
   /** The tab was hidden: the next frame renders once and runs no catch-up ticks. */
   private resumeDiscard = false;
   /** The UI screen the last frame saw (screen-change telemetry). */
@@ -485,6 +503,7 @@ export class Scenes {
     this.fx = new FxBus({ random: deps.random });
     this.fx.applySettings(this.save.settings);
     this.ui.on((a) => this.onAction(a));
+    this.save.onSettingsAdopt(() => this.applySettings());
   }
 
   // ================================================================ boot
@@ -501,18 +520,18 @@ export class Scenes {
   /** Staged boot with a progress bar; `raf` yields a frame, `wait` sleeps. */
   async boot(hooks: { raf: () => Promise<void>; wait: (ms: number) => Promise<void>; fonts?: Promise<unknown> }): Promise<void> {
     const ui = this.ui;
-    ui.boot?.(0.15, '렌더 파이프라인 구성…');
+    ui.boot?.(0.15, '게임을 준비하는 중…');
     await hooks.raf();
     this.applySettings();
     this.ui.setPortraitPainter((ctx, skin, size, t) => this.renderer.drawPortrait(ctx, skin, size, t));
     // The server's sim version is compared in the background: boot never waits on the network.
     void this.track(this.checkServerVersion());
-    ui.boot?.(0.4, '지형 텍스처 베이킹…');
+    ui.boot?.(0.4, '탑을 불러오는 중…');
     await hooks.raf();
     // warm the sky gradients / noise before the first visible frame
     this.renderer.drawTitle(0, 0, BIOMES[BIOME_ORDER[0]]);
     if (hooks.fonts) { try { await Promise.race([hooks.fonts, hooks.wait(1400)]); } catch { /* no font API */ } }
-    ui.boot?.(0.7, '레벨 로드…');
+    ui.boot?.(0.7, '길잡이를 준비하는 중…');
     await hooks.raf();
     // Skins the rules grant to this save (a rule may have arrived after the clears that satisfy it) — silently at boot.
     this.unlockSkins(false);
@@ -565,6 +584,10 @@ export class Scenes {
     this.ui.applySettings(s);
     this.fx.applySettings(s);
     this.haptics?.applySettings(s);
+    if (this.run?.mode === 'story' && !this.run.summary) {
+      const r = this.run;
+      r.goal = resolveGoal(r.def, this.save.progress.levels[r.def.id], s.goalTargets?.[r.def.id] ?? 'auto');
+    }
   }
 
   // ================================================================ async bookkeeping
@@ -582,11 +605,41 @@ export class Scenes {
 
   // ================================================================ actions
   onAction(a: UIAction): void {
+    if (this.replaySession && !a.type.startsWith('replay') && a.type !== 'closeReplay') return;
     switch (a.type) {
       case 'start': this.startLevel(a.levelId); break;
       case 'daily': this.onDailyStart(); break;
       case 'endless': this.startEndless(); break;
       case 'resume': this.resume(); break;
+      case 'checkpointRetry':
+        if (this.run && !this.run.sim.finished && this.ui.screen === 'pause') {
+          this.resume();
+          this.menuRetryTicks = 2;
+          this.trackRun('retry', { kind: 'checkpoint' });
+        }
+        break;
+      case 'watchReplay': this.watchReplay(a.levelId); break;
+      case 'closeReplay': this.closeReplay(); break;
+      case 'replayToggle':
+        if (this.playback && this.playback.cursor === this.playback.duration) {
+          this.seekReplay(0);
+          this.playback.playing = true;
+        } else this.playback?.toggle();
+        this.drawReplay(0);
+        break;
+      case 'replayRestart':
+        if (this.playback) { this.seekReplay(0); this.playback.playing = true; this.drawReplay(0); }
+        break;
+      case 'replaySeek': this.seekReplay(a.tick); break;
+      case 'replaySpeed': this.playback?.setSpeed(a.speed); this.drawReplay(0); break;
+      case 'replayCheckpoint': {
+        const p = this.playback;
+        if (!p) break;
+        const cp = a.direction > 0 ? p.checkpoints.find((x) => x.tick > p.cursor)
+          : [...p.checkpoints].reverse().find((x) => x.tick < p.cursor);
+        if (cp) this.seekReplay(cp.tick);
+        break;
+      }
       case 'restart': this.trackRun('retry', { kind: 'restart' }); this.restartRun(); break;
       case 'quit': this.quitToMenu(); break;
       case 'next': this.nextLevel(); break;
@@ -605,8 +658,25 @@ export class Scenes {
       case 'openDaily': void this.track(this.openDaily()); break;
       case 'openSettings':
       case 'openCredits':
+      case 'openJournal':
       case 'back':
         break;
+      case 'pinGoal': this.pinGoal(a.levelId, a.preference); break;
+      case 'equipSkin':
+        if (this.renderer.skins[a.skin] && skinAvailable(a.skin, this.save.progress, this.save.settings, this.levels)) {
+          this.save.settings.skin = a.skin;
+          this.applySettings();
+          this.save.saveSettings();
+        }
+        break;
+      case 'retryGoal': {
+        const r = this.run;
+        if (!r?.summary || r.mode !== 'story' || r.raceLocked || !availableGoals(r.def).includes(a.goal)) break;
+        this.pinGoal(r.def.id, a.goal);
+        this.trackRun('retry', { kind: 'retry' });
+        this.restartRun();
+        break;
+      }
       case 'settingsChanged':
         this.applySettings();
         this.save.saveSettings();
@@ -881,6 +951,109 @@ export class Scenes {
   }
 
   // ================================================================ run lifecycle
+  private pinGoal(levelId: string, preference: GoalPreference): void {
+    const def = this.levelById[levelId];
+    if (!def || !this.unlockedZones().has(levelId)) return;
+    if (preference !== 'auto' && preference !== 'free' && !availableGoals(def).includes(preference)) return;
+    if (!this.save.setGoalTarget(levelId, preference)) return;
+    this.applySettings();
+    if (this.run && !this.run.summary) this.ui.hud(this.hudState(this.run));
+  }
+
+  private goalView(run: Run): GoalView | null {
+    if (!run.goal || run.mode !== 'story') return null;
+    return evaluateGoal(run.goal, {
+      ...(run.summary ?? run.sim.summary()),
+      finished: run.sim.finished,
+      eligible: !run.raceLocked,
+    });
+  }
+
+  private watchReplay(id?: string): void {
+    const from = this.ui.screen;
+    if (from !== 'select' && from !== 'pause') return;
+    const current = from === 'pause' ? this.run : null;
+    if (from === 'pause' && (!current || current.mode !== 'story' || current.sim.finished)) return;
+    const def = this.levelById[current?.def.id ?? id ?? ''];
+    if (!def || (from === 'select' && !this.unlockedZones().has(def.id))) return;
+    const masks = goalMasksFor(def);
+    if (!masks) { this.ui.toast('이 구역의 길잡이가 아직 준비되지 않았다'); return; }
+    const transport = new ReplayPlayback(def, masks);
+    const camera = new Camera();
+    const fx = new FxBus();
+    fx.applySettings(this.save.settings);
+    fx.reset(0);
+    camera.reset(transport.sim.state.player);
+    this.replaySession = { transport, def, from, camera, fx };
+    this.input.reset();
+    this.renderer.setLevel(transport.sim, BIOMES[def.biome]);
+    this.renderer.setDeathMarks?.([]);
+    this.setMuffle(false);
+    this.audio.setTrack(BIOMES[def.biome].track);
+    this.audio.setIntensity(0.3);
+    this.ui.show('replay');
+    this.drawReplay(0);
+  }
+
+  private seekReplay(tick: number): void {
+    const session = this.replaySession;
+    if (!session || !Number.isFinite(tick)) return;
+    const previous = session.transport.sim;
+    session.transport.seek(tick);
+    session.transport.playing = false;
+    if (previous !== session.transport.sim) this.renderer.setLevel(session.transport.sim, BIOMES[session.def.biome]);
+    this.renderer.clearParticles();
+    session.camera.reset(session.transport.sim.state.player);
+    this.drawReplay(0);
+  }
+
+  private drawReplay(dt: number): void {
+    const session = this.replaySession;
+    if (!session) return;
+    const p = session.transport;
+    p.update(dt);
+    const insets = this.ui.replayInsets?.() ?? { top: 0.12, bottom: 0.24 };
+    const visibleHeight = this.renderer.viewH * Math.max(0.15, 1 - insets.top - insets.bottom);
+    session.camera.update(dt * p.speed, p.sim.state.player, p.sim.level, this.renderer.viewW, visibleHeight);
+    const view = session.camera.view();
+    // Centre the camera in the uncovered part of the canvas, with bounds
+    // computed for that visible area. The live run's camera stays untouched.
+    view.camY += this.renderer.viewH * (insets.bottom - insets.top) / 2;
+    this.renderer.draw(p.sim, view, session.fx.state(), [], p.playing ? dt : 0);
+    this.ui.setReplay?.({
+      levelId: session.def.id, name: session.def.name, biomeName: BIOMES[session.def.biome].kr,
+      cursor: p.cursor, duration: p.duration, playing: p.playing, speed: p.speed, mask: p.mask,
+      checkpoints: p.checkpoints, finished: p.sim.finished,
+    });
+  }
+
+  private closeReplay(): void {
+    const session = this.replaySession;
+    if (!session) return;
+    this.replaySession = null;
+    this.input.reset();
+    this.scheduler.reset();
+    const run = this.run;
+    if (session.from === 'pause' && run) {
+      this.renderer.setLevel(run.sim, BIOMES[run.def.biome]);
+      this.renderer.setDeathMarks?.(run.session.marks);
+      this.audio.setTrack(BIOMES[run.def.biome].track);
+      this.ui.show('play');
+      this.ui.hud(this.hudState(run));
+      this.ui.hint(run.hintUntil >= 0 ? run.hintText : null);
+      if (run.split && run.splitTimer >= 0) this.ui.split?.(run.split.text, run.split.sign);
+      this.ui.show('pause');
+      this.setMuffle(true);
+      this.drawFrame(0);
+    } else {
+      this.audio.setTrack('title');
+      this.audio.setIntensity(0.45);
+      this.ui.show('select');
+      this.titleDirty = true;
+      this.menuFrame(0);
+    }
+  }
+
   startLevel(id: string, opts: { restart?: boolean } = {}): boolean {
     const def = this.levelById[id];
     if (!def) return false;
@@ -966,6 +1139,7 @@ export class Scenes {
       offline,
       eligible: echoSafe && mode !== 'endless' && !offline,
       echoSafe,
+      goal: mode === 'story' ? resolveGoal(def, this.save.progress.levels[def.id], s.goalTargets?.[def.id] ?? 'auto') : null,
       encoded: null,
       pendingSubmit: null,
       summary: null, view: null, resultKind: null, resultTimer: -1, resultShown: false,
@@ -995,6 +1169,7 @@ export class Scenes {
     this.ui.show('play');
     this.pushSegments(run);
     this.retryCarry = 0;
+    this.menuRetryTicks = 0;
     if (!restart) {
       this.ui.banner?.(def.name);
       if (firstPlay) {
@@ -1162,6 +1337,7 @@ export class Scenes {
       this.lastScreen = screen;
       this.telemetry?.screen(screen);
     }
+    if (this.replaySession) { this.drawReplay(dt); return; }
 
     const run = this.run;
     if (!run) { this.menuFrame(dt); return; }
@@ -1189,6 +1365,10 @@ export class Scenes {
           if (heldRetry) for (let i = 0; i < masks.length; i++) masks[i] |= heldRetry;
           masks[0] |= this.retryCarry;
           this.retryCarry = 0;
+        }
+        for (let i = 0; i < masks.length && this.menuRetryTicks > 0; i++) {
+          masks[i] = (masks[i] & ~IN.RETRY) | (this.menuRetryTicks === 1 ? IN.RETRY : 0);
+          this.menuRetryTicks--;
         }
       }
       for (const m of masks) this.tick(m);
@@ -1218,13 +1398,17 @@ export class Scenes {
    * whole absence, so it is discarded — one render, no catch-up ticks.
    */
   visibility(hidden: boolean): void {
-    if (hidden) return;
+    if (hidden) {
+      if (this.playback) this.playback.playing = false;
+      return;
+    }
     this.resumeDiscard = true;
     this.scheduler.reset();
   }
 
   /** The gamepad went away mid-run: pause so the character does not run on unattended. */
   gamepadLost(): void {
+    if (this.playback) { this.playback.playing = false; this.drawReplay(0); return; }
     const run = this.run;
     if (!run || run.sim.finished || this.ui.screen !== 'play') return;
     this.ui.show('pause');
@@ -1447,11 +1631,13 @@ export class Scenes {
       time: st.time,
       showTimer: s.showTimer,
       levelName: run.def.name,
+      levelId: run.def.id,
       biomeName: BIOMES[biomeId].kr,
       height: st.tide ? Math.floor(st.tide.maxHeight) : undefined,
       combo: st.stats.combo,
       dashReady: p.dashReady,
       assist: run.sim.assist,
+      objective: this.goalView(run),
     };
   }
 
@@ -1650,6 +1836,12 @@ export class Scenes {
     const i = this.levels.findIndex((l) => l.id === run.def.id);
     // A locked race offers no 다음 구역: the tower is still to be climbed.
     const nextLevelId = run.mode === 'story' && !run.raceLocked && i >= 0 && i + 1 < this.levels.length ? this.levels[i + 1].id : undefined;
+    const objective = this.goalView(run);
+    const record = this.save.progress.levels[run.def.id];
+    const missedGoal = objective?.state === 'missed' && !record?.medals?.includes(objective.id) ? objective.id : null;
+    const nextGoal = run.mode === 'story' && !run.raceLocked && summary.cleared
+      ? missedGoal ?? resolveGoal(run.def, record)
+      : null;
     run.view = {
       summary,
       levelName: run.def.name,
@@ -1657,6 +1849,8 @@ export class Scenes {
       stars: starsFor(summary),
       submit: { state: run.eligible ? 'pending' : 'idle' },
       nextLevelId,
+      objective,
+      ...(nextGoal ? { nextGoal: { id: nextGoal, label: MEDAL_KR[nextGoal], detail: GOAL_DESCRIPTIONS[nextGoal] } } : {}),
       ...(nextLevelId && justUnlocked.has(nextLevelId) ? { unlocked: { levelId: nextLevelId, name: this.levelById[nextLevelId].name } } : {}),
     };
     this.planCeremonies(run, summary);
@@ -1842,9 +2036,20 @@ export class Scenes {
       claim: { ticks: s.ticks, shards: s.shards, deaths: s.deaths, cleared: s.cleared, height: s.height },
       client: { build: this.build },
     };
+    // Write ahead of the network: a tab closing after headers or mid-upload
+    // must leave a recoverable request, even before a timeout has fired.
+    const queued = this.queue?.enqueue(body, { mode, board, levelId: run.def.id });
+    if (queued && !this.queue!.hold(queued)) {
+      // A reconnect flush already owns an identical queued request.
+      view.submit = { state: 'queued', reason: 'busy' };
+      this.pushResult(run);
+      await this.flushQueue();
+      return;
+    }
     let reachable = true;
     try {
       const res = await this.api.submitRun(body);
+      if (queued) this.queue?.acknowledge(queued);
       if (res.accepted) {
         // The immediate rank is the submission's own answer: the public board page may lag it by a few seconds.
         view.submit = { state: 'accepted', rank: res.rank, total: res.total };
@@ -1864,15 +2069,17 @@ export class Scenes {
       const offline = e === null || e.offline;
       reachable = false;
       if (e && !offline && !retryable) {
+        if (queued) this.queue?.acknowledge(queued);
         reachable = true;
         view.submit = { state: 'rejected', reason: e.reason };
         this.trackVerdict(run, { accepted: false, reason: e.reason });
       } else if (this.queue) {
         // Kept locally and sent on the next boot / `online` (or the retry timer); the result line says which.
-        this.queue.enqueue(body, { mode, board, levelId: run.def.id });
         view.submit = retryable ? { state: 'queued', reason: 'busy' } : { state: 'queued' };
         if (retryable) this.queue.retryLater(this.api, (ev) => this.onQueued(ev), e?.retryAfter);
       } else view.submit = { state: 'offline' };
+    } finally {
+      if (queued) this.queue?.release(queued);
     }
     this.pushResult(run);
     if (!reachable) return;

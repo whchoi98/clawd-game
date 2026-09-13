@@ -8,6 +8,8 @@ import type { Sim } from '../sim/sim.js';
 import type { InputMask, LevelDef, PlayerState, RunSummary, SimEvent } from '../sim/types.js';
 import type { Biome } from '../shared/biomes.js';
 import type { DailyResponse, LeaderboardResponse } from '../shared/protocol.js';
+import type { GoalId, GoalPreference } from './goal-settings.js';
+import type { GoalView } from './goals.js';
 
 // ---------------------------------------------------------------- save.ts
 export type BindAction = 'left' | 'right' | 'up' | 'down' | 'jump' | 'dash' | 'pause' | 'confirm' | 'cancel' | 'restart';
@@ -35,6 +37,8 @@ export interface Settings {
   /** Touch control layout: size and opacity scale, per-side offsets (CSS px), floating stick (appears where the thumb lands). */
   touch?: { scale: number; opacity: number; leftX: number; leftY: number; rightX: number; rightY: number; floating: boolean };
   binds: Binds;
+  /** Optional per-zone focus; earned progress remains independent. */
+  goalTargets?: Record<string, GoalPreference>;
 }
 
 export interface LevelRecord {
@@ -219,7 +223,7 @@ export interface AudioPort {
 
 // ---------------------------------------------------------------- ui
 export type Screen =
-  | 'boot' | 'title' | 'select' | 'daily' | 'settings' | 'credits' | 'data' | 'play' | 'pause' | 'result' | 'over' | 'name'
+  | 'boot' | 'title' | 'select' | 'daily' | 'settings' | 'credits' | 'data' | 'play' | 'pause' | 'result' | 'over' | 'name' | 'replay' | 'journal'
   /** Stuck-detector offer (a modal over play; answered with assistAccept / assistDecline). */
   | 'assist';
 
@@ -228,6 +232,14 @@ export type UIAction =
   | { type: 'daily' }
   | { type: 'endless' }
   | { type: 'resume' }
+  | { type: 'checkpointRetry' }
+  | { type: 'watchReplay'; levelId?: string }
+  | { type: 'closeReplay' }
+  | { type: 'replayToggle' }
+  | { type: 'replayRestart' }
+  | { type: 'replaySeek'; tick: number }
+  | { type: 'replaySpeed'; speed: 0.5 | 1 | 2 }
+  | { type: 'replayCheckpoint'; direction: -1 | 1 }
   | { type: 'restart' }
   | { type: 'quit' }
   | { type: 'next' }
@@ -236,6 +248,10 @@ export type UIAction =
   | { type: 'openDaily' }
   | { type: 'openSettings' }
   | { type: 'openCredits' }
+  | { type: 'openJournal' }
+  | { type: 'pinGoal'; levelId: string; preference: GoalPreference }
+  | { type: 'equipSkin'; skin: string }
+  | { type: 'retryGoal'; goal: GoalId }
   | { type: 'back' }
   | { type: 'settingsChanged' }
   | { type: 'rebind'; binds: Binds }
@@ -269,11 +285,15 @@ export interface HudState {
   time: number;
   showTimer: boolean;
   levelName: string; biomeName: string;
+  /** Stable story id, used by the pause screen's demonstration entry point. */
+  levelId?: string;
   /** Tide modes: height in tiles; undefined hides the meter. */
   height?: number;
   combo: number;
   dashReady: boolean;
   assist: boolean;
+  /** Read-only projection of the current run's selected focus. */
+  objective?: GoalView | null;
 }
 
 export interface ResultView {
@@ -288,6 +308,21 @@ export interface ResultView {
   nextLevelId?: string;
   /** The zone this clear just opened (shown as "다음 구역 해금"), when any. */
   unlocked?: { levelId: string; name: string };
+  objective?: GoalView | null;
+  nextGoal?: { id: GoalId; label: string; detail: string };
+}
+
+export interface ReplayView {
+  levelId: string;
+  name: string;
+  biomeName: string;
+  cursor: number;
+  duration: number;
+  playing: boolean;
+  speed: 0.5 | 1 | 2;
+  mask: number;
+  checkpoints: readonly { tick: number; label: string }[];
+  finished: boolean;
 }
 
 export interface UIPort {
@@ -297,6 +332,10 @@ export interface UIPort {
   /** Called once per rendered frame: menu navigation, HUD live region throttling, toasts. */
   frame(dt: number, input: InputPort): void;
   hud(h: HudState): void;
+  /** Isolated demonstration transport; no progress or run-stat mutation. */
+  setReplay?(view: ReplayView): void;
+  /** Fractions of the canvas covered by the replay header and transport. */
+  replayInsets?(): { top: number; bottom: number };
   hint(text: string | null): void;
   toast(text: string): void;
   /** Populate zone select with progress and lock state; `justUnlocked` cards play the unlock moment. */

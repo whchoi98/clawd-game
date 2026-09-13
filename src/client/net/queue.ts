@@ -7,6 +7,8 @@
  * `online`. The server replays every run it accepts, so a late submission is
  * as trustworthy as a live one; a daily run past its date comes back as a 422
  * `stale-date` and is dropped like any other verdict.
+ * A live submission may also enqueue before its first POST and hold that handle
+ * until its verdict, so an unload cannot lose a still-pending request.
  *
  * Flush semantics per item, in order:
  *   - any RunResponse (accepted, or the 422 rejection the API client returns
@@ -122,6 +124,9 @@ export class SubmitQueue {
   private readonly schedule: (fn: () => void, ms: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
   private flushing: Promise<FlushResult> | null = null;
+  /** Live POST ownership is process-local: a reload must retry every persisted item. */
+  private readonly held = new Set<QueuedRun>();
+  private inFlight: QueuedRun | null = null;
   /** The armed retry (busy / 429), if any: its timer handle and when it fires. */
   private retryTimer: unknown = null;
   private retryAtMs: number | null = null;
@@ -183,9 +188,42 @@ export class SubmitQueue {
     return item;
   }
 
+  /**
+   * Reserve an enqueue handle for a direct POST. Call synchronously after
+   * enqueue(); false means this handle is absent or already being sent by flush().
+   */
+  hold(item: QueuedRun): boolean {
+    if (!this.items.includes(item) || this.inFlight === item) return false;
+    this.held.add(item);
+    return true;
+  }
+
+  /** Eligible for the next flush; does not itself start or restart a pass. */
+  release(item: QueuedRun): void {
+    this.held.delete(item);
+  }
+
+  /**
+   * A definitive live submission verdict acknowledges the exact handle returned
+   * by enqueue(). Idempotent; equal masks on another run never match this handle.
+   */
+  acknowledge(item: QueuedRun): boolean {
+    const i = this.items.indexOf(item);
+    if (i < 0) return false;
+    this.held.delete(item);
+    this.items.splice(i, 1);
+    if (this.items.length === 0) {
+      this.cancelRetry();
+      this.retryAttempts = 0;
+    }
+    this.write();
+    return true;
+  }
+
   /** Forget everything (tests, progress reset). */
   clear(): void {
     this.items = [];
+    this.held.clear();
     this.cancelRetry();
     this.retryAttempts = 0;
     this.write();
@@ -207,10 +245,14 @@ export class SubmitQueue {
   private async flushInner(api: Pick<ApiPort, 'submitRun'>, onResult: OnResult): Promise<FlushResult> {
     const result: FlushResult = { sent: 0, dropped: 0, kept: 0 };
     for (const item of this.items.slice()) {
+      if (!this.items.includes(item) || this.held.has(item)) continue;
       let response: RunResponse;
+      this.inFlight = item;
       try {
         response = await api.submitRun(item.body);
       } catch (err) {
+        // A live submission or clear() may have settled this item while we waited.
+        if (!this.items.includes(item)) continue;
         if (err instanceof ApiError && err.retryable) {
           // The server is up but cannot take it right now: come back when it said to.
           this.retryLater(api, onResult, err.retryAfter);
@@ -218,12 +260,14 @@ export class SubmitQueue {
         }
         const transient = !(err instanceof ApiError) || err.offline;
         if (transient) break;
-        this.remove(item);
+        this.acknowledge(item);
         result.dropped++;
         this.report(onResult, { kind: 'dropped', item, reason: (err as ApiError).reason });
         continue;
+      } finally {
+        this.inFlight = null;
       }
-      this.remove(item);
+      if (!this.acknowledge(item)) continue;
       this.retryAttempts = 0;
       result.sent++;
       this.report(onResult, { kind: 'sent', item, response });
@@ -235,12 +279,6 @@ export class SubmitQueue {
   private report(cb: ((ev: FlushEvent) => void) | undefined, ev: FlushEvent): void {
     if (!cb) return;
     try { cb(ev); } catch { /* a listener failure must not stall the queue */ }
-  }
-
-  private remove(item: QueuedRun): void {
-    const i = this.items.indexOf(item);
-    if (i >= 0) this.items.splice(i, 1);
-    this.write();
   }
 
   // ------------------------------------------------------------ io

@@ -67,31 +67,37 @@
       </svg>
     </div>
     <div class="boot__label">CLAWD JUMP · ECHO TOWER</div>
-    <div class="boot__bar" role="progressbar" aria-label="로딩 진행"><i id="boot-fill"></i></div>
-    <div class="boot__hint" id="boot-hint">엔진 준비 중…</div>
+    <div class="boot__bar" role="progressbar" aria-label="로딩 진행" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="boot-fill"></i></div>
+    <div class="boot__hint" id="boot-hint">게임 준비 중…</div>
   </section>
 
   <!-- TITLE -->
   <section class="screen screen--title" id="scr-title" aria-label="타이틀">
     <div class="title__brand">
-      <div class="title__kicker">A PRECISION PLATFORMER · VERIFIED ECHOES</div>
+      <div class="title__kicker">작은 도약이 모여, 하나의 여정이 된다</div>
       <h1 class="title__logo"><span>CLAWD</span><em>JUMP</em></h1>
       <div class="title__sub"><b>ECHO TOWER</b><i>메아리의 탑</i></div>
+      <p class="title__premise">어제의 나를 넘어, 탑 끝의 빛을 향해.</p>
       <!-- One-line story hook after the ending (P3-9): filled from Progress.endingSeen (src/client/ui/ceremony.ts TITLE_HOOK). -->
       <p class="title__hook" id="title-hook" role="status" hidden></p>
     </div>
     <nav class="menu" id="title-menu" aria-label="메인 메뉴">
-      <button class="menu__item" data-act="continue" hidden>이어하기<small id="continue-note"></small></button>
+      <button class="menu__item menu__item--launch" data-act="continue" hidden>이어하기<small id="continue-note"></small></button>
       <!-- The subtitle is rewritten from the level list at boot (src/client/ui/title-meta.ts towerSummary). -->
-      <button class="menu__item" data-act="openSelect">탑 오르기<small id="tower-note">스토리 · 3개 층 · 12개 구역</small></button>
+      <button class="menu__item" data-act="openSelect">탑 오르기<small id="tower-note">스토리 · 4개 층 · 16개 구역</small></button>
       <!-- The subtitle is dynamic: 오늘 미도전 · N일 연속 / 오늘 클리어 · 세계 N위 (src/client/ui/ui.ts refreshTitle). -->
       <button class="menu__item" data-act="openDaily">데일리 타워<small id="daily-note">매일 바뀌는 탑 · 세계 순위</small></button>
       <button class="menu__item" data-act="endless">끝없는 등반<small>차오르는 조류 · 개인 기록</small></button>
+      <button class="menu__item" data-act="openJournal">도전 수첩<small>구역 메달 · 나만의 모습</small></button>
       <button class="menu__item" data-act="openSettings">설정<small>조작 · 사운드 · 접근성</small></button>
-      <button class="menu__item" data-act="openCredits">만든 것들<small>기술 노트</small></button>
       <!-- Shown only when the browser offered a deferred install prompt (src/client/pwa.ts). -->
       <button class="menu__item" data-act="install" hidden>홈 화면에 추가<small>전체 화면 · 오프라인 플레이</small></button>
     </nav>
+    <div class="title__journey" aria-label="탑 진행">
+      <span class="title__journey-label">정상을 향한 여정</span>
+      <div class="title__route" id="title-route"></div>
+      <span id="title-journey-progress">첫 도약을 기다리는 탑</span>
+    </div>
     <div class="title__foot">
       <span class="title__legend">
         <span class="kbd">←→</span><span class="kbd">A/D</span> 이동
@@ -102,6 +108,7 @@
       </span>
       <span class="badge badge--offline" id="offline-badge" role="status" hidden>오프라인</span>
       <button class="chip chip--name" data-act="name" aria-label="이름 바꾸기">이름 · <b id="title-name">—</b></button>
+      <button class="chip" type="button" data-act="openCredits">크레딧</button>
       <!-- iOS Safari has no install prompt: point at the share sheet once, dismissable. -->
       <span class="title__ios" id="ios-hint" hidden>공유 → 홈 화면에 추가 하면 전체 화면으로 플레이할 수 있다
         <button class="title__ios-x" type="button" data-act="dismissIos" data-nonav aria-label="안내 닫기">×</button></span>
@@ -110,19 +117,38 @@
     </div>
   </section>
 
-  <!-- ZONE SELECT — the tower, three tiers -->
+  <!-- ZONE SELECT — the campaign and the highlighted zone's real terrain -->
   <section class="screen screen--page screen--select" id="scr-select" aria-label="구역 선택">
     <header class="pg__head" data-row>
       <button class="icon-btn" data-act="back" aria-label="뒤로">‹</button>
       <div class="pg__title">
         <h2>메아리의 탑</h2>
-        <p id="sel-progress">0 / 9 구역 돌파</p>
+        <p id="sel-progress">0 / 16 구역 돌파</p>
         <!-- Stars and medals across the tower (P3-6): "별 N/36 · 메달 N/48" — the denominators follow the zone list (src/client/unlocks.ts). -->
-        <p class="pg__totals" id="sel-totals">별 0/27 · 메달 0/36</p>
+        <p class="pg__totals" id="sel-totals">별 0/48 · 메달 0/64</p>
       </div>
       <div class="echo-toggles" id="sel-echoes" aria-label="메아리 표시"></div>
     </header>
-    <div class="tower" id="sel-tiers"></div>
+    <div class="campaign">
+      <div class="tower" id="sel-tiers"></div>
+      <aside class="campaign__detail" id="campaign-detail" aria-label="선택한 구역">
+        <div class="campaign__eyebrow" id="campaign-chapter"></div>
+        <h3 id="campaign-name"></h3>
+        <p class="campaign__story" id="campaign-story"></p>
+        <div class="campaign__map" id="campaign-map"></div>
+        <div class="campaign__legend" aria-hidden="true"><span>● 시작</span><span>● 체크포인트</span><span>● 도착</span></div>
+        <div class="campaign__techniques" id="campaign-techniques"></div>
+        <dl class="campaign__stats" id="campaign-stats"></dl>
+        <p class="campaign__status" id="campaign-status" role="status"></p>
+        <div id="campaign-goal" hidden></div>
+        <div class="campaign__actions">
+          <button class="campaign__start" type="button" data-act="start" id="campaign-start">이 구역 시작 <span aria-hidden="true">↗</span></button>
+          <button class="campaign__watch" type="button" data-act="watchReplay" id="campaign-watch">길잡이 보기 <span aria-hidden="true">▷</span></button>
+        </div>
+        <p class="campaign__help">길잡이의 도약을 느리게 살펴보고, 나만의 길을 찾아라.</p>
+        <button class="chip campaign__journal" type="button" data-act="openJournal">도전 수첩 · 메달과 모습 보기</button>
+      </aside>
+    </div>
   </section>
 
   <!-- DAILY TOWER -->
@@ -151,7 +177,7 @@
           <div class="daily__week" id="daily-week" role="list" aria-label="최근 7일 도전 기록"></div>
           <p class="daily__yday" id="daily-yday" role="status" hidden></p>
         </div>
-        <p class="daily__lead">서버가 발행한 시드로 세워진 탑. 오늘 하루 모두에게 같은 탑이 주어지고, 검증된 기록만 순위표에 오른다.</p>
+        <p class="daily__lead">오늘은 모두에게 같은 탑. 차오르는 조류를 넘어, 어제보다 한 발 더 높이 올라라.</p>
         <div class="echo-toggles" id="daily-echoes" aria-label="메아리 표시"></div>
         <nav class="menu menu--compact">
           <button class="menu__item menu__item--primary" data-act="daily">오르기 시작</button>
@@ -166,6 +192,46 @@
           <button class="icon-btn icon-btn--sm" data-act="refreshLb" aria-label="순위표 새로 고침"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/></svg></button>
         </div>
         <div class="lb" id="daily-lb"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DEMONSTRATION — independent transport; the current attempt stays paused -->
+  <section class="screen screen--replay" id="scr-replay" aria-label="길잡이 보기">
+    <header class="replay__head">
+      <button class="icon-btn" id="replay-close" data-act="closeReplay" aria-label="길잡이 닫기">‹</button>
+      <div class="replay__title">
+        <span class="replay__eyebrow">길잡이 보기 · <span id="replay-biome"></span></span>
+        <h2 id="replay-name"></h2>
+      </div>
+      <p id="replay-status" class="replay__status" role="status"></p>
+    </header>
+    <div class="replay__transport">
+      <div class="replay__readout">
+        <div class="replay__inputs" id="replay-inputs" role="img" aria-label="길잡이 조작">
+          <span data-bit="1">←</span><span data-bit="2">→</span><span data-bit="4">↑</span><span data-bit="8">↓</span>
+          <span data-bit="16">점프</span><span data-bit="32">대시</span>
+        </div>
+        <span class="replay__time" id="replay-time">0:00.00 / 0:00.00</span>
+      </div>
+      <input id="replay-seek" class="replay__seek" type="range" min="0" max="1" step="1" value="0" aria-label="재생 위치">
+      <div class="replay__controls">
+        <div class="replay__buttons" data-row>
+          <button class="replay__button replay__button--primary is-playing" id="replay-toggle" data-act="replayToggle" data-default>
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path class="replay__play-icon" d="M5 3l12 7-12 7z"/><path class="replay__pause-icon" d="M4 3h4v14H4zm8 0h4v14h-4z"/></svg>
+            <span id="replay-toggle-label">일시정지</span>
+          </button>
+          <button class="replay__button" id="replay-restart" data-act="replayRestart" aria-label="길잡이 처음부터">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7a7 7 0 1 1-.6 5M4 2v5h5"/></svg>처음
+          </button>
+          <button class="replay__button" id="replay-prev" data-act="replayPrev" aria-label="이전 체크포인트" disabled>‹ 이전 구간</button>
+          <button class="replay__button" id="replay-next" data-act="replayNext" aria-label="다음 체크포인트">다음 구간 ›</button>
+        </div>
+        <div class="replay__speeds" role="group" aria-label="재생 속도" data-row>
+          <button class="replay__speed" data-act="replaySpeed" data-speed="0.5" aria-pressed="false">0.5×</button>
+          <button class="replay__speed" data-act="replaySpeed" data-speed="1" aria-pressed="true">1×</button>
+          <button class="replay__speed" data-act="replaySpeed" data-speed="2" aria-pressed="false">2×</button>
+        </div>
       </div>
     </div>
   </section>
@@ -190,6 +256,7 @@
         <div class="hud__height" id="hud-height" hidden><span id="hud-height-n">0</span><em>높이</em></div>
       </div>
     </div>
+    <div class="objective" id="hud-objective" role="group" aria-label="이번 목표" hidden></div>
     <div class="hud__dash" id="hud-dash" aria-hidden="true"><i></i></div>
     <div class="hud__hint" id="hud-hint" hidden></div>
     <div class="hud__toast" id="hud-toast"></div>
@@ -247,6 +314,7 @@
         <button class="menu__item menu__item--primary" data-act="quit">다시 오르기<small>탑으로 돌아간다 · 기록과 메아리는 남는다</small></button>
         <button class="menu__item menu__item--share" data-act="shareCard">공유<small>결과 카드 이미지 · 링크</small></button>
         <button class="menu__item menu__item--share" data-act="shareEcho" hidden>메아리 링크 공유<small>친구가 내 메아리와 경주한다</small></button>
+        <button class="menu__item" data-act="openJournal">도전 수첩<small>남은 메달 · 새로운 모습</small></button>
         <button class="menu__item" data-act="openCredits">만든 것들<small>기술 노트 · 크레딧</small></button>
       </nav>
     </div>
@@ -260,9 +328,13 @@
       <div class="modal__stats" id="pause-stats"></div>
       <!-- Per-checkpoint-segment rows: deaths this session and the install's best segment time (src/client/ui/ui.ts fillPause). -->
       <div class="modal__segs" id="pause-segs" role="list" aria-label="구간 기록"></div>
+      <div id="pause-goal" hidden></div>
       <nav class="menu menu--compact">
-        <button class="menu__item" data-act="resume">계속하기</button>
-        <button class="menu__item" data-act="restart">구역 재시작</button>
+        <button class="menu__item" data-act="resume" data-default>계속하기</button>
+        <button class="menu__item" data-act="checkpointRetry">체크포인트 재도전<small>지금 구간에서 바로 다시</small></button>
+        <button class="menu__item" data-act="watchReplay" id="pause-watch" hidden>길잡이 보기<small>현재 도전은 그대로 두고 공략을 살펴본다</small></button>
+        <button class="menu__item" data-act="restart">구역 처음부터</button>
+        <button class="menu__item" data-act="openJournal">도전 수첩</button>
         <button class="menu__item" data-act="openSettings">설정</button>
         <button class="menu__item" data-act="quit">나가기</button>
       </nav>
@@ -280,6 +352,7 @@
       <!-- Zone medals of the record (LevelRecord.medals: nodeath · par · shards · relic), revealed at the 'medals' stage of the
            clear ceremony (P3-9, src/client/ui/ceremony.ts); hidden while the record holds none. -->
       <div class="res__medals" id="res-medals" role="list" aria-label="메달" hidden></div>
+      <div class="res-objective" id="res-objective" aria-label="도전 목표 결과" hidden></div>
       <!-- "라이벌보다 0.62s 빠름 / 느림" — only when a world echo (라이벌 / 1위) was raced (ShellUI.setVersus). -->
       <div class="res__vs" id="res-vs-world" role="status" hidden></div>
       <!-- "다음 구역 해금: <이름>" — only when this clear opened a new zone (ResultView.unlocked). -->
@@ -299,8 +372,9 @@
         </div>
       </div>
       <nav class="menu menu--compact">
-        <button class="menu__item menu__item--primary" data-act="next">다음 구역</button>
-        <button class="menu__item" data-act="retry">다시 도전</button>
+        <button class="menu__item menu__item--primary" data-act="next" data-default>다음 구역</button>
+        <button class="menu__item" data-act="retry" data-default>다시 도전</button>
+        <button class="menu__item" data-act="openJournal">도전 수첩</button>
         <!-- Shown once the submission is accepted (P3-3): a ?race=<runId> link to this echo. -->
         <button class="menu__item menu__item--share" data-act="shareEcho" hidden>메아리 링크 공유<small>친구가 내 메아리와 경주한다</small></button>
         <!-- Always available (P3-4): the drawn result card as a PNG (or the link when the platform takes no files). -->
@@ -387,6 +461,24 @@
     </div>
   </section>
 
+  <!-- MASTERY JOURNAL -->
+  <section class="screen screen--modal" id="scr-journal" aria-label="도전 수첩">
+    <div class="modal modal--journal">
+      <header class="journal__head">
+        <div>
+          <div class="modal__kicker">FIELD NOTES</div>
+          <h2>도전 수첩</h2>
+        </div>
+        <nav class="journal__nav" aria-label="수첩 목차" data-row>
+          <button class="chip" type="button" data-act="journalZones">구역 메달</button>
+          <button class="chip" type="button" data-act="journalSkins">모습</button>
+          <button class="icon-btn" type="button" data-act="close" data-default aria-label="도전 수첩 닫기">×</button>
+        </nav>
+      </header>
+      <div id="journal-body"></div>
+    </div>
+  </section>
+
   <!-- CREDITS -->
   <section class="screen screen--modal" id="scr-credits" aria-label="만든 것들">
     <div class="modal modal--wide modal--text">
@@ -455,7 +547,7 @@
       </svg>
       <div>기기를 가로로 돌리자</div>
       <small>탑은 가로 화면에서 가장 잘 보인다</small>
-      <button class="nag__skip" type="button" data-act="dismissNag" data-nonav>그래도 계속</button>
+      <button class="nag__skip" type="button" data-act="dismissNag">그래도 계속</button>
     </div>
   </div>
 </div>

@@ -2,14 +2,15 @@
  * Runtime-synthesised audio — nothing is downloaded. Implements `AudioPort`.
  *
  * Signal graph:
- *   voices ─┬─> sfxBus ───────────────┐
- *           └─> track gain ─> musBus ─> musLp ─┤
- *                                              ├─> master ─> compressor ─> destination
- *              fxSend ─> [delay ─> lowpass ─> feedback ─> delay] x2 ─> wet ─┘
+ *   SFX voices ─┬─> sfxBus ───────────────────────────────┐
+ *              └─> SFX reverb ─> sfxBus                   │
+ *   music ─────┬─> track gain ─> musBus ─> musLp ─────────┤
+ *              └─> track send ─> music reverb ─> musBus  └─> master ─> compressor ─> destination
  *
- * `fxSend` is a two-tap feedback delay with a lowpass in each loop: a cheap
- * stand-in for reverb. The two combs are independent — one shared feedback
- * gain would sum both return paths and double the effective loop gain.
+ * Each category has a two-tap feedback delay returning before its volume
+ * control. The two combs are independent — one shared feedback gain would
+ * sum both return paths and double the effective loop gain. Track sends
+ * follow the same fade as dry music, so a fading track cannot bypass it.
  *
  * Music: each `setTrack` creates a fresh gain + `Sequencer` "layer"; the old
  * layer ramps down while the new one ramps up, and faded layers are reaped.
@@ -33,6 +34,7 @@ interface TrackLayer {
   key: string;
   def: TrackDef;
   gain: GainNode;
+  send: GainNode;
   seq: Sequencer;
   /** Audio time after which the layer is silent and can be removed. */
   fadeEnd: number | null;
@@ -81,7 +83,8 @@ export class AudioEngine implements AudioPort, Synth {
   private sfxBus: GainNode | null = null;
   private musBus: GainNode | null = null;
   private musLp: BiquadFilterNode | null = null;
-  private fxSend: GainNode | null = null;
+  private musicFxSend: GainNode | null = null;
+  private fxInputs = new WeakMap<AudioNode, AudioNode>();
   private noiseBuf: AudioBuffer | null = null;
   private hasPanner = false;
 
@@ -236,7 +239,7 @@ export class AudioEngine implements AudioPort, Synth {
     if (key === this.trackKey) return;
     this.trackKey = key;
     const ctx = this.ctx;
-    if (!ctx || !this.musBus) { this.pendingTrack = key; return; }
+    if (!ctx || !this.musBus || !this.musicFxSend) { this.pendingTrack = key; return; }
     const now = ctx.currentTime;
     if (this.current) {
       this.fadeOut(this.current, now);
@@ -245,10 +248,15 @@ export class AudioEngine implements AudioPort, Synth {
     if (key) {
       const def = TRACKS[key];
       const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.linearRampToValueAtTime(1, now + TRACK_FADE);
+      const send = ctx.createGain();
+      for (const node of [gain, send]) {
+        node.gain.setValueAtTime(0.0001, now);
+        node.gain.linearRampToValueAtTime(1, now + TRACK_FADE);
+      }
       gain.connect(this.musBus);
-      const layer: TrackLayer = { key, def, gain, seq: new Sequencer(def, this, gain, now + 0.05), fadeEnd: null };
+      send.connect(this.musicFxSend);
+      this.fxInputs.set(gain, send);
+      const layer: TrackLayer = { key, def, gain, send, seq: new Sequencer(def, this, gain, now + 0.05), fadeEnd: null };
       this.layers.push(layer);
       this.current = layer;
     }
@@ -303,7 +311,7 @@ export class AudioEngine implements AudioPort, Synth {
     for (let i = this.layers.length - 1; i >= 0; i--) {
       const l = this.layers[i];
       if (l.fadeEnd !== null && now >= l.fadeEnd) {
-        try { l.gain.disconnect(); } catch { /* already gone */ }
+        this.disconnectLayer(l);
         this.layers.splice(i, 1);
       }
     }
@@ -333,14 +341,15 @@ export class AudioEngine implements AudioPort, Synth {
       try { this.doc?.removeEventListener('visibilitychange', this.visHandler); } catch { /* no DOM */ }
       this.visHandler = null;
     }
-    for (const l of this.layers) { try { l.gain.disconnect(); } catch { /* ignore */ } }
+    for (const l of this.layers) this.disconnectLayer(l);
     this.layers = [];
     this.current = null;
     this.pendingTrack = null;
     this.trackKey = null;
     const ctx = this.ctx;
     this.ctx = null;
-    this.master = this.sfxBus = this.musBus = this.fxSend = null;
+    this.master = this.sfxBus = this.musBus = this.musicFxSend = null;
+    this.fxInputs = new WeakMap();
     this.musLp = null;
     this.noiseBuf = null;
     if (ctx) { try { swallow(ctx.close()); } catch { /* ignore */ } }
@@ -450,7 +459,29 @@ export class AudioEngine implements AudioPort, Synth {
     musBus.connect(musLp);
     musLp.connect(master);
 
-    // Two independent comb filters, each owning its damping and feedback.
+    // Both wet returns enter their category volume control. Sharing a return
+    // at master would let muted music/SFX remain audible through the delay.
+    this.fxInputs = new WeakMap();
+    this.fxInputs.set(sfxBus, this.createReverb(ctx, sfxBus));
+    this.musicFxSend = this.createReverb(ctx, musBus);
+    this.fxInputs.set(musBus, this.musicFxSend);
+
+    // Shared white-noise buffer for hats, dust and impacts (looped by each voice).
+    const len = Math.max(1, Math.floor(ctx.sampleRate * 1.2));
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+
+    this.master = master;
+    this.sfxBus = sfxBus;
+    this.musBus = musBus;
+    this.musLp = musLp;
+    this.noiseBuf = buf;
+    this.hasPanner = typeof (ctx as Partial<AudioContext>).createStereoPanner === 'function';
+  }
+
+  /** Two independent comb filters per category, each owning damping and feedback. */
+  private createReverb(ctx: AudioContext, output: AudioNode): GainNode {
     const fxSend = ctx.createGain();
     fxSend.gain.value = 1;
     const wet = ctx.createGain();
@@ -469,21 +500,8 @@ export class AudioEngine implements AudioPort, Synth {
       fb.connect(d);
       lp.connect(wet);
     }
-    wet.connect(master);
-
-    // Shared white-noise buffer for hats, dust and impacts (looped by each voice).
-    const len = Math.max(1, Math.floor(ctx.sampleRate * 1.2));
-    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
-
-    this.master = master;
-    this.sfxBus = sfxBus;
-    this.musBus = musBus;
-    this.musLp = musLp;
-    this.fxSend = fxSend;
-    this.noiseBuf = buf;
-    this.hasPanner = typeof (ctx as Partial<AudioContext>).createStereoPanner === 'function';
+    wet.connect(output);
+    return fxSend;
   }
 
   /** Connect a voice's envelope to its bus, with optional panning and an fx send. */
@@ -498,20 +516,29 @@ export class AudioEngine implements AudioPort, Synth {
       out = p;
     }
     out.connect(dest);
-    if (fx > 0 && this.fxSend) {
+    const fxInput = this.fxInputs.get(dest);
+    if (fx > 0 && fxInput) {
       const send = ctx.createGain();
       send.gain.value = Math.min(1, fx);
       out.connect(send);
-      send.connect(this.fxSend);
+      send.connect(fxInput);
     }
   }
 
   private fadeOut(layer: TrackLayer, now: number): void {
-    const p = layer.gain.gain;
-    try { p.cancelScheduledValues(now); } catch { /* ignore */ }
-    p.setValueAtTime(Math.max(0.0001, p.value), now);
-    p.linearRampToValueAtTime(0, now + TRACK_FADE);
+    for (const p of [layer.gain.gain, layer.send.gain]) {
+      try { p.cancelScheduledValues(now); } catch { /* ignore */ }
+      p.setValueAtTime(Math.max(0.0001, p.value), now);
+      p.linearRampToValueAtTime(0, now + TRACK_FADE);
+    }
     layer.fadeEnd = now + TRACK_FADE + 0.1;
+  }
+
+  private disconnectLayer(layer: TrackLayer): void {
+    this.fxInputs.delete(layer.gain);
+    for (const node of [layer.gain, layer.send]) {
+      try { node.disconnect(); } catch { /* already gone */ }
+    }
   }
 
   private startClock(): void {

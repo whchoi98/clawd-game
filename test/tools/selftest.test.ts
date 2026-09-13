@@ -11,12 +11,27 @@ import { GEN_VERSION, SIM_VERSION } from '../../src/sim/types.js';
 import { GOAL_ECHOES } from '../../src/sim/echoes.generated.js';
 import { DAILY_SEEDS, type CorpusDigest } from '../../src/client/selftest.js';
 import { FIXTURE_PATH, corpusFixture, fixtureStale, main, parseArgs, readFixture, renderFixture } from '../../tools/hash-corpus.js';
-import { FIXTURE_PATH as QA_FIXTURE_PATH, compareDigests, describeMismatches, loadFixture, parseSelftestStamp } from '../../tools/qa/corpus.js';
+import { FIXTURE_PATH as QA_FIXTURE_PATH, compareDigests, describeMismatches, loadFixture, optionalFontDiagnostic, parseSelftestStamp } from '../../tools/qa/corpus.js';
 
 const SCRATCH = '/tmp/claude-1000/-home-ec2-user-my-project-clawd-game/f8aa643c-bc48-400a-8c09-d71da38a73d7/scratchpad';
 mkdirSync(SCRATCH, { recursive: true });
 const tmp = mkdtempSync(join(SCRATCH, 'hash-corpus-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+describe('optional font diagnostics in isolated browser QA', () => {
+  it('recognizes WebKit preconnect failures without a source location', () => {
+    expect(optionalFontDiagnostic('Failed to preconnect to https://fonts.googleapis.com/. Error: Error resolving “fonts.googleapis.com”: Temporary failure in name resolution')).toBe(true);
+  });
+  it('recognizes Firefox optional font CORS failures without hiding application errors', () => {
+    expect(optionalFontDiagnostic('[JavaScript Error: "Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at https://fonts.googleapis.com/css2?family=Outfit. (Reason: CORS request did not succeed). Status code: (null)."]')).toBe(true);
+    expect(optionalFontDiagnostic('TypeError: failed to initialize fonts.googleapis.com')).toBe(false);
+    expect(optionalFontDiagnostic('ReferenceError: scene is not defined')).toBe(false);
+  });
+  it('does not classify game endpoints or similarly named hosts as optional fonts', () => {
+    expect(optionalFontDiagnostic('Failed to preconnect to https://game.test/api/health. Error: network')).toBe(false);
+    expect(optionalFontDiagnostic('Failed to preconnect to https://fonts.googleapis.com.evil.test/. Error: network')).toBe(false);
+  });
+});
 
 /** Silence the CLI's stdout / stderr for one call. */
 function quiet<T>(fn: () => T): T {

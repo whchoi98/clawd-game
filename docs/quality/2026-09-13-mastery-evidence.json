@@ -1,0 +1,151 @@
+{
+  "date": "2026-09-13",
+  "applicationBuild": "bd8f1cb4",
+  "previousStageBuild": "2f522e8a",
+  "baselineCommit": "ab2d975",
+  "simulation": 4,
+  "generator": 2,
+  "unitTests": 1727,
+  "testFiles": 90,
+  "newTestsSincePreviousStage": 126,
+  "payload": {
+    "client": {
+      "bytes": 560343,
+      "gzipBytes": 171916
+    },
+    "css": {
+      "bytes": 91769,
+      "gzipBytes": 21250
+    },
+    "previousStageClient": {
+      "bytes": 543431,
+      "gzipBytes": 166306
+    }
+  },
+  "checks": {
+    "typecheck": "pass",
+    "generatedLevels": "current",
+    "corpus": "current",
+    "chromiumUserFlows": {
+      "passed": 39,
+      "total": 39,
+      "issues": 0
+    },
+    "webkitUserFlows": {
+      "passed": 39,
+      "total": 39,
+      "issues": 0,
+      "containerExitCode": 0
+    },
+    "mobile": {
+      "passed": 54,
+      "total": 54,
+      "issues": 0
+    },
+    "smoke": {
+      "passed": 6,
+      "total": 6,
+      "issues": 0,
+      "mode": "--no-shots"
+    },
+    "readability": {
+      "passed": 10,
+      "total": 10,
+      "issues": 0
+    },
+    "grid": "pass",
+    "determinism": {
+      "chromium": {
+        "passed": 18,
+        "total": 18
+      },
+      "webkit": {
+        "passed": 18,
+        "total": 18
+      },
+      "firefox": {
+        "passed": 18,
+        "total": 18
+      }
+    },
+    "containerHealth": "healthy"
+  },
+  "image": {
+    "architecture": "arm64",
+    "bytes": 175798471,
+    "user": "node",
+    "image": "sha256:af5bde056b9faea36fb9eb13a9ed74d8fc65dfc53ab163bb3b2ffba4ce10b6e5"
+  },
+  "visualChecks": {
+    "smallJournal": {
+      "viewport": "320x568",
+      "horizontalOverflow": 0,
+      "buttonsUnder44px": 0
+    },
+    "resultFixtures": {
+      "viewports": [
+        "1440x900",
+        "750x340",
+        "320x568"
+      ],
+      "retryButtonHeightPx": 44,
+      "kind": "sample data for layout only; not gameplay completion"
+    }
+  },
+  "playerEvidence": {
+    "source": "read-only CloudWatch Logs Insights",
+    "status": "Complete",
+    "windowStart": "2026-09-08T00:00:00.000Z",
+    "windowEnd": "2026-09-13T04:23:22.000Z",
+    "recordsScanned": 404,
+    "recordsMatched": 21,
+    "bytesScanned": 130600,
+    "aggregates": [
+      {
+        "event": "screen",
+        "build": "1ef0d644",
+        "events": 10,
+        "sessions": 6
+      },
+      {
+        "event": "boot",
+        "build": "1ef0d644",
+        "events": 7,
+        "sessions": 7
+      },
+      {
+        "event": "respawn",
+        "build": "1ef0d644",
+        "levelId": "t1",
+        "events": 1,
+        "sessions": 1
+      },
+      {
+        "event": "zone_start",
+        "build": "1ef0d644",
+        "levelId": "t1",
+        "events": 1,
+        "sessions": 1
+      },
+      {
+        "event": "fps_sample",
+        "build": "1ef0d644",
+        "events": 1,
+        "sessions": 1
+      },
+      {
+        "event": "death",
+        "build": "1ef0d644",
+        "levelId": "t1",
+        "events": 1,
+        "sessions": 1
+      }
+    ],
+    "limitation": "Boot sessions do not identify human players. The sample does not establish human difficulty, retention or a treatment effect; horizontal-policy novice bots do not validate vertical difficulty."
+  },
+  "scope": {
+    "deployment": "Unreleased; not deployed to production",
+    "browsers": "Linux engines and emulated viewports, not physical mobile/controller testing",
+    "performance": "No new frame-timing claim; previous-stage measurements remain scoped to that build"
+  }
+}

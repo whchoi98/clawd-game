@@ -41,9 +41,9 @@
  * sort key starts with a digit and `SEED` sorts after them all, so board
  * queries bound `sk < 'SEED'` and the sentinel is never read as an entry.
  *
- * `takeSnapshot` is a conditional delete of the CODE item (`attribute_exists`,
- * ReturnValues ALL_OLD): whichever request deletes it wins, so a code works
- * once. DynamoDB TTL deletes lazily, so ttl is also checked against the clock.
+ * `takeSnapshot` consistently reads CODE and SNAPSHOT before deleting both in
+ * a conditional transaction: failed reads consume nothing and only one
+ * concurrent redemption wins. TTL is checked even before lazy expiry deletion.
  *
  * The BOARD counter (P3-12) rides in the same transaction as a *new* board
  * entry (`saveBest` without `previousRunId`, `putIfBoardEmpty`): `ADD n :one`,
@@ -384,35 +384,47 @@ export class DynamoRepo implements Repo, BoardTotals, RankBounded, RateCounters 
     await this.client.send(new TransactWriteCommand({ TransactItems: items }));
   }
 
-  /** Consume the code (conditional delete), then read and remove the snapshot it points at. */
+  /** Read first; consume both unchanged records atomically only after both reads succeed. */
   async takeSnapshot(code: string): Promise<{ playerId: string; blob: string } | null> {
-    let meta: Item | undefined;
-    try {
-      const res = await this.client.send(new DeleteCommand({
-        TableName: this.table,
-        Key: { pk: KEY.codePk(code), sk: KEY.CODE_SK },
-        ConditionExpression: 'attribute_exists(pk)',
-        ReturnValues: 'ALL_OLD',
-      }));
-      meta = res?.Attributes as Item | undefined;
-    } catch (err) {
-      if (isConditionalCheckFailed(err)) return null;
-      throw err;
-    }
+    const res = await this.client.send(new GetCommand({
+      TableName: this.table,
+      Key: { pk: KEY.codePk(code), sk: KEY.CODE_SK },
+      ConsistentRead: true,
+    }));
+    const meta = res?.Item as Item | undefined;
     const playerId = meta?.playerId;
     if (typeof playerId !== 'string' || this.expired(meta?.ttl)) return null;
     const snap = await this.client.send(new GetCommand({
       TableName: this.table,
       Key: { pk: KEY.playerPk(playerId), sk: KEY.SNAPSHOT_SK },
+      ConsistentRead: true,
     }));
     const item = snap?.Item as Item | undefined;
     if (!item || item.code !== code || typeof item.blob !== 'string' || this.expired(item.ttl)) return null;
-    await this.client.send(new DeleteCommand({
-      TableName: this.table,
-      Key: { pk: KEY.playerPk(playerId), sk: KEY.SNAPSHOT_SK },
-      ConditionExpression: 'code = :code',
-      ExpressionAttributeValues: { ':code': code },
-    })).catch((err: unknown) => { if (!isConditionalCheckFailed(err)) throw err; });
+    const now = Math.floor(this.now() / 1000);
+    try {
+      await this.client.send(new TransactWriteCommand({
+        TransactItems: [
+          { Delete: {
+            TableName: this.table,
+            Key: { pk: KEY.codePk(code), sk: KEY.CODE_SK },
+            ConditionExpression: 'playerId = :playerId AND #ttl = :ttl AND #ttl > :now',
+            ExpressionAttributeNames: { '#ttl': 'ttl' },
+            ExpressionAttributeValues: { ':playerId': playerId, ':ttl': meta!.ttl, ':now': now },
+          } },
+          { Delete: {
+            TableName: this.table,
+            Key: { pk: KEY.playerPk(playerId), sk: KEY.SNAPSHOT_SK },
+            ConditionExpression: 'code = :code AND #blob = :blob AND #ttl = :ttl AND #ttl > :now',
+            ExpressionAttributeNames: { '#blob': 'blob', '#ttl': 'ttl' },
+            ExpressionAttributeValues: { ':code': code, ':blob': item.blob, ':ttl': item.ttl, ':now': now },
+          } },
+        ],
+      }));
+    } catch (err) {
+      if (cancelledIndices(err).some((i) => i === 0 || i === 1)) return null;
+      throw err;
+    }
     return { playerId, blob: item.blob };
   }
 

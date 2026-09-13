@@ -35,7 +35,7 @@
   ],
   "screenshots": [
     { "src": "/screenshots/wide-play.png", "sizes": "960x540", "type": "image/png", "form_factor": "wide", "label": "새벽 물가 — 대시·월점프로 조수 웅덩이를 오른다" },
-    { "src": "/screenshots/wide-tower.png", "sizes": "960x540", "type": "image/png", "form_factor": "wide", "label": "메아리의 탑 — 3개 층 9개 구역" },
+    { "src": "/screenshots/wide-tower.png", "sizes": "960x540", "type": "image/png", "form_factor": "wide", "label": "메아리의 탑 — 4개 층 16개 구역과 길잡이" },
     { "src": "/screenshots/narrow-climb.png", "sizes": "540x960", "type": "image/png", "form_factor": "narrow", "label": "끝없는 등반과 공허의 초 — 폰에서는 가로로 플레이한다" }
   ]
 }
