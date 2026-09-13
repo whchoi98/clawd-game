@@ -43,7 +43,7 @@
 - **다시 오를 목표** — 무사 통과·목표 시간·파편·유물 중 하나를 고정하거나 자유 등반을 고른다. 첫 클리어 후에는 남은 메달을 자동 추천한다. HUD는 이번 도전의 실제 상태를 표시하고, 결과에서는 다음 목표로 바로 재도전한다. 목표 선택은 재접속과 탭 사이에서도 유지된다.
 - **저장·입력·소리의 신뢰성** — 탭 사이의 진행도 덮어쓰기, 전송 중 새로고침으로 기록이 유실되는 문제, 응답 본문 타임아웃, 이전 코드 소모 시점, 음량 0%의 잔향과 모달 초점 문제를 수정했다.
 
-`npm run qa:premium`과 `npm run qa:webkit`은 각각 39개 사용자 흐름을 실제 입력으로 검사한다. `npm run qa:audio`는 실제 WebAudio 출력의 무음을 검사한다. [화면·안정성 보고서](docs/quality/2026-09-13-premium-report.md)와 [도전 목표·보상 보고서](docs/quality/2026-09-13-mastery-report.md)에 변경과 검증 결과를 기록한다. 변경분은 `CHANGELOG.md`의 **Unreleased**에 해당한다.
+`npm run qa:premium`과 `npm run qa:webkit`은 각각 39개 사용자 흐름을 실제 입력으로 검사한다. `npm run qa:audio`는 실제 WebAudio 출력의 무음을 검사한다. [화면·안정성 보고서](docs/quality/2026-09-13-premium-report.md)와 [도전 목표·보상 보고서](docs/quality/2026-09-13-mastery-report.md)에 변경과 검증 결과를 기록한다. 이 개선은 **v0.6.0**으로 배포했으며 [운영 배포 검증](docs/quality/2026-09-13-release-0.6.0.md)을 별도로 기록한다.
 
 | | CLAWD JUMP (참조) | ECHO TOWER |
 |---|---|---|
@@ -266,7 +266,7 @@ npm run icons          # public/icons/icon.svg → PNG (Playwright; 결과는 �
 
 ## 배포
 
-CHANGELOG의 마지막 배포 기록: v0.5.0 (2026-09-07) — `ClawdEchoTowerStack` (ap-northeast-2), CloudFront `E38DW91AO2DWTB` → https://clawd-game.whchoi.net/ (배포 도메인 https://d24frhamecczl7.cloudfront.net/). 이후 개발 변경은 Unreleased와 품질 보고서에서 구분한다.
+현재 운영 버전은 **v0.6.0 · 빌드 b7a69cd7** (2026-09-13 11:55 UTC)이다. `ClawdEchoTowerStack` (ap-northeast-2), CloudFront `E38DW91AO2DWTB` → https://clawd-game.whchoi.net/ (배포 도메인 https://d24frhamecczl7.cloudfront.net/). 배포 후 운영 점검 13/13, 실제 사용자 흐름 12/12, 오프라인 스모크 6/6을 통과했다. [배포 기록](docs/quality/2026-09-13-release-0.6.0.md)에 태스크·캐시·진행도 이전 검증을 남겼다.
 
 ```bash
 export CDK_DEFAULT_ACCOUNT=061525506239 CDK_DEFAULT_REGION=ap-northeast-2
@@ -278,7 +278,7 @@ npm run destroy              # 전부 삭제 (테이블·로그·시크릿 포�
 
 컨텍스트(`cdk.json`): `vpcId`(가져올 VPC), `cloudfrontPrefixListId`(리전별 prefix list, 조회는 `aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing`), `desiredCount`, `domainName` + `certificateArn`(커스텀 도메인: us-east-1 ACM 인증서, 여기서는 기존 `*.whchoi.net` 와일드카드 재사용. DNS는 스택 밖에서 CNAME → 배포 도메인으로 관리하므로 Route 53 레코드는 만들지 않음). `cdk.context.json`(VPC 룩업 캐시)은 재현성을 위해 커밋합니다.
 
-**비용(ap-northeast-2, 대략)** — ALB 약 $18/월 + LCU, Fargate ARM64 0.25 vCPU/0.5 GiB × 2 태스크 약 $14/월, CloudFront·DynamoDB on-demand·Secrets Manager·CloudWatch는 데모 트래픽에서 수 달러. VPC/NAT는 기존 것을 쓰므로 추가 비용이 없습니다.
+**운영 규모** — Fargate ARM64 0.5 vCPU/1 GiB × 2 태스크를 기본으로 최대 10개까지 자동 확장한다. ALB, CloudFront, DynamoDB on-demand, Secrets Manager와 CloudWatch를 사용하며 VPC·NAT는 기존 구성을 참조한다.
 
 ## QA 하네스
 

@@ -26,5 +26,9 @@ remain the only source of earned progress.
 Verified build: `bd8f1cb4`. All 1,727 tests pass; Chromium and WebKit each pass
 39 real-input journey steps; mobile passes 54 checks; all three browser engines
 match the 18 Node corpus digests. The ARM64 image is healthy. Evidence and
-screenshots are in `docs/quality/2026-09-13-mastery-report.md`. Changes remain
-Unreleased; no production deployment was performed.
+screenshots are in `docs/quality/2026-09-13-mastery-report.md`. These results were
+recorded before production deployment.
+
+Follow-up: the user authorized production deployment. Release `v0.6.0`, build
+`b7a69cd7`, was deployed on 2026-09-13. Production checks and operational state
+are recorded in `docs/quality/2026-09-13-release-0.6.0.md`.

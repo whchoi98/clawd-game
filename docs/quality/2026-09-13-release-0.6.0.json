@@ -1,0 +1,190 @@
+{
+  "version": "0.6.0",
+  "build": "b7a69cd7",
+  "site": "https://clawd-game.whchoi.net",
+  "releasedAt": "2026-09-13T11:55:13.831Z",
+  "git": {
+    "tag": "v0.6.0",
+    "commit": "e1afa689c3b60da15dd02fafaeda7c6a5d72d884"
+  },
+  "aws": {
+    "region": "ap-northeast-2",
+    "stack": "ClawdEchoTowerStack",
+    "status": "UPDATE_COMPLETE",
+    "modifiedResourceTypes": [
+      "AWS::ECS::Service",
+      "AWS::ECS::TaskDefinition"
+    ],
+    "previousTaskDefinition": "arn:aws:ecs:ap-northeast-2:061525506239:task-definition/ClawdEchoTowerStackServiceTaskDef78AD7546:9",
+    "service": {
+      "desired": 2,
+      "running": 2,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:ap-northeast-2:061525506239:task-definition/ClawdEchoTowerStackServiceTaskDef78AD7546:10",
+      "deployments": [
+        {
+          "status": "PRIMARY",
+          "rolloutState": "COMPLETED",
+          "running": 2,
+          "pending": 0,
+          "failed": 0
+        }
+      ]
+    },
+    "healthyTargets": 2,
+    "alarms": {
+      "ok": 10,
+      "alarm": 0,
+      "insufficientData": [
+        "ClawdEchoTowerStack-ServiceTaskCountTargetLatencyP95UpperAlarmBE4FD4CB-MZSj16agoo2F"
+      ]
+    },
+    "imageAsset": "2535a0821957e2876144f39df9e384d4f579806fabf028e03c9507585b8513eb",
+    "imageDigest": "sha256:35f4ded5b84e00e55a041b480835f052ceb9eecf081abeaa20ebe5ea795d4caa",
+    "cloudFormationSeconds": 287.38,
+    "invalidation": {
+      "Id": "I10N7DKNZKBUXWBJIFRAHRBEOI",
+      "Status": "Completed",
+      "CreateTime": "2026-09-13T11:54:49.913000+00:00",
+      "Paths": [
+        "/manifest.webmanifest",
+        "/index.html",
+        "/sw.js",
+        "/"
+      ]
+    }
+  },
+  "checks": {
+    "typecheck": "pass",
+    "generatedLevels": "current",
+    "tests": {
+      "passed": 1727,
+      "total": 1727,
+      "files": 90
+    },
+    "postdeploy": {
+      "passed": 13,
+      "total": 13
+    },
+    "assets": {
+      "files": 2,
+      "roundsEach": 20,
+      "passed": 40,
+      "total": 40,
+      "edgeHits": 39
+    },
+    "liveJourney": {
+      "passed": 12,
+      "total": 12,
+      "issues": 0,
+      "scoreSubmissions": 0,
+      "checks": [
+        {
+          "name": "server-build",
+          "ok": true,
+          "ms": 133,
+          "note": "server image 2535a0821957e2876144f39df9e384d4f579806fabf028e03c9507585b8513eb; SIM 4 / GEN 2"
+        },
+        {
+          "name": "release-title",
+          "ok": true,
+          "ms": 3571,
+          "note": "v0.6.0 · 빌드 b7a69cd7"
+        },
+        {
+          "name": "journal-inventory",
+          "ok": true,
+          "ms": 1445,
+          "note": "16 zones, eight skins; fresh locks and unchanged progress"
+        },
+        {
+          "name": "pin-and-reload",
+          "ok": true,
+          "ms": 2415,
+          "note": "nodeath survives a real reload without awarding progress"
+        },
+        {
+          "name": "campaign-preview",
+          "ok": true,
+          "ms": 289,
+          "note": "t1 real terrain and guide control"
+        },
+        {
+          "name": "guide-native-controls",
+          "ok": true,
+          "ms": 3049,
+          "note": "guide reaches its verified finish via native End; no gameplay run or progress"
+        },
+        {
+          "name": "start-live-goal",
+          "ok": true,
+          "ms": 1193,
+          "note": "actual story run with active nodeath goal"
+        },
+        {
+          "name": "journal-suspends-run",
+          "ok": true,
+          "ms": 1297,
+          "note": "same run, state, wall clock and every recorded input byte"
+        },
+        {
+          "name": "checkpoint-retry",
+          "ok": true,
+          "ms": 1733,
+          "note": "same run, one death, nodeath remains missed"
+        },
+        {
+          "name": "whole-run-restart",
+          "ok": true,
+          "ms": 1310,
+          "note": "new run and zero deaths; saved goal remains active"
+        },
+        {
+          "name": "return-to-menu",
+          "ok": true,
+          "ms": 587,
+          "note": "normal campaign restored; no score submissions"
+        },
+        {
+          "name": "service-and-browser-errors",
+          "ok": true,
+          "ms": 0,
+          "note": "no page errors or failed application requests; 1 completed-cache revalidation cancellation(s)"
+        }
+      ]
+    },
+    "smoke": {
+      "passed": 6,
+      "total": 6,
+      "issues": 0,
+      "chromiumDigests": 18,
+      "offlineCache": "cet-b7a69cd7",
+      "precacheEntries": 11,
+      "expectedTelemetryProbe": "smoke-forced-js-error"
+    },
+    "transfer": {
+      "create": 200,
+      "redeem": 200,
+      "reuse": 410,
+      "roundTrip": true,
+      "snapshotAndCodeRemoved": true,
+      "leaderboardWrites": 0
+    }
+  },
+  "diagnostics": {
+    "releaseEnvironment": "Initial global NODE_ENV=production affected Vitest node builtins; release stopped before version/build/deploy. Production is now requested only with build --prod, and all tests passed on retry.",
+    "leaderboardCache": {
+      "completedCachedRead": true,
+      "applicationParsedBody": true,
+      "backgroundInitiator": "other",
+      "cancellations": [
+        {
+          "url": "https://clawd-game.whchoi.net/api/leaderboard?mode=daily&board=2026-09-12&limit=1",
+          "status": 200,
+          "completedCachedRead": true
+        }
+      ],
+      "verification": "CDP showed the script fetch completing from disk cache and the separate browser revalidation being canceled after HTTP 200. Application request errors remain failures."
+    }
+  }
+}
