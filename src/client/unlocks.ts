@@ -10,7 +10,7 @@
  *   shards  · every shard of the zone collected on the clear
  *   relic   · the zone's relic collected on the clear
  *
- * Skins: 'clawd' is always there; 'azure' (AMAZONI / 아마조니) opens at
+ * Skins: 'clawd', 'rabbit' and 'robot' are always there; 'azure' (AMAZONI / 아마조니) opens at
  * AZURE_STARS stars across the tower, 'ember' when the storm tier is reached
  * (any stormspire zone unlocked), 'void' at the first S rank. Phase 5 (P5-2)
  * adds 'coral' at CORAL_MEDALS medals, 'frost' when the summit tier is reached
@@ -129,8 +129,10 @@ export function allZonesDone(progress: Records, levels: Levels): boolean {
 }
 
 // ---------------------------------------------------------------- skins
-export type SkinId = 'clawd' | 'azure' | 'ember' | 'void' | 'coral' | 'frost' | 'gold' | 'nova';
+export type SkinId = 'clawd' | 'rabbit' | 'robot' | 'azure' | 'ember' | 'void' | 'coral' | 'frost' | 'gold' | 'nova';
 export const DEFAULT_SKIN: SkinId = 'clawd';
+/** Characters available before any progress, without an unlock reward or saved ownership entry. */
+export const STARTER_SKINS: readonly SkinId[] = ['clawd', 'rabbit', 'robot'];
 /** Stars across the tower that open 'azure' (AMAZONI). */
 export const AZURE_STARS = 6;
 /** The tier whose reach opens 'ember'. */
@@ -148,7 +150,7 @@ export const NOVA_S_RANKS = 3;
 
 export interface SkinRule {
   id: SkinId;
-  /** Korean unlock hint for the locked picker entry ('' for the free skin). */
+  /** Korean unlock hint for the locked picker entry ('' for free starters). */
   hint: string;
   /** A hint that knows the zone list (the gold rule counts the zones); falls back to `hint`. */
   hintFor?: (levels: Levels) => string;
@@ -156,7 +158,7 @@ export interface SkinRule {
 }
 
 export const SKIN_RULES: readonly SkinRule[] = [
-  { id: 'clawd', hint: '', unlocked: () => true },
+  ...STARTER_SKINS.map((id) => ({ id, hint: '', unlocked: () => true })),
   { id: 'azure', hint: `별 ${AZURE_STARS}개`, unlocked: (p, levels) => totalStars(p, levels) >= AZURE_STARS },
   { id: 'ember', hint: '2층 진입', unlocked: (p, levels) => tierReached(levels, p, EMBER_TIER) },
   { id: 'void', hint: '첫 S 등급', unlocked: (p) => anyRankAtLeast(p, 'S') },
@@ -176,7 +178,7 @@ export function isSkinId(v: unknown): v is string {
 }
 
 /**
- * The unlock hint for a skin id, null for the free skin or an id without a rule.
+ * The unlock hint for a skin id, null for free starters or an id without a rule.
  * With `levels` the hint may count the zones ('16구역 전부 클리어').
  */
 export function skinHint(id: string, levels?: Levels): string | null {
@@ -191,13 +193,13 @@ export function skinsUnlockedBy(progress: Records, levels: Levels): SkinId[] {
 }
 
 /**
- * Skins the player may pick: the free one, every skin the rules grant now,
+ * Skins the player may pick: the free starters, every skin the rules grant now,
  * every skin already recorded in Progress.unlockedSkins (a rule that later
  * tightens never takes a skin back), and the skin currently selected in the
  * settings (grandfathering).
  */
 export function availableSkins(progress: Records & Pick<Progress, 'unlockedSkins'> | null, settings: Pick<Settings, 'skin'> | null, levels: Levels): Set<string> {
-  const out = new Set<string>([DEFAULT_SKIN]);
+  const out = new Set<string>(STARTER_SKINS);
   if (progress) {
     for (const id of skinsUnlockedBy(progress, levels)) out.add(id);
     for (const id of progress.unlockedSkins ?? []) if (isSkinId(id)) out.add(id);
@@ -211,14 +213,14 @@ export function skinAvailable(id: string, progress: Records & Pick<Progress, 'un
 }
 
 /**
- * Record every skin the rules grant now in Progress.unlockedSkins (mutated);
- * returns the ids that were not recorded before — the ones to announce.
+ * Record earned skins in Progress.unlockedSkins (mutated); returns the ids
+ * not recorded before, to announce. Free starters need neither ownership nor rewards.
  */
 export function syncUnlockedSkins(progress: Records & Pick<Progress, 'unlockedSkins'>, levels: Levels): SkinId[] {
   const have = new Set<string>((progress.unlockedSkins ?? []).filter(isSkinId));
   const fresh: SkinId[] = [];
   for (const id of skinsUnlockedBy(progress, levels)) {
-    if (id === DEFAULT_SKIN || have.has(id)) continue;
+    if (STARTER_SKINS.includes(id) || have.has(id)) continue;
     have.add(id);
     fresh.push(id);
   }
@@ -226,7 +228,7 @@ export function syncUnlockedSkins(progress: Records & Pick<Progress, 'unlockedSk
   return fresh;
 }
 
-/** The skin to draw: the selected one when available, else the free one. */
+/** The skin to draw: the selected one when available, else the default. */
 export function effectiveSkin(progress: Records & Pick<Progress, 'unlockedSkins'> | null, settings: Pick<Settings, 'skin'>, levels: Levels): string {
   return skinAvailable(settings.skin, progress, settings, levels) ? settings.skin : DEFAULT_SKIN;
 }

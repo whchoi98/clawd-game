@@ -16,5 +16,5 @@ export { Sky } from './sky.js';
 export { Terrain, SPIKE_SCALE, SPIKE_TIP_INSET } from './tiles.js';
 export { Particles } from './particles.js';
 export { SKINS, GOAL_LOOK_TILES, LOOK_WEIGHT, drawClawd, drawClawdPortrait, lookTarget, setLookTarget, skinById, tintedSkin } from './clawd.js';
-export type { RigPose, RigState, Skin } from './clawd.js';
+export type { CharacterKind, RigPose, RigState, Skin } from './clawd.js';
 export { Actors, PlayerVisual, drawGhost, UPDRAFT_STREAKS_PER_S } from './actors.js';

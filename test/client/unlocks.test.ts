@@ -128,21 +128,61 @@ describe('unlocks · rank · combo · world rank (save.ts record helpers)', () =
 });
 
 describe('unlocks · skins', () => {
-  it('rule table: clawd free · azure at 6 stars (5 is not enough) · ember when a storm zone is open · void at the first S', () => {
-    expect(SKIN_RULES.map((r) => r.id)).toEqual(['clawd', 'azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
+  it('makes cat, rabbit and robot available before progress or settings arrive', () => {
+    expect([...availableSkins(null, null, [])]).toEqual(['clawd', 'rabbit', 'robot']);
+    for (const id of ['clawd', 'rabbit', 'robot']) {
+      expect(skinAvailable(id, null, settings('clawd'), LEVELS)).toBe(true);
+      expect(skinHint(id, LEVELS)).toBeNull();
+    }
+  });
+
+  it('offers only the three starters on a fresh save without awarding progress', () => {
+    const p = progress({});
+    const before = structuredClone(p);
+    expect(skinsUnlockedBy(p, LEVELS)).toEqual(['clawd', 'rabbit', 'robot']);
+    expect([...availableSkins(p, settings('clawd'), LEVELS)]).toEqual(['clawd', 'rabbit', 'robot']);
+    expect(p).toEqual(before);
+  });
+
+  it('adds starters to a legacy save while retaining its selected and owned ids', () => {
+    const p = progress({}, { unlockedSkins: ['azure', 'coral', 'legacy_skin'] });
+    const s = settings('nova');
+    const before = structuredClone({ p, s });
+    expect([...availableSkins(p, s, LEVELS)]).toEqual([
+      'clawd', 'rabbit', 'robot', 'azure', 'coral', 'legacy_skin', 'nova',
+    ]);
+    expect(effectiveSkin(p, s, LEVELS)).toBe('nova');
+    expect({ p, s }).toEqual(before);
+  });
+
+  it.each<{ stage: string; records: Record<string, LevelRecord> }>([
+    { stage: 'at boot', records: {} },
+    { stage: 'after the first clear', records: { t1: Object.assign(rec({ stars: 2, medals: ['par'] }), { bestRank: 'A' }) } },
+  ])('never records or announces free starters $stage', ({ records }) => {
+    const p = progress(records);
+    expect(skinsUnlockedBy(p, LEVELS)).toEqual(['clawd', 'rabbit', 'robot']);
+    const before = structuredClone(p);
+    expect(syncUnlockedSkins(p, LEVELS)).toEqual([]);
+    expect(syncUnlockedSkins(p, LEVELS)).toEqual([]);
+    expect(p.unlockedSkins).toBeUndefined();
+    expect(p).toEqual(before);
+  });
+
+  it('rule table: three free starters · azure at 6 stars (5 is not enough) · ember when a storm zone is open · void at the first S', () => {
+    expect(SKIN_RULES.map((r) => r.id)).toEqual(['clawd', 'rabbit', 'robot', 'azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
     expect(AZURE_STARS).toBe(6);
     const five = progress({ t1: rec({ stars: 3 }), t2: rec({ stars: 2 }) });
     const six = progress({ t1: rec({ stars: 3 }), t2: rec({ stars: 3 }) });
-    expect(skinsUnlockedBy(five, LEVELS)).toEqual(['clawd']);
-    expect(skinsUnlockedBy(six, LEVELS)).toEqual(['clawd', 'azure']);
+    expect(skinsUnlockedBy(five, LEVELS)).toEqual(['clawd', 'rabbit', 'robot']);
+    expect(skinsUnlockedBy(six, LEVELS)).toEqual(['clawd', 'rabbit', 'robot', 'azure']);
     // ember: t3 cleared opens s1 (the storm tier is reached); t2 cleared alone does not
     expect(tierReached(LEVELS, progress({ t1: rec(), t2: rec() }), 'stormspire')).toBe(false);
     const storm = progress({ t1: rec({ stars: 1 }), t2: rec({ stars: 1 }), t3: rec({ stars: 1 }) });
     expect(tierReached(LEVELS, storm, 'stormspire')).toBe(true);
-    expect(skinsUnlockedBy(storm, LEVELS)).toEqual(['clawd', 'ember']);
+    expect(skinsUnlockedBy(storm, LEVELS)).toEqual(['clawd', 'rabbit', 'robot', 'ember']);
     // void: any zone record with an S
     const s = progress({ t1: rec({ stars: 1, bestRank: 'S' } as Partial<LevelRecord>) });
-    expect(skinsUnlockedBy(s, LEVELS)).toEqual(['clawd', 'void']);
+    expect(skinsUnlockedBy(s, LEVELS)).toEqual(['clawd', 'rabbit', 'robot', 'void']);
     expect(skinHint('azure')).toBe('별 6개');
     expect(skinHint('ember')).toBe('2층 진입');
     expect(skinHint('void')).toBe('첫 S 등급');
@@ -152,16 +192,16 @@ describe('unlocks · skins', () => {
 
   it('availableSkins: rules ∪ Progress.unlockedSkins ∪ the selected skin (grandfathering); effectiveSkin falls back to clawd', () => {
     const none = progress({});
-    expect([...availableSkins(none, settings('clawd'), LEVELS)]).toEqual(['clawd']);
+    expect([...availableSkins(none, settings('clawd'), LEVELS)]).toEqual(['clawd', 'rabbit', 'robot']);
     expect(skinAvailable('void', none, settings('clawd'), LEVELS)).toBe(false);
     // a save that already wears void keeps it whatever the rules say
     expect(skinAvailable('void', none, settings('void'), LEVELS)).toBe(true);
     expect(effectiveSkin(none, settings('void'), LEVELS)).toBe('void');
     // a recorded unlock survives a rule that would no longer grant it
     const kept = progress({}, { unlockedSkins: ['ember', 'not a skin!'] });
-    expect([...availableSkins(kept, settings('clawd'), LEVELS)]).toEqual(['clawd', 'ember']);
-    // no progress yet (the picker built before the save arrived): only the free skin and the selected one
-    expect([...availableSkins(null, settings('azure'), LEVELS)]).toEqual(['clawd', 'azure']);
+    expect([...availableSkins(kept, settings('clawd'), LEVELS)]).toEqual(['clawd', 'rabbit', 'robot', 'ember']);
+    // no progress yet (the picker built before the save arrived): the starters and the selected one
+    expect([...availableSkins(null, settings('azure'), LEVELS)]).toEqual(['clawd', 'rabbit', 'robot', 'azure']);
     expect(effectiveSkin(null, settings('ember'), LEVELS)).toBe('ember');
     expect(effectiveSkin(none, { skin: '' }, LEVELS)).toBe('clawd');
   });
@@ -262,7 +302,7 @@ describe('unlocks · Phase 5 skins: coral · frost · gold · nova (P5-2)', () =
     expect(skinsUnlockedBy(v3, LEVELS16)).not.toContain('frost');
     // the shipped tower: everything done, still no summit zone to open → frost stays locked
     const shipped = doneAll(LEVELS12, { medals: [...ALL4], bestRank: 'S' } as Partial<LevelRecord>);
-    expect(skinsUnlockedBy(shipped, LEVELS12)).toEqual(['clawd', 'azure', 'ember', 'void', 'coral', 'gold', 'nova']);
+    expect(skinsUnlockedBy(shipped, LEVELS12)).toEqual(['clawd', 'rabbit', 'robot', 'azure', 'ember', 'void', 'coral', 'gold', 'nova']);
     expect(skinHint('frost')).toBe('4층 진입');
   });
 
@@ -271,7 +311,7 @@ describe('unlocks · Phase 5 skins: coral · frost · gold · nova (P5-2)', () =
     expect(syncUnlockedSkins(p, LEVELS16)).toEqual(['azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
     expect(syncUnlockedSkins(p, LEVELS16)).toEqual([]);
     expect(p.unlockedSkins).toEqual(['azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
-    expect([...availableSkins(progress({}), settings('clawd'), LEVELS16)]).toEqual(['clawd']);
+    expect([...availableSkins(progress({}), settings('clawd'), LEVELS16)]).toEqual(['clawd', 'rabbit', 'robot']);
     expect(skinAvailable('gold', progress({}), settings('gold'), LEVELS16)).toBe(true);   // grandfathered
     expect(effectiveSkin(progress({}, { unlockedSkins: ['nova'] }), settings('nova'), LEVELS16)).toBe('nova');
     expect(effectiveSkin(progress({}), settings('frost'), LEVELS16)).toBe('frost');

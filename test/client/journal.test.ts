@@ -87,7 +87,7 @@ describe('journal goals', () => {
 
     expect(body.querySelector('.journal__summary')?.textContent).toContain('클리어 구역 1 / 16');
     expect(body.querySelector('.journal__summary')?.textContent).toContain('메달 1 / 64');
-    expect(body.querySelector('.journal__summary')?.textContent).toContain('모습 1 / 8');
+    expect(body.querySelector('.journal__summary')?.textContent).toContain('모습 3 / 10');
     expect(body.querySelectorAll('[data-journal-biome]')).toHaveLength(4);
     expect(body.querySelectorAll('[data-journal-zone]')).toHaveLength(16);
     for (const def of LEVELS) {
@@ -218,7 +218,7 @@ describe('journal goals', () => {
   it('gives every action a stable key and a Korean accessible name without global action attributes', () => {
     update();
     const buttons = [...body.querySelectorAll<HTMLButtonElement>('button')];
-    expect(buttons).toHaveLength(104);
+    expect(buttons).toHaveLength(106);
     const keys = buttons.map((button) => button.dataset.journalKey);
     expect(keys.every(Boolean)).toBe(true);
     expect(new Set(keys).size).toBe(buttons.length);
@@ -234,9 +234,32 @@ describe('journal goals', () => {
 });
 
 describe('journal skins', () => {
+  it('offers cat, rabbit and robot on a fresh save and equips each without earning progress', () => {
+    const before = structuredClone(progress);
+    panel = new JournalPanel({
+      doc: document, portrait: () => null, onGoal() {},
+      onEquip: (id) => { equips.push(id); settings = { ...settings, skin: id }; update(); },
+    });
+    update();
+    const available = [...body.querySelectorAll<HTMLButtonElement>('[data-journal-skin] button:not(:disabled)')];
+    expect(available.map((button) => button.dataset.journalKey)).toEqual(['skin:clawd', 'skin:rabbit', 'skin:robot']);
+    expect(body.querySelector('.journal__summary')?.textContent).toContain('모습 3 / 10');
+    for (const [id, name] of [['rabbit', '토끼'], ['robot', '로봇'], ['clawd', '클로드']]) {
+      expect(skinCard(id).querySelector('.journal-skin__name')?.textContent).toBe(name);
+      skin(id).focus();
+      skin(id).click();
+      expect(settings.skin).toBe(id);
+      expect(skin(id).getAttribute('aria-pressed')).toBe('true');
+      expect(skin(id).getAttribute('aria-disabled')).toBe('false');
+      expect(document.activeElement).toBe(skin(id));
+    }
+    expect(equips).toEqual(['rabbit', 'robot', 'clawd']);
+    expect(progress).toEqual(before);
+  });
+
   it('shows real unlock hints and numeric progress for each locked appearance', () => {
     update();
-    expect(body.querySelectorAll('[data-journal-skin]')).toHaveLength(8);
+    expect(body.querySelectorAll('[data-journal-skin]')).toHaveLength(10);
     expect(skin('clawd').textContent).toContain('착용 중');
     expect(skin('clawd').getAttribute('aria-pressed')).toBe('true');
     for (const [id, hint, target] of [
@@ -261,10 +284,10 @@ describe('journal skins', () => {
     progress.unlockedSkins = ['frost'];
     settings.skin = 'nova';
     update();
-    for (const id of ['clawd', 'azure', 'frost', 'nova']) expect(skin(id).disabled).toBe(false);
+    for (const id of ['clawd', 'rabbit', 'robot', 'azure', 'frost', 'nova']) expect(skin(id).disabled).toBe(false);
     expect(skin('coral').disabled).toBe(true);
     expect(skin('nova').textContent).toContain('착용 중');
-    expect(body.querySelector('.journal__summary')?.textContent).toContain('모습 4 / 8');
+    expect(body.querySelector('.journal__summary')?.textContent).toContain('모습 6 / 10');
     skin('azure').click();
     expect(equips).toEqual(['azure']);
     update();

@@ -1,12 +1,12 @@
 /**
- * Clawd, the tower-climbing cat — drawn procedurally every frame.
+ * Tower-climbing cat, rabbit and robot — drawn procedurally every frame.
  *
  * A rig lets the silhouette deform continuously (squash on landing, stretch at
  * take-off, lean into acceleration, legs that actually reach for the ground)
  * and stays sharp at any resolution. A baked sprite can only ever show the
  * poses you drew.
  *
- * Local space: origin at the feet, +y down, ears ~21 units above the ground.
+ * Local space: origin at the feet, +y down; ears/antennae reach ~21–26 units up.
  * The rig state is assembled by the renderer from PlayerState plus its own
  * visual-only timers (squash, blink, anim phase); the sim knows none of this.
  *
@@ -29,13 +29,17 @@ export type SkinAccessory = 'none' | 'scarf' | 'antenna' | 'crown' | 'fins' | 'h
 /** Every accessory value, for tests and tooling. */
 export const SKIN_ACCESSORIES: readonly SkinAccessory[] = ['none', 'scarf', 'antenna', 'crown', 'fins', 'hood', 'halo', 'goggles'];
 
+export type CharacterKind = 'cat' | 'rabbit' | 'robot';
+
 export interface Skin {
   id: string; name: string; kr: string;
-  /** Fur palette; the original field names also serve trails and saved skin ids. */
+  /** Geometry independent of the palette; older costumes default to the cat. */
+  character?: CharacterKind;
+  /** Fur or metal palette; the original keys remain shared with trails and costumes. */
   shell: string; shellHi: string; shellLo: string;
   belly: string; limb: string; eye: string; pupil: string;
   glow: string;
-  /** Costume piece; undefined leaves the fur uncovered. */
+  /** Costume piece; robots keep their antenna by default. */
   accessory?: SkinAccessory;
   /** Accessory / trail colour; defaults to `glow`. */
   trim?: string;
@@ -47,6 +51,18 @@ export const SKINS: Record<string, Skin> = {
     shell: '#E8825C', shellHi: '#FFC09B', shellLo: '#A8422F',
     belly: '#FFD9C0', limb: '#C4553D', eye: '#FFFFFF', pupil: '#1A1020',
     glow: '#FFB088', accessory: 'scarf', trim: '#65E4D4',
+  },
+  rabbit: {
+    id: 'rabbit', name: 'BUNNY', kr: '토끼', character: 'rabbit',
+    shell: '#F6EEE8', shellHi: '#FFFFFF', shellLo: '#B884A3',
+    belly: '#FFF7F3', limb: '#C396AE', eye: '#FFFFFF', pupil: '#48243D',
+    glow: '#FFD4E5', accessory: 'scarf', trim: '#ED91B0',
+  },
+  robot: {
+    id: 'robot', name: 'ROBOT', kr: '로봇', character: 'robot',
+    shell: '#75BFCB', shellHi: '#DDF9F4', shellLo: '#2C637D',
+    belly: '#A7F5DF', limb: '#34556F', eye: '#A9FFF1', pupil: '#102939',
+    glow: '#75F5E1', accessory: 'antenna', trim: '#8EFFD9',
   },
   azure: {
     id: 'azure', name: 'AMAZONI', kr: '아마조니',
@@ -114,13 +130,14 @@ let look: { x: number; y: number } | null = null;
 export function setLookTarget(t: { x: number; y: number } | null): void { look = t; }
 export function lookTarget(): { x: number; y: number } | null { return look; }
 
-/** Echo skins: a whole palette derived from one accent colour, cached per colour. */
+/** Echo palettes retain the chosen geometry, cached by colour and character. */
 const tintCache = new Map<string, Skin>();
-export function tintedSkin(color: string): Skin {
-  let s = tintCache.get(color);
+export function tintedSkin(color: string, character: CharacterKind = 'cat'): Skin {
+  const key = `${character}:${color}`;
+  let s = tintCache.get(key);
   if (s) return s;
   s = {
-    id: `echo:${color}`, name: 'ECHO', kr: '메아리',
+    id: `echo:${key}`, name: 'ECHO', kr: '메아리', character,
     shell: color,
     shellHi: mixHex(color, '#ffffff', 0.45),
     shellLo: mixHex(color, '#000000', 0.4),
@@ -130,7 +147,7 @@ export function tintedSkin(color: string): Skin {
     pupil: mixHex(color, '#000000', 0.7),
     glow: color,
   };
-  tintCache.set(color, s);
+  tintCache.set(key, s);
   return s;
 }
 
@@ -245,6 +262,42 @@ const HEAD_Y = -11.2;
 const HEAD_RX = 6.3;
 const HEAD_RY = 5.4;
 
+function idleStretch(s: RigState): number {
+  const idle = s.idle ?? 0;
+  const k = idle > IDLE_AFTER ? clamp01(idle - IDLE_AFTER) : 0;
+  if (k === 0 || s.state !== 'idle') return 0;
+  const u = (idle - IDLE_AFTER) % STRETCH_PERIOD - STRETCH_DELAY;
+  return u >= 0 && u < STRETCH_T ? Math.sin(Math.PI * u / STRETCH_T) * k : 0;
+}
+
+/** The rig and its label must use the same squash, stretch and lean. */
+function rigTransform(s: RigState, stretch: number): { sx: number; sy: number; lean: number } {
+  let sx = 1, sy = 1;
+  if (s.squash > 0) { sx = 1 + s.squash * 0.55; sy = 1 - s.squash * 0.42; }
+  else if (s.squash < 0) { sx = 1 + s.squash * 0.32; sy = 1 - s.squash * 0.52; }
+  if (!s.grounded) {
+    const v = clamp(s.vy / 420, -0.5, 0.7);
+    sx *= 1 - v * 0.1;
+    sy *= 1 + v * 0.12;
+  }
+  if (s.state === 'dash') { sx *= 1.3; sy *= 0.78; }
+  if (s.state === 'crouch') { sx *= 1.22; sy *= 0.7; }
+  if (s.state === 'stomp') { sx *= 0.86; sy *= 1.16; }
+  if (stretch > 0) { sx *= 1 - stretch * 0.07; sy *= 1 + stretch * 0.15; }
+  const lean = clamp(s.vx / 220, -1, 1) * 0.2 + (s.state === 'dash' ? s.facing * 0.16 : 0);
+  return { sx, sy, lean };
+}
+
+/** Conservative animated headroom in world units, including ear/antenna motion. */
+export function characterHeadroom(s: RigState): number {
+  const { sx, sy, lean } = rigTransform(s, idleStretch(s));
+  const character = s.skin.character ?? 'cat';
+  let height = character === 'rabbit' ? 28 : character === 'robot' ? 27 : 24;
+  if (s.skin.accessory === 'antenna') height = Math.max(height, 27);
+  const rotation = lean + (s.deadSpin ?? 0);
+  return Math.abs(sy * Math.cos(rotation)) * height + Math.abs(sx * Math.sin(rotation)) * 16;
+}
+
 /** Rounded cheeks, with a flatter forehead between the pointed ears. */
 function headPath(ctx: CanvasRenderingContext2D, rx: number, ry: number, n = 2.5): void {
   ctx.beginPath();
@@ -259,9 +312,35 @@ function headPath(ctx: CanvasRenderingContext2D, rx: number, ry: number, n = 2.5
   ctx.closePath();
 }
 
-/** Lightweight cat outline for dash afterimages, in feet space, using the current fill. */
-export function drawClawdSilhouette(ctx: CanvasRenderingContext2D, facing: number): void {
+/** Add an oval subpath without connecting it to the previous silhouette part. */
+function silhouetteOval(ctx: CanvasRenderingContext2D, x: number, y: number, rx: number, ry: number, rotation = 0): void {
+  ctx.moveTo(x + Math.cos(rotation) * rx, y + Math.sin(rotation) * rx);
+  ctx.ellipse(x, y, rx, ry, rotation, 0, TAU);
+}
+
+/** Lightweight character outline for dash afterimages, in feet space, using the current fill. */
+export function drawClawdSilhouette(ctx: CanvasRenderingContext2D, facing: number, character: CharacterKind = 'cat'): void {
   const face = facing >= 0 ? 1 : -1;
+  if (character !== 'cat') {
+    ctx.beginPath();
+    if (character === 'rabbit') {
+      silhouetteOval(ctx, -face * 5.7, -3.2, 2.2, 2.2);
+      silhouetteOval(ctx, 0, -4.5, 4.5, 4);
+      silhouetteOval(ctx, 0, HEAD_Y, HEAD_RX, HEAD_RY);
+      for (const side of [-1, 1]) {
+        silhouetteOval(ctx, side * 3 - face, -19.8, 1.7, 4.8, side * 0.12 - face * 0.35);
+        silhouetteOval(ctx, side * 2.8, -0.7, 2.2, 0.95);
+      }
+    } else {
+      ctx.roundRect(-4.3, -8.1, 8.6, 7.3, 1.3);
+      ctx.roundRect(-HEAD_RX, HEAD_Y - HEAD_RY, HEAD_RX * 2, HEAD_RY * 2, 2);
+      ctx.rect(-0.6, HEAD_Y - HEAD_RY - 4.4, 1.2, 4.8);
+      silhouetteOval(ctx, 0, HEAD_Y - HEAD_RY - 4.6, 1.3, 1.3);
+      for (const side of [-1, 1]) ctx.roundRect(side * 2.8 - 1.9, -1.6, 4.1, 1.8, 0.6);
+    }
+    ctx.fill();
+    return;
+  }
   ctx.strokeStyle = ctx.fillStyle;
   ctx.lineWidth = 3.0;
   ctx.lineCap = 'round';
@@ -332,11 +411,12 @@ function drawChain(ctx: CanvasRenderingContext2D, s: RigState, pal: AccessoryPal
  */
 export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingContext2D | null, s: RigState): void {
   const sk = s.skin;
+  const character = sk.character ?? 'cat';
   const t = s.t;
   const face = s.facing;
   const air = !s.grounded;
   const st = s.state;
-  const acc: SkinAccessory = sk.accessory ?? 'none';
+  const acc: SkinAccessory = sk.accessory ?? (character === 'robot' ? 'antenna' : 'none');
   const pal = acc !== 'none' ? accessoryPalette(sk) : null;
   const smile = s.smile ?? 0;
   const expr = expressionFor(st, smile);
@@ -344,27 +424,10 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
   // idle behaviours (P5-2): after IDLE_AFTER seconds still, the eyes wander and every STRETCH_PERIOD a stretch
   const idle = s.idle ?? 0;
   const idleK = idle > IDLE_AFTER ? clamp01(idle - IDLE_AFTER) : 0;
-  let stretch = 0;
-  if (idleK > 0 && st === 'idle') {
-    const u = (idle - IDLE_AFTER) % STRETCH_PERIOD - STRETCH_DELAY;
-    if (u >= 0 && u < STRETCH_T) stretch = Math.sin(Math.PI * u / STRETCH_T) * idleK;
-  }
+  const stretch = idleStretch(s);
 
   // ---------- body-space deformation ----------
-  let sx = 1, sy = 1;
-  if (s.squash > 0) { sx = 1 + s.squash * 0.55; sy = 1 - s.squash * 0.42; }
-  else if (s.squash < 0) { sx = 1 + s.squash * 0.32; sy = 1 - s.squash * 0.52; }
-  if (air) {
-    const v = clamp(s.vy / 420, -0.5, 0.7);
-    sx *= 1 - v * 0.1;
-    sy *= 1 + v * 0.12;
-  }
-  if (st === 'dash') { sx *= 1.3; sy *= 0.78; }
-  if (st === 'crouch') { sx *= 1.22; sy *= 0.7; }
-  if (st === 'stomp') { sx *= 0.86; sy *= 1.16; }
-  if (stretch > 0) { sx *= 1 - stretch * 0.07; sy *= 1 + stretch * 0.15; }
-
-  const lean = clamp(s.vx / 220, -1, 1) * 0.2 + (st === 'dash' ? face * 0.16 : 0);
+  const { sx, sy, lean } = rigTransform(s, stretch);
   const bob = s.grounded && Math.abs(s.vx) > 12 ? Math.sin(s.anim * TAU * 2) * 0.7 : 0;
   const breathe = s.grounded && Math.abs(s.vx) < 12 ? Math.sin(t * 2.2) * 0.35 : 0;
   const swimBob = st === 'swim' ? Math.sin(t * 3.1) * 0.8 : 0;
@@ -380,7 +443,7 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
 
   const headY = HEAD_Y + bob + breathe + swimBob;
 
-  // ---------- tail: a curled tip at rest, trailing behind a leap or dash ----------
+  // ---------- tails: curled fur for the cat, a cotton puff for the rabbit ----------
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   const back = -face;
@@ -388,24 +451,33 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
   const tailWave = Math.sin(t * 3.2) * (st === 'dash' ? 0.25 : 0.8);
   const tailLift = st === 'stomp' ? -2 : air ? -1 : 0;
   const tailY = bob + breathe + tailLift;
-  for (let pass = 0; pass < 2; pass++) {
-    ctx.strokeStyle = pass === 0 ? sk.shellLo : sk.shell;
-    ctx.lineWidth = pass === 0 ? 3.7 : 2.7;
+  if (character === 'rabbit') {
+    ctx.fillStyle = sk.shellHi;
+    ctx.strokeStyle = sk.shellLo;
+    ctx.lineWidth = 0.6;
     ctx.beginPath();
-    ctx.moveTo(back * 3.0, -3.0 + tailY);
-    ctx.bezierCurveTo(
-      back * 10.8, -1.7 + tailY, back * (12.6 + speed), -6.4 + tailY,
-      back * (10.4 + speed), -9.6 + tailWave + tailY,
-    );
+    ctx.ellipse(back * 5.6, -3.5 + tailY, 2.35, 2.25, 0, 0, TAU);
+    ctx.fill(); ctx.stroke();
+  } else if (character === 'cat') {
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.strokeStyle = pass === 0 ? sk.shellLo : sk.shell;
+      ctx.lineWidth = pass === 0 ? 3.7 : 2.7;
+      ctx.beginPath();
+      ctx.moveTo(back * 3.0, -3.0 + tailY);
+      ctx.bezierCurveTo(
+        back * 10.8, -1.7 + tailY, back * (12.6 + speed), -6.4 + tailY,
+        back * (10.4 + speed), -9.6 + tailWave + tailY,
+      );
+      ctx.quadraticCurveTo(back * 8.2, -12.2 + tailWave + tailY, back * 7.9, -9.6 + tailWave + tailY);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = sk.belly;
+    ctx.lineWidth = 2.1;
+    ctx.beginPath();
+    ctx.moveTo(back * (10.4 + speed), -9.6 + tailWave + tailY);
     ctx.quadraticCurveTo(back * 8.2, -12.2 + tailWave + tailY, back * 7.9, -9.6 + tailWave + tailY);
     ctx.stroke();
   }
-  ctx.strokeStyle = sk.belly;
-  ctx.lineWidth = 2.1;
-  ctx.beginPath();
-  ctx.moveTo(back * (10.4 + speed), -9.6 + tailWave + tailY);
-  ctx.quadraticCurveTo(back * 8.2, -12.2 + tailWave + tailY, back * 7.9, -9.6 + tailWave + tailY);
-  ctx.stroke();
 
   // ---------- two hind paws, reaching for the ground ----------
   const running = s.grounded && Math.abs(s.vx) > 14;
@@ -440,7 +512,8 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
     ctx.strokeStyle = sk.shellLo;
     ctx.lineWidth = 0.55;
     ctx.beginPath();
-    ctx.ellipse(footX + face * 0.35, footY, 1.8, 0.95, -side * 0.1, 0, TAU);
+    if (character === 'robot') ctx.roundRect(footX + face * 0.35 - 1.9, footY - 0.9, 4.1, 1.8, 0.6);
+    else ctx.ellipse(footX + face * 0.35, footY, character === 'rabbit' ? 2.25 : 1.8, 0.95, -side * 0.1, 0, TAU);
     ctx.fill(); ctx.stroke();
   }
 
@@ -454,12 +527,21 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
   ctx.strokeStyle = sk.shellLo;
   ctx.lineWidth = 0.6;
   ctx.beginPath();
-  ctx.ellipse(0, torsoY, 4.5, 4.0, 0, 0, TAU);
+  if (character === 'robot') ctx.roundRect(-4.3, torsoY - 3.6, 8.6, 7.3, 1.3);
+  else ctx.ellipse(0, torsoY, 4.5, 4.0, 0, 0, TAU);
   ctx.fill(); ctx.stroke();
-  ctx.fillStyle = sk.belly;
-  ctx.beginPath();
-  ctx.ellipse(face * 0.4, torsoY + 0.9, 2.6, 2.7, 0, 0, TAU);
-  ctx.fill();
+  if (character === 'robot') {
+    ctx.fillStyle = sk.pupil;
+    ctx.beginPath(); ctx.roundRect(-2.7, torsoY - 1.8, 5.4, 3.8, 0.7); ctx.fill();
+    ctx.fillStyle = sk.glow;
+    ctx.fillRect(-0.5 + face * 0.2, torsoY - 1.2, 1, 2.6);
+    ctx.fillRect(-1.3 + face * 0.2, torsoY - 0.4, 2.6, 1);
+  } else {
+    ctx.fillStyle = sk.belly;
+    ctx.beginPath();
+    ctx.ellipse(face * 0.4, torsoY + 0.9, 2.6, 2.7, 0, 0, TAU);
+    ctx.fill();
+  }
 
   // ---------- front paws: swing, reach, paddle and stretch ----------
   for (let side = -1; side <= 1; side += 2) {
@@ -496,7 +578,8 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
     ctx.strokeStyle = sk.shellLo;
     ctx.lineWidth = 0.55;
     ctx.beginPath();
-    ctx.ellipse(pawX, pawY, 1.65, 1.8, side * -0.25, 0, TAU);
+    if (character === 'robot') ctx.roundRect(pawX - 1.7, pawY - 1.6, 3.4, 3.2, 0.75);
+    else ctx.ellipse(pawX, pawY, 1.65, 1.8, side * -0.25, 0, TAU);
     ctx.fill(); ctx.stroke();
   }
 
@@ -510,10 +593,23 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
 
   const stalk = s.stalk && s.stalk.length >= 4 ? s.stalk : null;
   for (const side of [-1, 1]) {
+    if (character === 'robot') continue;
     const i = side < 0 ? 0 : 2;
     const drag = clamp(-s.vx / 320 + (stalk ? stalk[i] / 7 : 0), -1.1, 1.1);
     const lift = stalk ? clamp(stalk[i + 1] / 6, -1, 1) : 0;
     const fold = st === 'dash' || st === 'hurt' || st === 'dead' ? 1.1 : 0;
+    if (character === 'rabbit') {
+      const earX = side * 3.2 + drag * 0.8;
+      const earY = -HEAD_RY - 3.4 + lift * 0.5 + fold - stretch * 0.4;
+      const angle = side * 0.12 + drag * 0.3 - face * fold * 0.45;
+      ctx.fillStyle = sk.shellHi;
+      ctx.strokeStyle = sk.shellLo;
+      ctx.lineWidth = 0.65;
+      ctx.beginPath(); ctx.ellipse(earX, earY, 1.75, 5.1, angle, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = sk.trim ?? sk.shellLo;
+      ctx.beginPath(); ctx.ellipse(earX, earY - 0.15, 0.8, 3.9, angle, 0, TAU); ctx.fill();
+      continue;
+    }
     const tipX = side * 5.6 + drag * 1.5;
     const tipY = -HEAD_RY - 4.1 + lift * 0.8 + fold - stretch * 0.6 + Math.sin(t * 3 + side) * 0.15;
     ctx.fillStyle = sk.shell;
@@ -537,29 +633,41 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
   bg.addColorStop(0, sk.shellHi);
   bg.addColorStop(0.42, sk.shell);
   bg.addColorStop(1, sk.shellLo);
-  headPath(ctx, HEAD_RX, HEAD_RY, 2.4);
+  const headRoundness = character === 'robot' ? 4 : 2.4;
+  headPath(ctx, HEAD_RX, HEAD_RY, headRoundness);
   ctx.fillStyle = bg;
   ctx.fill();
 
-  // Cream muzzle, with a small nose and whiskers that read at gameplay size.
-  ctx.beginPath();
-  ctx.ellipse(face * 0.55, 1.9, HEAD_RX * 0.62, HEAD_RY * 0.47, 0, 0, TAU);
-  ctx.fillStyle = sk.belly;
-  ctx.fill();
+  if (character === 'robot') {
+    // A dark screen makes the robot's LED eyes distinct from the animal faces.
+    ctx.fillStyle = sk.pupil;
+    ctx.beginPath(); ctx.roundRect(-5.25, -4.3, 10.5, 5.6, 1.5); ctx.fill();
+    ctx.strokeStyle = sk.shellLo;
+    ctx.lineWidth = 0.65;
+    ctx.stroke();
+  } else {
+    // Cream muzzle, with a small nose and whiskers that read at gameplay size.
+    ctx.beginPath();
+    ctx.ellipse(face * 0.55, 1.9, HEAD_RX * 0.62, HEAD_RY * 0.47, 0, 0, TAU);
+    ctx.fillStyle = sk.belly;
+    ctx.fill();
+  }
 
   // Short tabby marks on the forehead.
-  ctx.strokeStyle = alpha(sk.shellLo, 0.65);
-  ctx.lineWidth = 0.85;
-  for (const x of [-1.7, 0, 1.7]) {
-    ctx.beginPath();
-    ctx.moveTo(x, -HEAD_RY + 0.4);
-    ctx.lineTo(x * 0.8, -HEAD_RY + (x === 0 ? 2.0 : 1.5));
-    ctx.stroke();
+  if (character === 'cat') {
+    ctx.strokeStyle = alpha(sk.shellLo, 0.65);
+    ctx.lineWidth = 0.85;
+    for (const x of [-1.7, 0, 1.7]) {
+      ctx.beginPath();
+      ctx.moveTo(x, -HEAD_RY + 0.4);
+      ctx.lineTo(x * 0.8, -HEAD_RY + (x === 0 ? 2.0 : 1.5));
+      ctx.stroke();
+    }
   }
 
   // rim light along the upper-left arc
   ctx.save();
-  headPath(ctx, HEAD_RX, HEAD_RY, 2.4);
+  headPath(ctx, HEAD_RX, HEAD_RY, headRoundness);
   ctx.clip();
   const rl = ctx.createLinearGradient(-HEAD_RX, -HEAD_RY, 0, 0);
   rl.addColorStop(0, alpha('#ffffff', 0.5));
@@ -569,7 +677,7 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
   ctx.restore();
 
   // outline keeps the silhouette readable against busy terrain
-  headPath(ctx, HEAD_RX, HEAD_RY, 2.4);
+  headPath(ctx, HEAD_RX, HEAD_RY, headRoundness);
   ctx.strokeStyle = alpha(mixHex(sk.shellLo, '#000000', 0.45), 0.55);
   ctx.lineWidth = 0.7;
   ctx.stroke();
@@ -592,7 +700,7 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
     const ex = side * 2.6 + face * 0.7;
     const rx = 1.9, ry = 2.05 * (1 - blink) * (1 - squint * 0.55);
     if (ry < 0.22 || xEyes) {
-      ctx.strokeStyle = sk.pupil;
+      ctx.strokeStyle = character === 'robot' ? sk.eye : sk.pupil;
       ctx.lineWidth = 0.7;
       ctx.beginPath();
       if (xEyes) {
@@ -604,8 +712,10 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
       ctx.stroke();
       continue;
     }
-    ctx.fillStyle = sk.eye;
-    ctx.beginPath(); ctx.ellipse(ex, eyeY, rx, ry, 0, 0, TAU); ctx.fill();
+    if (character !== 'robot') {
+      ctx.fillStyle = sk.eye;
+      ctx.beginPath(); ctx.ellipse(ex, eyeY, rx, ry, 0, 0, TAU); ctx.fill();
+    }
 
     // pupil leads the movement — reads as intent; near the goal the eyes lead there instead (P3-9)
     let px = clamp(s.vx / 240, -1, 1) * 0.85 + face * 0.5;
@@ -621,6 +731,13 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
     }
     px = clamp(px, -rx * 0.45, rx * 0.45);
     py = clamp(py, -ry * 0.4, ry * 0.4);
+    if (character === 'robot') {
+      ctx.fillStyle = sk.eye;
+      ctx.beginPath();
+      ctx.roundRect(ex - 1.1 + px * 0.45, eyeY - ry * 0.6 + py * 0.4, 2.2, ry * 1.2, 0.4);
+      ctx.fill();
+      continue;
+    }
     ctx.fillStyle = sk.pupil;
     ctx.beginPath();
     ctx.ellipse(ex + px, eyeY + py, rx * 0.5, ry * 0.52, 0, 0, TAU);
@@ -632,36 +749,52 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
   }
 
   const noseX = face * 0.7;
-  ctx.fillStyle = sk.pupil;
-  ctx.beginPath();
-  ctx.moveTo(noseX - 0.8, 0.6);
-  ctx.lineTo(noseX + 0.8, 0.6);
-  ctx.quadraticCurveTo(noseX + 0.6, 1.3, noseX, 1.4);
-  ctx.quadraticCurveTo(noseX - 0.6, 1.3, noseX - 0.8, 0.6);
-  ctx.fill();
-  ctx.strokeStyle = alpha(sk.pupil, 0.7);
-  ctx.lineWidth = 0.45;
-  for (const side of [-1, 1]) {
-    for (const y of [0.7, 2.0]) {
+  if (character === 'robot') {
+    ctx.fillStyle = sk.eye;
+    if (expr.mouth === 'o' || expr.mouth === 'open') {
+      ctx.beginPath(); ctx.ellipse(noseX, 2.65, 0.85, 0.85, 0, 0, TAU); ctx.fill();
+    } else {
+      for (let i = -1; i <= 1; i++) ctx.fillRect(noseX + i * 1.05 - 0.35, 2.4 + (smile > 0 ? (i === 0 ? 0.3 : 0) : 0), 0.7, 0.6);
+    }
+  } else {
+    ctx.fillStyle = character === 'rabbit' ? sk.trim ?? sk.shellLo : sk.pupil;
+    ctx.beginPath();
+    ctx.moveTo(noseX - 0.8, 0.6);
+    ctx.lineTo(noseX + 0.8, 0.6);
+    ctx.quadraticCurveTo(noseX + 0.6, 1.3, noseX, 1.4);
+    ctx.quadraticCurveTo(noseX - 0.6, 1.3, noseX - 0.8, 0.6);
+    ctx.fill();
+    ctx.strokeStyle = alpha(sk.pupil, 0.7);
+    ctx.lineWidth = 0.45;
+    for (const side of [-1, 1]) {
+      for (const y of [0.7, 2.0]) {
+        ctx.beginPath();
+        ctx.moveTo(noseX + side * 3.1, y);
+        ctx.lineTo(noseX + side * 6.6, y + (y < 1 ? -0.6 : 0.5));
+        ctx.stroke();
+      }
+    }
+
+    // ---------- expression: brows and mouth ----------
+    if (expr.brow !== 'none') drawBrows(ctx, sk, face, eyeY, expr.brow);
+    if (expr.mouth !== 'none') drawMouth(ctx, sk, face, expr.mouth, smile);
+    else {
+      ctx.strokeStyle = sk.pupil;
+      ctx.lineWidth = 0.55;
       ctx.beginPath();
-      ctx.moveTo(noseX + side * 3.1, y);
-      ctx.lineTo(noseX + side * 6.6, y + (y < 1 ? -0.6 : 0.5));
+      ctx.moveTo(noseX, 1.4);
+      ctx.quadraticCurveTo(noseX - 0.3, 2.6, noseX - 1.5, 2.0);
+      ctx.moveTo(noseX, 1.4);
+      ctx.quadraticCurveTo(noseX + 0.3, 2.6, noseX + 1.5, 2.0);
       ctx.stroke();
     }
-  }
-
-  // ---------- expression: brows and mouth ----------
-  if (expr.brow !== 'none') drawBrows(ctx, sk, face, eyeY, expr.brow);
-  if (expr.mouth !== 'none') drawMouth(ctx, sk, face, expr.mouth, smile);
-  else {
-    ctx.strokeStyle = sk.pupil;
-    ctx.lineWidth = 0.55;
-    ctx.beginPath();
-    ctx.moveTo(noseX, 1.4);
-    ctx.quadraticCurveTo(noseX - 0.3, 2.6, noseX - 1.5, 2.0);
-    ctx.moveTo(noseX, 1.4);
-    ctx.quadraticCurveTo(noseX + 0.3, 2.6, noseX + 1.5, 2.0);
-    ctx.stroke();
+    if (character === 'rabbit' && (expr.mouth === 'none' || expr.mouth === 'smile')) {
+      ctx.fillStyle = sk.eye;
+      ctx.strokeStyle = sk.shellLo;
+      ctx.lineWidth = 0.3;
+      ctx.beginPath(); ctx.rect(noseX - 0.8, 2.0, 1.6, 1.5); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(noseX, 2.0); ctx.lineTo(noseX, 3.4); ctx.stroke();
+    }
   }
 
   // accessories over the face: goggle lenses, the scarf collar
@@ -938,7 +1071,8 @@ function drawCollar(ctx: CanvasRenderingContext2D, pal: AccessoryPalette, face: 
 export function drawClawdPortrait(ctx: CanvasRenderingContext2D, size: number, skin: Skin, t = 0): void {
   ctx.save();
   ctx.translate(size * PORTRAIT_FEET.x, size * PORTRAIT_FEET.y);
-  ctx.scale(size / 32, size / 32);
+  const frameSize = skin.character === 'rabbit' ? 36 : 32;
+  ctx.scale(size / frameSize, size / frameSize);
   drawClawd(ctx, null, {
     x: 0, y: 0, vx: 0, vy: 0, grounded: true, facing: 1, state: 'idle',
     t, anim: 0, squash: 0, invuln: 0, blink: Math.sin(t * 1.7) > 0.97 ? 1 : 0,

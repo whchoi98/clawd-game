@@ -229,7 +229,7 @@ export class Renderer implements RendererPort {
     const last = this.afterAt;
     if (last && Math.hypot(cx - last.x, cy - last.y) < AFTER_IMAGE_SPACING) return;
     this.afterAt = { x: cx, y: cy };
-    this.particles.afterImage(cx, cy, p.facing, skin.shell, 0.6);
+    this.particles.afterImage(cx, cy, p.facing, skin.shell, 0.6, skin.character);
   }
 
   resize(): void { this.stage.resize(); }
@@ -388,11 +388,12 @@ export class Renderer implements RendererPort {
     this.actors.drawBolts(state);
     drawDeathMarks(st, this.deathMarks, this.t);
 
-    for (let i = 0; i < ghosts.length; i++) drawGhost(st, ghosts[i], this.ghostVis[i]);
+    const skin = this.skin();
+    for (let i = 0; i < ghosts.length; i++) drawGhost(st, ghosts[i], this.ghostVis[i], skin.character);
 
     // the live player alone gets the eye lead toward a near goal (set → draw → clear, see clawd.ts)
     setLookTarget(this.goalLook(state.player));
-    this.playerVis.draw(st, level, state.player, this.skin());
+    this.playerVis.draw(st, level, state.player, skin);
     setLookTarget(null);
     this.particles.draw(UI_FONT);
 

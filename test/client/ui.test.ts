@@ -2599,10 +2599,19 @@ describe('UI ceremonies (P3-9)', () => {
 describe('P3-6 · select cards, header totals, result medals, skin locks, HUD hearts / combo', () => {
   beforeEach(() => { document.body.innerHTML = ''; });
 
-  const SKINS4 = {
-    clawd: { name: 'CLAWD', kr: '클로드' }, azure: { name: 'AMAZONI', kr: '아마조니' }, ember: { name: 'EMBER', kr: '엠버' }, void: { name: 'VOID', kr: '보이드' },
+  const SKIN_CHOICES = {
+    clawd: { name: 'CLAWD', kr: '클로드' },
+    rabbit: { name: 'BUNNY', kr: '토끼' },
+    robot: { name: 'ROBOT', kr: '로봇' },
+    azure: { name: 'AMAZONI', kr: '아마조니' },
+    ember: { name: 'EMBER', kr: '엠버' },
+    void: { name: 'VOID', kr: '보이드' },
+    coral: { name: 'CORAL', kr: '코랄' },
+    frost: { name: 'FROST', kr: '프로스트' },
+    gold: { name: 'GOLD', kr: '골드' },
+    nova: { name: 'NOVA', kr: '노바' },
   };
-  /** The plain setup with the four skins and a stinger recorder. */
+  /** The plain setup with starter and earned choices and a stinger recorder. */
   function setupP() {
     mountTemplate();
     const input = makeInput();
@@ -2610,7 +2619,7 @@ describe('P3-6 · select cards, header totals, result medals, skin locks, HUD he
     const stingers: string[] = [];
     const settings = makeSettings();
     const ui = new UI({
-      document, input, defaultBinds: BINDS, skins: SKINS4,
+      document, input, defaultBinds: BINDS, skins: SKIN_CHOICES,
       audio: { ui: (n) => { sounds.push(n); }, init() {}, stinger: (kind) => { stingers.push(kind); } },
     });
     ui.applySettings(settings);
@@ -2690,6 +2699,32 @@ describe('P3-6 · select cards, header totals, result medals, skin locks, HUD he
     ui.show('play');
     ui.showResult(view());
     expect(document.getElementById('res-combo')).toBeNull();
+  });
+
+  it.each(['initializing', 'fresh'])('settings: selects each starter with %s progress through the existing title settings flow', (state) => {
+    const { ui, settings, sounds } = setupP();
+    const p = makeProgress();
+    const before = structuredClone(p);
+    if (state === 'fresh') ui.refreshSelect(p, LEVELS);
+    ui.show('title');
+    $('#title-menu [data-act="openSettings"]').click();
+    expect(ui.screen).toBe('settings');
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>('#pane-av .seg--skins button')];
+    expect(buttons.filter((b) => b.getAttribute('aria-disabled') !== 'true').map((b) => b.dataset.value))
+      .toEqual(['clawd', 'rabbit', 'robot']);
+    for (const [id, label] of [['clawd', '클로드'], ['rabbit', '토끼'], ['robot', '로봇']]) {
+      const button = buttons.find((b) => b.dataset.value === id)!;
+      expect(button.textContent).toContain(label);
+      expect(button.classList.contains('is-locked')).toBe(false);
+      expect(button.querySelector('.seg__hint')).toBeNull();
+      button.click();
+      expect(settings.skin).toBe(id);
+      expect(buttons.filter((b) => b.getAttribute('aria-checked') === 'true')).toEqual([button]);
+      expect(sounds.at(-1)).toBe('confirm');
+    }
+    $('#scr-settings [data-act="close"]').click();
+    expect(ui.screen).toBe('title');
+    expect(p).toEqual(before);
   });
 
   it('settings: locked skins are greyed with their unlock hint and refuse the click; the selected skin is grandfathered; stars unlock', () => {

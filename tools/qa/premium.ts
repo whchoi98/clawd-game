@@ -6,7 +6,7 @@
  *
  * Fresh desktop 1440x900, landscape phone 750x340 and portrait phone 390x844
  * contexts exercise campaign/replay, suspended-run restoration, checkpoint
- * retry, mastery journal/goal persistence and native modal Tab navigation. Actions use pointer/touch
+ * retry, starter-character persistence, mastery journal/goal persistence and native modal Tab navigation. Actions use pointer/touch
  * and keyboard APIs only. Page evaluations read diagnostics, DOM or geometry;
  * they never drive Scenes, step a Sim, inject inputs or seed storage.
  *
@@ -67,6 +67,7 @@ interface ProbeShell {
   run: ProbeRun | null;
   readonly playback: ProbePlayback | null;
   save: { progress: unknown; settings: unknown };
+  renderer: { skinId: string };
 }
 interface RunIdentity { run: ProbeRun; sim: ProbeSim; masks: ProbeRun['masks'] }
 interface PlaybackTarget { cursor?: number; playing?: boolean; speed?: number; finished?: boolean; after?: number; before?: number }
@@ -397,6 +398,53 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
       return `${profile.viewport.width}x${profile.viewport.height}; ${build}; fresh context`;
     })) return;
 
+    if (!await step('starter-characters', async () => {
+      const before = JSON.parse((await page.evaluate(readSave)).progress);
+      const sent = submissions.length;
+      for (const id of ['rabbit', 'robot', 'clawd']) {
+        await activate(page, profile, '#title-menu [data-act="openSettings"]');
+        await screen(page, 'settings');
+        const choices = page.locator('#pane-av .seg--skins button');
+        check(await choices.count() === 10, 'settings must list ten appearances');
+        await readable(page.locator('#pane-av .row--skins .row__label small'), 'starter character instructions');
+        check(await choices.evaluateAll((buttons) => {
+          const row = buttons[0].closest('.row')!.getBoundingClientRect();
+          return buttons.every((button) => {
+            const box = button.getBoundingClientRect();
+            return box.left >= row.left - 1 && box.right <= row.right + 1;
+          });
+        }), 'character choices overflow their row horizontally');
+        for (const starter of ['clawd', 'rabbit', 'robot']) {
+          const choice = page.locator(`#pane-av .seg--skins button[data-value="${starter}"]`);
+          check(await choice.isEnabled() && await choice.getAttribute('aria-disabled') !== 'true',
+            `${starter} is locked before the first run`);
+        }
+        await activate(page, profile, `#pane-av .seg--skins button[data-value="${id}"]`);
+        check(await page.locator(`#pane-av .seg--skins button[data-value="${id}"]`).getAttribute('aria-checked') === 'true',
+          `${id} was not selected`);
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await page.locator('#scr-title.is-active').waitFor({ state: 'visible' });
+        if (await page.locator('#nag-rotate').isVisible()) {
+          await activate(page, profile, '#nag-rotate [data-act="dismissNag"]');
+          await page.locator('#nag-rotate').waitFor({ state: 'hidden' });
+        }
+        await screen(page, 'title');
+        const saved = await page.evaluate(readSave);
+        check(JSON.parse(saved.settings).skin === id, `${id} did not survive a real reload`);
+        check(await page.evaluate((skin) => {
+          const shell = (window as unknown as { __clawd: ProbeShell }).__clawd;
+          return shell.renderer.skinId === skin && shell.run === null && shell.playback === null;
+        }, id), `${id} was not applied to the title renderer before play`);
+        const progress = JSON.parse(saved.progress);
+        check(JSON.stringify(progress.levels) === JSON.stringify(before.levels), 'character selection changed zone records');
+        check(JSON.stringify(progress.unlockedSkins ?? []) === JSON.stringify(before.unlockedSkins ?? []),
+          'starter selection changed earned costumes');
+        await shot(`starter-${id}`);
+      }
+      check(submissions.length === sent, 'starter selection submitted a run');
+      return 'cat, rabbit and robot available before play; selection and renderer survive reload; earned progress unchanged';
+    })) return;
+
     if (!await step('journal-goal', async () => {
       const saved = await page.evaluate(readSave);
       const sent = submissions.length;
@@ -426,13 +474,14 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
       await activate(page, profile, '#scr-journal header [data-act="journalSkins"]');
       const skins = page.locator('#journal-body [data-journal-skin]');
       const skinIds = await skins.evaluateAll((cards) => cards.map((card) => card.getAttribute('data-journal-skin')));
-      check(skinIds.length === 8 && new Set(skinIds).size === 8, `expected eight unique skins, got ${skinIds}`);
+      check(skinIds.length === 10 && new Set(skinIds).size === 10, `expected ten unique skins, got ${skinIds}`);
       for (const card of await skins.all()) {
         const id = await card.getAttribute('data-journal-skin');
         const equip = card.locator('button');
         await readable(card.locator('.journal-skin__name'), `${id} skin name`);
-        if (id === 'clawd') {
-          check(await equip.isEnabled() && await equip.getAttribute('aria-pressed') === 'true', 'default skin is not available/equipped');
+        if (id === 'clawd' || id === 'rabbit' || id === 'robot') {
+          check(await equip.isEnabled() && await equip.getAttribute('aria-disabled') === 'false', `${id} starter skin is not available`);
+          check(await equip.getAttribute('aria-pressed') === String(id === 'clawd'), `${id} starter skin has the wrong equipped state`);
         } else {
           check(await equip.isDisabled() && await equip.getAttribute('aria-disabled') === 'true', `${id} locked skin is enabled`);
           await readable(card.locator('.journal-skin__hint'), `${id} skin unlock condition`);
@@ -458,7 +507,7 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
       await screen(page, 'title');
       await unchangedSave(page, pinnedSave, 'closing the journal');
       check(submissions.length === sent, 'journal browsing/pinning submitted a run');
-      return `16 zones, eight skins, readable locks; nodeath pinned without progress; ${count} keyboard controls`;
+      return `16 zones, ten skins with three starters, readable locks; nodeath pinned without progress; ${count} keyboard controls`;
     })) return;
 
     if (!await step('journal-reload', async () => {

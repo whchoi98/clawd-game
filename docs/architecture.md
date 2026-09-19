@@ -42,10 +42,16 @@ flowchart TB
 | Authored content and generated output | [levels/build.ts](../levels/build.ts), [solutions.ts](../levels/solutions.ts) |
 | Build and offline assets | [build.mjs](../tools/build.mjs), [lib.mjs](../tools/lib.mjs), [sw.ts](../src/client/sw/sw.ts) |
 
-[The character rig](../src/client/render/clawd.ts) draws the cat and its eight skin
-palettes. `PlayerVisual` in [actors.ts](../src/client/render/actors.ts) keeps the
+[The character rig](../src/client/render/clawd.ts) draws distinct cat, rabbit and
+robot shapes: three free starters and seven earned cat costumes.
+`STARTER_SKINS` in [unlocks.ts](../src/client/unlocks.ts) makes the starters
+available without progress or unlock notifications, while preserving earned skins.
+`PlayerVisual` in [actors.ts](../src/client/render/actors.ts) keeps the
 ear springs and scarf chain in presentation state; [particles.ts](../src/client/render/particles.ts)
-reuses `drawClawdSilhouette` for dash afterimages.
+reuses the selected `CharacterKind` in `drawClawdSilhouette` for dash afterimages.
+Echoes use that same selected shape with a tint; their labels clear the animated
+body bounds through `characterHeadroom`. Appearance is a saved setting, outside
+the replay input log.
 `PORTRAIT_FEET` in [contracts.ts](../src/client/contracts.ts) defines the foot
 position within a square portrait as `(0.5, 0.88)` of its size. `drawClawdPortrait`
 and [the ending UI](../src/client/ui/ui.ts) share this anchor to align the cat's
@@ -154,10 +160,16 @@ flowchart TB
 | 저작 콘텐츠와 생성 산출물 | [levels/build.ts](../levels/build.ts), [solutions.ts](../levels/solutions.ts) |
 | 빌드와 오프라인 에셋 | [build.mjs](../tools/build.mjs), [lib.mjs](../tools/lib.mjs), [sw.ts](../src/client/sw/sw.ts) |
 
-[캐릭터 리그](../src/client/render/clawd.ts)는 고양이와 여덟 스킨 팔레트를 그립니다.
+[캐릭터 리그](../src/client/render/clawd.ts)는 형태가 다른 고양이·토끼·로봇을
+그립니다. 기본 3종과 해금하는 고양이 모습 7종을 제공합니다.
+[unlocks.ts](../src/client/unlocks.ts)의 `STARTER_SKINS`는 진행도나 해금 알림 없이
+기본 캐릭터를 선택하게 하며 기존에 얻은 모습도 보존합니다.
 [actors.ts](../src/client/render/actors.ts)의 `PlayerVisual`은 귀 스프링과 스카프
 체인을 표현 상태로 보관하고, [particles.ts](../src/client/render/particles.ts)는
-`drawClawdSilhouette`을 대시 잔상에 재사용합니다.
+선택한 `CharacterKind`를 `drawClawdSilhouette`의 대시 잔상에 재사용합니다.
+메아리에도 선택한 형태와 별도 색을 적용하며, `characterHeadroom`이 애니메이션
+중인 몸체 위로 이름표를 배치합니다. 외형은 저장 설정이며 리플레이 입력 로그와
+분리됩니다.
 [contracts.ts](../src/client/contracts.ts)의 `PORTRAIT_FEET`는 정사각형 초상 안의
 발 위치를 크기 대비 `(0.5, 0.88)`로 정의합니다. `drawClawdPortrait`와
 [엔딩 UI](../src/client/ui/ui.ts)가 이 기준점을 공유해 캔버스 크기가 달라져도

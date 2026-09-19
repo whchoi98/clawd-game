@@ -9,7 +9,7 @@
  * Purely presentational: nothing here feeds back into the simulation.
  */
 import { Stage, TAU, alpha, clamp01 } from './stage.js';
-import { drawClawdSilhouette } from './clawd.js';
+import { drawClawdSilhouette, type CharacterKind } from './clawd.js';
 
 const CAP = 1400;
 
@@ -28,6 +28,7 @@ class P {
   txt = '';
   bounce = 0;
   wobble = 0;
+  character: CharacterKind = 'cat';
 }
 
 export type SolidAt = (x: number, y: number) => boolean;
@@ -218,17 +219,18 @@ export class Particles {
   }
 
   /**
-   * One dash after-image: the cat's ears, paws and tail in the skin's colour,
+   * One dash after-image: the selected character's silhouette in the skin's colour,
    * facing along the dash and fading over a fifth of a second.
    * The emitter owns the spacing, so the budget is not applied here.
    */
-  afterImage(x: number, y: number, facing: number, col: string, glow = 0.6): void {
+  afterImage(x: number, y: number, facing: number, col: string, glow = 0.6, character: CharacterKind = 'cat'): void {
     const p = this.take();
     p.kind = Kind.Blob; p.life = p.max = 0.22;
     p.x = x; p.y = y; p.vx = 0; p.vy = 0;
     p.r = 7.2; p.grav = 0; p.drag = 1;
     p.rot = facing >= 0 ? 1 : -1;
     p.col = col; p.glow = glow; p.a0 = 0.55;
+    p.character = character;
   }
 
   /** Respawn pop: a tight ring and a burst of glowing motes flung outward, so the return reads as an arrival. */
@@ -420,14 +422,14 @@ export class Particles {
           break;
         }
         case Kind.Blob: {
-          // The same feline silhouette as the player, stretching thinner as it fades.
+          // The player's chosen silhouette stretches thinner as it fades.
           const f = p.rot >= 0 ? 1 : -1;
           const rx = p.r * (1 + age * 0.25), ry = p.r * 0.86 * (1 - age * 0.3);
           ctx.fillStyle = alpha(p.col, a);
           ctx.save();
           ctx.translate(p.x, p.y);
           ctx.scale(rx / p.r * 1.15, ry / p.r);
-          drawClawdSilhouette(ctx, f);
+          drawClawdSilhouette(ctx, f, p.character);
           ctx.restore();
           if (g) {
             g.fillStyle = alpha(p.col, a * p.glow);

@@ -117,7 +117,12 @@ function fakeRenderer(): FakeRenderer {
     viewW: 512, viewH: 288, fps: 60, qualityTier: 'high',
     applySettings() {},
     clearParticles() {},
-    skins: { clawd: { name: 'CLAWD', kr: '클로드' }, azure: { name: 'AMAZONI', kr: '아마조니' } },
+    skins: {
+      clawd: { name: 'CLAWD', kr: '클로드' },
+      rabbit: { name: 'BUNNY', kr: '토끼' },
+      robot: { name: 'ROBOT', kr: '로봇' },
+      azure: { name: 'AMAZONI', kr: '아마조니' },
+    },
   };
   return r;
 }
@@ -1228,6 +1233,41 @@ describe('Scenes', () => {
     expect(ui.result?.objective).toMatchObject({ id: 'nodeath', state: 'missed' });
     expect(ui.result?.nextGoal?.id).toBe(next);
     expect(save.settings.goalTargets?.[def.id]).toBe('nodeath');
+  });
+
+  it.each(['clawd', 'rabbit', 'robot'])('equips and persists starter %s before the first run without awarding progress', (id) => {
+    const { scenes, ui, save, storage } = makeScenes([flatRoom()]);
+    scenes.bootSync();
+    const before = structuredClone(save.progress);
+    ui.emit({ type: 'equipSkin', skin: id });
+    expect(save.settings.skin).toBe(id);
+    expect(save.progress).toEqual(before);
+    expect(save.progress.unlockedSkins).toBeUndefined();
+    expect(scenes.run).toBeNull();
+    save.flush();
+    expect(makeSave(storage).save.settings.skin).toBe(id);
+  });
+
+  it('retains legacy selected and owned costumes when adding starter choices', () => {
+    const { scenes, ui, save, storage, renderer } = makeScenes([flatRoom()]);
+    renderer.skins.nova = { name: 'NOVA', kr: '노바' };
+    save.settings.skin = 'nova';
+    save.progress.unlockedSkins = ['azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova'];
+    save.saveSettings();
+    save.saveProgress();
+    save.flush();
+    scenes.bootSync();
+    const before = structuredClone(save.progress);
+    expect(makeSave(storage).save.settings.skin).toBe('nova');
+    ui.emit({ type: 'equipSkin', skin: 'rabbit' });
+    expect(save.settings.skin).toBe('rabbit');
+    save.flush();
+    const reloaded = makeSave(storage).save;
+    expect(reloaded.settings.skin).toBe('rabbit');
+    expect(reloaded.progress.unlockedSkins).toEqual(['azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
+    expect(save.progress).toEqual(before);
+    ui.emit({ type: 'equipSkin', skin: 'nova' });
+    expect(save.settings.skin).toBe('nova');
   });
 
   it('refuses locked skin equipment and uses existing earned availability', () => {
@@ -3813,6 +3853,20 @@ describe('P3-6 · medals, rank, combo, skins, /api/me rows and the busy retry', 
     await scenes.settle();
     expect(ui.result!.submit).toEqual({ state: 'queued', reason: 'busy' });
     expect(queue.retryAt).toBe(now + 12_000);
+  });
+
+  it('the first clear keeps its selected starter without free-character unlock rewards', async () => {
+    const s = makeScenes([flatRoom(), { ...flatRoom(), id: 'flat2' }]);
+    s.scenes.bootSync();
+    s.ui.emit({ type: 'equipSkin', skin: 'rabbit' });
+    s.ui.emit({ type: 'start', levelId: 'flat' });
+    await finishRun(s);
+    expect(s.ui.result?.summary.cleared).toBe(true);
+    expect(s.save.settings.skin).toBe('rabbit');
+    expect(s.save.progress.levels.flat.medals).toEqual(['nodeath', 'par']);
+    expect(s.save.progress.unlockedSkins).toBeUndefined();
+    expect(s.ui.toasts.filter((text) => text.startsWith('새 캐릭터 해금'))).toEqual([]);
+    expect(s.audio.uis).not.toContain('unlock');
   });
 
   it('skins: six stars unlock 아마조니 with a toast and the unlock chime; boot records rule-granted skins silently', async () => {

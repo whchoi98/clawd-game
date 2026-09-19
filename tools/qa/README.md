@@ -7,10 +7,14 @@ landscape phone (750×340) and portrait phone (390×844) browser contexts.
 It checks readable locked-zone names and unlock instructions, the selected
 zone's preview, replay pause/speed/seeking/checkpoint controls, preservation of
 the suspended run, checkpoint retry recording, and native Tab focus in settings.
-The journal checks cover all 16 zones and eight skins, readable unlock conditions,
+The journal checks cover all 16 zones and ten appearances (three free starters),
+readable unlock conditions,
 goal selection without awarding progress, a real reload, reversible goal changes
 while paused, and a whole-run restart after a missed no-death goal. Tab and
-Shift+Tab must remain inside the journal. Each engine runs 39 steps.
+Shift+Tab must remain inside the journal. Each engine runs 42 steps.
+Each profile also selects the rabbit, robot and cat before starting a run,
+reloads to check the saved selection and title renderer, and verifies that
+zone records and earned costumes did not change.
 Actions go through real controls; browser evaluation only reads diagnostics.
 Same-origin errors fail the run. Captures are written to
 `tools/qa/out/premium-*.png`. Use `BASE_URL` to point at a running built server.
@@ -222,9 +226,11 @@ npx vitest run test/client/clawd.test.ts test/client/render.test.ts test/client/
 ```
 
 `test/fixtures/clawd-baseline.json` pins the four base palettes' idle and portrait
-canvas call logs. Before refreshing that visual fixture, inspect all eight skins,
+canvas call logs. Before refreshing that visual fixture, inspect all ten appearances,
 live play, echoes, dash afterimages, and portraits in settings, results, shared
-cards and the ending. Check that the ending portrait's feet meet the summit at
+cards and the ending. Check that labels clear the rabbit's ears and robot's
+antenna during jumps and stomps, and that all ten settings choices wrap within
+the modal. Check that the ending portrait's feet meet the summit at
 desktop and phone sizes; the painter and ending UI share `PORTRAIT_FEET` from
 `src/client/contracts.ts`. Keep the existing saved skin ids and unlock rules.
 

@@ -327,10 +327,12 @@ describe('live and finished goal evaluation', () => {
 });
 
 describe('skin milestone projections', () => {
-  it('shows exactly eight rules in order, with honest starting progress and usable hints', () => {
+  it('shows three available starters and seven earned costumes with honest starting progress', () => {
     const rows = skinMilestones(progress(), defaultSettings(), LEVELS);
     expect(rows.map(({ id, available, current, target }) => [id, available, current, target])).toEqual([
       ['clawd', true, 1, 1],
+      ['rabbit', true, 1, 1],
+      ['robot', true, 1, 1],
       ['azure', false, 0, 6],
       ['ember', false, 0, 1],
       ['void', false, 0, 1],
@@ -436,7 +438,7 @@ describe('skin milestone projections', () => {
       available: true, current: 12, target: 12,
     });
     const empty = skinMilestones(progress(), defaultSettings(), []);
-    expect(empty).toHaveLength(8);
+    expect(empty).toHaveLength(10);
     expect(empty.find((row) => row.id === 'gold')).toMatchObject({ available: false, current: 0, target: 0 });
   });
 
@@ -444,12 +446,12 @@ describe('skin milestone projections', () => {
     const p = progress({}, { unlockedSkins: ['azure', 'void', 'gold', 'unknown_skin'] });
     const settings = { ...defaultSettings(), skin: 'nova' };
     const rows = skinMilestones(p, settings, LEVELS);
-    expect(rows.filter((row) => row.available).map((row) => row.id)).toEqual(['clawd', 'azure', 'void', 'gold', 'nova']);
+    expect(rows.filter((row) => row.available).map((row) => row.id)).toEqual(['clawd', 'rabbit', 'robot', 'azure', 'void', 'gold', 'nova']);
     expect(rows.find((row) => row.id === 'nova')).toMatchObject({ available: true, current: 0, target: 3 });
     for (const id of ['azure', 'void', 'gold']) {
       expect(rows.find((row) => row.id === id)).toMatchObject({ available: true, current: 0 });
     }
-    expect(rows).toHaveLength(8);
+    expect(rows).toHaveLength(10);
   });
 
   it('matches availableSkins for every rule and retains exact counters above the thresholds', () => {

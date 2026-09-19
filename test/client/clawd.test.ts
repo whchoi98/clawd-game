@@ -1,6 +1,6 @@
 /**
- * The cat character: rig expressions, idle behaviours, secondary
- * motion (ear springs, scarf chain), costume accessories, the eight skins,
+ * The starter characters: rig expressions, idle behaviours, secondary
+ * motion (ear springs, scarf chain), costume accessories, the ten appearances,
  * the pickup cue and the foe anticipation helpers — against a recording canvas
  * context. The base palettes' idle frames and portraits match the reviewed cat
  * rig in test/fixtures/clawd-baseline.json. Refresh that visual fixture only
@@ -14,7 +14,7 @@ import { PLAYER_H, PLAYER_W } from '../../src/sim/config.js';
 import { BIOMES } from '../../src/shared/biomes.js';
 import {
   CHAIN_ANCHOR, CHAIN_N, CHAIN_SEG, IDLE_AFTER, RIG_POSES, SKINS, SKIN_ACCESSORIES, SMILE_T, STRETCH_DELAY, STRETCH_T, drawClawd,
-  drawClawdPortrait, expressionFor, skinById,
+  drawClawdPortrait, drawClawdSilhouette, expressionFor, skinById, tintedSkin,
 } from '../../src/client/render/clawd.js';
 import type { Expression, RigPose, RigState, Skin } from '../../src/client/render/clawd.js';
 import {
@@ -25,7 +25,7 @@ import type { Stage } from '../../src/client/render/stage.js';
 
 type Ctx2D = CanvasRenderingContext2D;
 const BASE_SKINS = ['clawd', 'azure', 'ember', 'void'] as const;
-const ALL_SKINS = [...BASE_SKINS, 'coral', 'frost', 'gold', 'nova'] as const;
+const ALL_SKINS = ['clawd', 'rabbit', 'robot', 'azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova'] as const;
 
 function rig(skin: Skin, over: Partial<RigState> = {}): RigState {
   return {
@@ -86,9 +86,11 @@ describe('clawd rig · cat appearance across the four base palettes', () => {
 });
 
 // ================================================================ skins & accessories
-describe('clawd rig · eight skins and every accessory (P5-2)', () => {
-  it('SKINS keeps eight saved ids, with a scarf for the default cat and the unlocked costumes and Korean names', () => {
+describe('character rig · three starters, cat costumes and every accessory', () => {
+  it('SKINS starts with cat, rabbit and robot and keeps every existing costume id and Korean name', () => {
     expect(Object.keys(SKINS)).toEqual([...ALL_SKINS]);
+    expect(SKINS.rabbit.kr).toBe('토끼');
+    expect(SKINS.robot.kr).toBe('로봇');
     expect(SKINS.clawd.accessory).toBe('scarf');
     expect(SKINS.clawd.trim).toBe('#65E4D4');
     expect(SKINS.coral.accessory).toBe('fins');
@@ -104,7 +106,7 @@ describe('clawd rig · eight skins and every accessory (P5-2)', () => {
     expect(skinById(undefined)).toBe(SKINS.clawd);
   });
 
-  it('drawClawd never throws: 8 skins × 11 poses, glow pass on, with springs, a chain, a smile, idle behaviours, blink, flicker and the death tumble', () => {
+  it('drawClawd never throws: 10 appearances × 11 poses, glow pass on, with springs, a chain, a smile, idle behaviours, blink, flicker and the death tumble', () => {
     const chain = new Float32Array(CHAIN_N * 2);
     for (let i = 0; i < CHAIN_N; i++) { chain[i * 2] = -3 - i * 2; chain[i * 2 + 1] = -6 + i; }
     const stalk = new Float32Array([1.5, 0.4, -2.2, 1]);
@@ -127,7 +129,7 @@ describe('clawd rig · eight skins and every accessory (P5-2)', () => {
     expect(frames).toBe(ALL_SKINS.length * RIG_POSES.length * 2);
   });
 
-  it('drawClawdPortrait draws all eight skins without throwing, at several sizes and clocks', () => {
+  it('drawClawdPortrait draws all ten appearances without throwing, at several sizes and clocks', () => {
     for (const id of ALL_SKINS) {
       for (const [size, t] of [[44, 0], [64, 0.5], [160, 3.3]] as const) {
         const ctx = makeRecordingCtx();
@@ -135,6 +137,24 @@ describe('clawd rig · eight skins and every accessory (P5-2)', () => {
         expect(ctx.log.length).toBeGreaterThan(50);
       }
     }
+  });
+
+  it('the three character shapes stay distinct in same-colour echoes and dash afterimages', () => {
+    const frames = new Set<string>(), silhouettes = new Set<string>();
+    const tints = new Set<Skin>();
+    for (const character of ['cat', 'rabbit', 'robot'] as const) {
+      const skin = tintedSkin('#65E4D4', character);
+      expect(skin.character ?? 'cat').toBe(character);
+      expect(tintedSkin('#65E4D4', character)).toBe(skin);
+      tints.add(skin);
+      frames.add(frameHash(rig(skin), false));
+      const ctx = makeRecordingCtx();
+      drawClawdSilhouette(ctx as unknown as Ctx2D, 1, character);
+      silhouettes.add(hashLog(ctx.log));
+    }
+    expect(tints.size).toBe(3);
+    expect(frames.size).toBe(3);
+    expect(silhouettes.size).toBe(3);
   });
 
   it('every SkinAccessory value is drawn by the rig and the portrait: it adds calls over the uncostumed cat, and "none" adds nothing', () => {

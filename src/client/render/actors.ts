@@ -14,7 +14,7 @@ import type { Level } from '../../sim/level.js';
 import { C, type Biome } from '../../shared/biomes.js';
 import type { GhostView } from '../contracts.js';
 import { Stage, TAU, UI_FONT, alpha, clamp, clamp01, damp, easeOutCubic, lerp, mixHex, sign } from './stage.js';
-import { CHAIN_ANCHOR, CHAIN_N, CHAIN_SEG, SMILE_T, drawClawd, tintedSkin, type RigPose, type RigState, type Skin } from './clawd.js';
+import { CHAIN_ANCHOR, CHAIN_N, CHAIN_SEG, SMILE_T, characterHeadroom, drawClawd, tintedSkin, type CharacterKind, type RigPose, type RigState, type Skin } from './clawd.js';
 import type { Particles } from './particles.js';
 
 const FOE_DIE_T = 0.3;
@@ -1165,7 +1165,7 @@ const VIS_STEP = 1 / 30;
  * run-cycle phase, blink, dash-refill flash, spawn warp, afterimage trail and
  * the death tumble. Derived from PlayerState deltas so it works for ghosts too.
  *
- * The cat's secondary motion uses two ear tips on damped
+ * The animals' secondary motion uses two ear tips on damped
  * springs that lag the body's acceleration, and a CHAIN_N-point scarf chain
  * blown by the biome wind — plus the idle clock and the pickup smile. All of
  * it is derived from PlayerState deltas; nothing feeds back into the sim.
@@ -1452,22 +1452,24 @@ export class PlayerVisual {
  * An echo: the same rig tinted in the ghost's colour, drawn translucent, with
  * no glow, no particles, and a small tag above it.
  */
-export function drawGhost(stage: Stage, ghost: GhostView, vis: PlayerVisual): void {
+export function drawGhost(stage: Stage, ghost: GhostView, vis: PlayerVisual, character: CharacterKind = 'cat'): void {
   const ctx = stage.ctx;
   const p = ghost.player;
-  const skin = tintedSkin(ghost.color);
+  const skin = tintedSkin(ghost.color, character);
+  const rig = vis.rig(p, skin);
   ctx.save();
   ctx.globalAlpha = clamp(ghost.alpha, 0, 1);
   vis.drawTrail(stage, p, skin);
-  drawClawd(ctx, null, vis.rig(p, skin));
+  drawClawd(ctx, null, rig);
   if (ghost.label) {
-    const cx = p.x + p.w / 2, ty = p.y - 7;
+    const halfHeight = 4.2;
+    const cx = p.x + p.w / 2, ty = p.y + p.h - characterHeadroom(rig) - halfHeight - 2;
     ctx.font = `700 5.5px ${UI_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const w = (ctx.measureText(ghost.label).width || 12) + 6;
     ctx.fillStyle = alpha('#07060B', 0.6);
-    ctx.beginPath(); ctx.roundRect(cx - w / 2, ty - 4.2, w, 8.4, 3); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(cx - w / 2, ty - halfHeight, w, halfHeight * 2, 3); ctx.fill();
     ctx.fillStyle = ghost.color;
     ctx.fillText(ghost.label, cx, ty);
   }
