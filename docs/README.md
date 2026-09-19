@@ -34,7 +34,11 @@ Start with the [project README](../README.md) for gameplay and the
 Plans are historical context; use the code and implementation references for
 current behavior.
 
-The latest [v0.6.1 deployment record](quality/2026-09-19-release-0.6.1.md)
+The latest [v0.7.0 deployment record](quality/2026-09-19-release-0.7.0.md)
+covers three starter characters, saved selection, native audio, live gameplay and
+documentation sync.
+
+The [v0.6.1 deployment record](quality/2026-09-19-release-0.6.1.md)
 covers the cat character, native audio checks, live verification and documentation
 sync, with deployment data and screenshots.
 
@@ -77,7 +81,10 @@ documentation sync and test-fixture corrections made before the initial push.
 [로드맵](superpowers/plans/2026-09-06-top-chart-roadmap.md)은 당시의 의도를 기록합니다.
 계획은 과거 맥락이며, 현재 동작은 코드와 구현 참조를 기준으로 확인하세요.
 
-최신 [v0.6.1 배포 기록](quality/2026-09-19-release-0.6.1.md)에는 고양이 캐릭터,
+최신 [v0.7.0 배포 기록](quality/2026-09-19-release-0.7.0.md)에는 기본 캐릭터 3종,
+선택 저장, 실제 오디오·운영 플레이 검증과 문서 동기화 결과를 남겼습니다.
+
+[v0.6.1 배포 기록](quality/2026-09-19-release-0.6.1.md)에는 고양이 캐릭터,
 실제 오디오 검사, 운영 검증과 문서 동기화 결과를 데이터·화면과 함께 남겼습니다.
 
 날짜가 있는 [화면 보고서](quality/2026-09-13-premium-report.md),

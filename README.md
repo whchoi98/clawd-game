@@ -9,8 +9,8 @@
 [![play](https://img.shields.io/badge/▶_PLAY-clawd--game.whchoi.net-E8825C?style=for-the-badge&labelColor=07060B)](https://clawd-game.whchoi.net/)
 
 [![sim](https://img.shields.io/badge/simulation-isomorphic_·_120Hz-5BD8E0?labelColor=15121F)](#결정론적-시뮬레이션이-백엔드를-정당화한다)
-[![tests](https://img.shields.io/badge/tests-1727_passing-8BE86A?labelColor=15121F)](#테스트)
-[![payload](https://img.shields.io/badge/client-548_KiB_·_168_KiB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
+[![tests](https://img.shields.io/badge/tests-1741_passing-8BE86A?labelColor=15121F)](#테스트)
+[![payload](https://img.shields.io/badge/client-552_KiB_·_169_KiB_gz-5BD8E0?labelColor=15121F)](#숫자로-보기)
 [![pwa](https://img.shields.io/badge/PWA-installable_·_offline-8B7BF0?labelColor=15121F)](#pwa-설치와-오프라인)
 [![infra](https://img.shields.io/badge/edge-CloudFront_→_ALB_→_Fargate-FF9900?labelColor=15121F)](#아키텍처)
 [![license](https://img.shields.io/badge/license-MIT-8B7BF0?labelColor=15121F)](LICENSE)
@@ -59,7 +59,7 @@ v0.6.0 검증 당시 `npm run qa:premium`과 `npm run qa:webkit`은 각각 39개
 | 입력 | 이벤트 큐 → 프레임당 엣지 소비 (역사적으로 버그 원인) | **틱당 마스크 1바이트**, 엣지는 sim 내부에서 `mask & ~prev`로 유도 |
 | 언어 | JS + Python 레벨 빌더 | TypeScript 단일 툴체인 (클라이언트·sim·서버·인프라·레벨 DSL) |
 | 배포 산출물 | 해시 없는 파일, 5분 TTL + 전체 무효화 | 콘텐츠 해시 에셋 1년 immutable, `index.html` 브라우저 재검증·엣지 60초 캐시 |
-| 테스트 | CDK 스택 8개 | sim·레벨·클라이언트·서버·인프라 **1,727개** + Playwright 사용자 흐름·오디오·배포 후 점검 |
+| 테스트 | CDK 스택 8개 | sim·레벨·클라이언트·서버·인프라 **1,741개** + Playwright 사용자 흐름·오디오·배포 후 점검 |
 
 ## 아키텍처
 
@@ -286,7 +286,7 @@ npm run icons -- --social  # 실행 중인 빌드 → OG 이미지·PWA 스크�
 
 ## 배포
 
-현재 운영 버전은 **v0.6.1 · 빌드 bcef57a6** (2026-09-19 배포, 06:41 UTC 검증)이다. `ClawdEchoTowerStack` (ap-northeast-2), CloudFront `E38DW91AO2DWTB` → https://clawd-game.whchoi.net/ (배포 도메인 https://d24frhamecczl7.cloudfront.net/). 오디오 포함 전체 검사 1,727/1,727, 운영 점검 13/13, 브라우저 스모크 23/23·모바일 모사 54/54를 통과했다. [배포 기록](docs/quality/2026-09-19-release-0.6.1.md)에 고양이 캐릭터 화면, 태스크·캐시·에셋·리플레이 제출 검증과 문서 동기화 결과를 남겼다.
+현재 운영 버전은 **v0.7.0 · 빌드 605cae6b** (2026-09-19 배포)이다. `ClawdEchoTowerStack` (ap-northeast-2), CloudFront `E38DW91AO2DWTB` → https://clawd-game.whchoi.net/ (배포 도메인 https://d24frhamecczl7.cloudfront.net/). 오디오 포함 전체 검사 1,741/1,741, 운영 점검 13/13, 스모크 23/23, 데스크톱·휴대폰의 캐릭터 선택·재접속 등 실제 입력 흐름 42/42를 통과했다. [배포 기록](docs/quality/2026-09-19-release-0.7.0.md)에 세 기본 캐릭터의 선택·플레이 화면과 태스크·캐시·에셋·리플레이 검증, 문서 동기화 결과를 남겼다.
 
 ```bash
 export CDK_DEFAULT_ACCOUNT=061525506239 CDK_DEFAULT_REGION=ap-northeast-2
@@ -334,7 +334,7 @@ sim은 플레이어의 브라우저(V8·JavaScriptCore·SpiderMonkey)와 기록�
 |---|---|
 | `web` | Node 22 · `npm ci` → typecheck · levels/hash 검사 · `npm test` · build → Playwright Chromium+WebKit+Firefox 설치 → 빌드된 서버 기동 → smoke · mobile · `qa:premium` · `qa:webkit` · `qa:audio` · `selftest --require=chromium,webkit,firefox` · readability · grid → 서버 종료 → `tools/qa/out/**/*.png`를 `qa-screenshots`로 업로드 |
 | `infra` | `npx tsc -p infra --noEmit` → `npx cdk synth --quiet --no-lookups --no-notices` — **AWS 자격 증명 없이**. `Vpc.fromLookup`은 커밋된 `cdk.context.json` 캐시에서 해결되는데 캐시 키가 계정·리전을 포함하므로(`vpc-provider:account=061525506239:…:region=ap-northeast-2:…`) job이 `CDK_DEFAULT_ACCOUNT=061525506239`, `CDK_DEFAULT_REGION`/`AWS_REGION=ap-northeast-2`를 고정합니다. 더미 계정을 쓰면 키가 달라져 룩업이 필요해지고 `--no-lookups`가 "Missing context keys"로 즉시 실패합니다(자격 증명을 찾아 헤매지 않음). `AWS_EC2_METADATA_DISABLED=true`로 자격 증명 탐색을 빨리 포기시키고 `CDK_DOCKER=echo`로 이미지 빌드를 무력화합니다. 마지막으로 템플릿에 ECS Service·CloudFront Distribution·DynamoDB GlobalTable이 있는지 확인. 저장소 시크릿 불필요 — VPC를 바꾸면 자격 증명이 있는 곳에서 `cdk synth` 후 갱신된 `cdk.context.json`을 커밋해야 CI가 다시 초록이 됩니다. |
-| `docker` | `docker/setup-qemu-action`(arm64) + `docker/setup-buildx-action` + `docker/build-push-action`으로 `linux/arm64` 이미지를 빌드(`push: false`, `load: true`, GHA 레이어 캐시) → `docker image inspect`로 아키텍처 `arm64`와 크기 ≤ 200 MB 단언(v0.6.1 배포 이미지 약 176 MB). |
+| `docker` | `docker/setup-qemu-action`(arm64) + `docker/setup-buildx-action` + `docker/build-push-action`으로 `linux/arm64` 이미지를 빌드(`push: false`, `load: true`, GHA 레이어 캐시) → `docker image inspect`로 아키텍처 `arm64`와 크기 ≤ 200 MB 단언(v0.7.0 배포 이미지 약 176 MB). |
 
 CI는 배포하지 않습니다 — 배포는 `npm run release`(수동)입니다. main 보호 규칙에서 세 job을 required check로 지정하면 실패한 PR은 머지되지 않습니다.
 
@@ -367,8 +367,8 @@ docker buildx build --platform linux/arm64 -t clawd-echo-tower:ci .
 
 | | |
 |---|---|
-| 테스트 | 1,727개 (90 파일, 실제 브라우저 오디오 시험 포함) |
-| 플레이어가 내려받는 것 | JS 548 KiB (gz 168 KiB) · CSS 90 KiB · HTML 36 KiB · SW 2 KiB · 폰트 외 외부 요청 0 |
+| 테스트 | 1,741개 (90 파일, 실제 브라우저 오디오 시험 포함) |
+| 플레이어가 내려받는 것 | JS 552 KiB (gz 169 KiB) · CSS 90 KiB · HTML 36 KiB · SW 2 KiB · 폰트 외 외부 요청 0 |
 | 콘텐츠 | 16구역(세로 존 4 포함) · 4바이옴 · 데일리 타워 · 끝없는 등반 · 적 7종 · 오브젝트 11종 |
 
 ## 크레딧 · 라이선스

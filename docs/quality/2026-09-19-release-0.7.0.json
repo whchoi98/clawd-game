@@ -1,0 +1,479 @@
+{
+  "version": "0.7.0",
+  "clientBuild": "605cae6b",
+  "site": "https://clawd-game.whchoi.net/",
+  "verifiedAt": "2026-09-19T07:51:10.718343+00:00",
+  "featureCommit": "bc15211",
+  "starterCharacters": [
+    "clawd",
+    "rabbit",
+    "robot"
+  ],
+  "appearances": 10,
+  "earnedCostumes": 7,
+  "simulation": {
+    "sim": 4,
+    "gen": 2,
+    "changed": false
+  },
+  "deployment": {
+    "stack": "ClawdEchoTowerStack",
+    "region": "ap-northeast-2",
+    "previousTaskRevision": 11,
+    "taskRevision": 12,
+    "imageAsset": "3831118a8121f4fc320850326e091b420ef72d9f3c3c6160693575b3326b7625",
+    "imageDigest": "sha256:3aa59d412f84d3011e93c3ee3061c55036abc13971062c40885e910c725d5c9e",
+    "architecture": "arm64",
+    "imageBytes": 175833252,
+    "cdkSeconds": 227.1,
+    "controlPlane": {
+      "observedAt": "2026-09-19T07:41:21.580Z",
+      "stack": {
+        "status": "UPDATE_COMPLETE",
+        "updatedAt": "2026-09-19T07:33:22.939000+00:00"
+      },
+      "service": {
+        "desired": 2,
+        "running": 2,
+        "pending": 0,
+        "taskDefinition": "arn:aws:ecs:ap-northeast-2:061525506239:task-definition/ClawdEchoTowerStackServiceTaskDef78AD7546:12",
+        "targetGroup": "arn:aws:elasticloadbalancing:ap-northeast-2:061525506239:targetgroup/ClawdE-Servi-DVUXZ5YDVDFO/dbcf173ba75af65c",
+        "deployments": [
+          {
+            "state": "COMPLETED",
+            "status": "PRIMARY",
+            "taskDefinition": "arn:aws:ecs:ap-northeast-2:061525506239:task-definition/ClawdEchoTowerStackServiceTaskDef78AD7546:12"
+          }
+        ]
+      },
+      "alarms": [
+        {
+          "name": "ClawdEchoTowerStack-ServiceTaskCountTargetLatencyP95UpperAlarmBE4FD4CB-MZSj16agoo2F",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-alb-5xx-rate",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-alb-healthy-hosts",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-alb-latency-p95",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-alb-unhealthy-hosts",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-ddb-read-throttles",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-ddb-write-throttles",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-ecs-cpu",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-ecs-memory",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-submit-reject-ratio",
+          "state": "OK"
+        },
+        {
+          "name": "ClawdEchoTowerStack-verify-ms-p95",
+          "state": "OK"
+        }
+      ],
+      "invalidation": {
+        "id": "IDXY274SWLGIOOQX8FGMZ6QBAE",
+        "status": "Completed",
+        "createdAt": "2026-09-19T07:37:19.709000+00:00"
+      },
+      "targets": [
+        "healthy",
+        "healthy"
+      ],
+      "image": "061525506239.dkr.ecr.ap-northeast-2.amazonaws.com/cdk-hnb659fds-container-assets-061525506239-ap-northeast-2:3831118a8121f4fc320850326e091b420ef72d9f3c3c6160693575b3326b7625"
+    }
+  },
+  "checks": {
+    "unitIntegrationAndNativeAudio": {
+      "passed": 1741,
+      "total": 1741,
+      "files": 90,
+      "skipped": 0
+    },
+    "typecheck": "pass",
+    "generatedLevels": "pass",
+    "nodeCorpus": {
+      "passed": 18,
+      "total": 18
+    },
+    "postdeploy": {
+      "passed": 13,
+      "total": 13
+    },
+    "referencedAssets": {
+      "passed": 40,
+      "total": 40,
+      "edgeHits": 39
+    },
+    "deployedFileDigests": [
+      {
+        "file": "index.html",
+        "status": 200,
+        "bytes": 36558,
+        "matches": true,
+        "sha256": "49d519e8f0ab0deb1770869a47b6344a1793852071a134eb7e8d5cc67512f568"
+      },
+      {
+        "file": "sw.js",
+        "status": 200,
+        "bytes": 2360,
+        "matches": true,
+        "sha256": "6415b23275826fe548a9d80f371379cf0504f826751c04964a464923f1742fea"
+      },
+      {
+        "file": "manifest.webmanifest",
+        "status": 200,
+        "bytes": 1979,
+        "matches": true,
+        "sha256": "4096e3304caadb9ceab7c73f4fc607fdb54d6171ed3d21bc97928b176e7b4f0a"
+      },
+      {
+        "file": "favicon.svg",
+        "status": 200,
+        "bytes": 2415,
+        "matches": true,
+        "sha256": "d88cf31c0104b809999434e85df6b358b85d0a3158660edfcd3491e43c9c39a4"
+      },
+      {
+        "file": "icons/icon.svg",
+        "status": 200,
+        "bytes": 4738,
+        "matches": true,
+        "sha256": "efc2a47d31ab820101ebe392ba68fdf7be8097bb9621ddf43ee623a9256cbcc4"
+      },
+      {
+        "file": "icons/icon-192.png",
+        "status": 200,
+        "bytes": 22234,
+        "matches": true,
+        "sha256": "76b122861a1fbefc23af5490e63329149d17daa1ce8a7da71b12052e062322b4"
+      },
+      {
+        "file": "icons/icon-512.png",
+        "status": 200,
+        "bytes": 76326,
+        "matches": true,
+        "sha256": "147aea79adc63ae202d93716829254c5346f7b7fd381dbb0115d78acfe19bc1c"
+      },
+      {
+        "file": "icons/icon-maskable-512.png",
+        "status": 200,
+        "bytes": 42171,
+        "matches": true,
+        "sha256": "37c83eca743b2ec52470744da6fdcc7e6ba9d7238518bcceec592e6118ed22b1"
+      },
+      {
+        "file": "icons/apple-touch-icon.png",
+        "status": 200,
+        "bytes": 14989,
+        "matches": true,
+        "sha256": "4ba848b49dd91357ef5ec1e983667fd8aa8ec7de1bd286d798a8a9babfc43145"
+      },
+      {
+        "file": "og/og.png",
+        "status": 200,
+        "bytes": 273833,
+        "matches": true,
+        "sha256": "627e70d1c805ef74d5f8308edb1a15899d80872fc4342a0f171e2f67b6da234a"
+      },
+      {
+        "file": "screenshots/wide-play.png",
+        "status": 200,
+        "bytes": 232574,
+        "matches": true,
+        "sha256": "b4153b2fecfa47d74169f85b5ff7d96a7c6c4987d82c66130b9ffe182946400b"
+      },
+      {
+        "file": "screenshots/wide-tower.png",
+        "status": 200,
+        "bytes": 209871,
+        "matches": true,
+        "sha256": "9c4fabe8ea15178e5c85c23d60b8663c63fe27c60750bafe39a27a87f3094bd0"
+      },
+      {
+        "file": "screenshots/narrow-climb.png",
+        "status": 200,
+        "bytes": 203359,
+        "matches": true,
+        "sha256": "049e31dd821a565721dae3e1a8bd2bedbe44dd3348e17819e62ae1b328183526"
+      },
+      {
+        "file": "assets/app.BXXQU2WF.js",
+        "status": 200,
+        "bytes": 564780,
+        "matches": true,
+        "sha256": "6fabb5e55d374e41ca264c0d799e1a05ea52b1c5ef5c27f0a82484799f1b7463"
+      },
+      {
+        "file": "assets/styles.cbcf0e94.css",
+        "status": 200,
+        "bytes": 92215,
+        "matches": true,
+        "sha256": "cbcf0e94fe30463a3994152e3a2df62fa86be54567f136c6aca445df87dfa273"
+      }
+    ],
+    "liveChromiumSmoke": {
+      "passed": 23,
+      "issues": 0
+    },
+    "livePremium": {
+      "passed": 42,
+      "issues": 0,
+      "profiles": [
+        "desktop",
+        "phone-landscape",
+        "phone-portrait"
+      ]
+    },
+    "liveStarterPlay": [
+      {
+        "character": "rabbit",
+        "ok": true,
+        "selected": "rabbit",
+        "rendered": "rabbit",
+        "level": "t1",
+        "phase": "play",
+        "tick": 99,
+        "deaths": 0,
+        "canvas": [
+          845,
+          528
+        ],
+        "errors": []
+      },
+      {
+        "character": "robot",
+        "ok": true,
+        "selected": "robot",
+        "rendered": "robot",
+        "level": "t1",
+        "phase": "play",
+        "tick": 99,
+        "deaths": 0,
+        "canvas": [
+          845,
+          528
+        ],
+        "errors": []
+      }
+    ],
+    "liveReplay": {
+      "at": "2026-09-19T07:41:23.084Z",
+      "site": "https://clawd-game.whchoi.net",
+      "clientBuild": "605cae6b",
+      "level": "t1",
+      "checks": [
+        {
+          "name": "verified run accepted",
+          "ok": true,
+          "status": 200
+        },
+        {
+          "name": "claim reproduced",
+          "ok": true,
+          "ticks": 5243,
+          "deaths": 0
+        },
+        {
+          "name": "same-player resubmission is idempotent",
+          "ok": true,
+          "status": 200
+        },
+        {
+          "name": "saved echo is returned",
+          "ok": true,
+          "status": 200
+        },
+        {
+          "name": "personal record is private and uncached",
+          "ok": true,
+          "status": 200
+        },
+        {
+          "name": "tampered claim is rejected",
+          "ok": true,
+          "status": 422,
+          "reason": "claim-mismatch"
+        },
+        {
+          "name": "temporary echo is gone",
+          "ok": true,
+          "status": 404
+        }
+      ],
+      "cleanup": {
+        "ownedRowsRemoved": 4,
+        "remaining": 0,
+        "boardCounterDelta": -1
+      }
+    },
+    "localVisualLayout": [
+      {
+        "echoes": [
+          {
+            "character": "cat",
+            "pose": "idle",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "cat",
+            "pose": "stomp",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "cat",
+            "pose": "fall",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "cat",
+            "pose": "dash",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "rabbit",
+            "pose": "idle",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "rabbit",
+            "pose": "stomp",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "rabbit",
+            "pose": "fall",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "rabbit",
+            "pose": "dash",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "robot",
+            "pose": "idle",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "robot",
+            "pose": "stomp",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "robot",
+            "pose": "fall",
+            "bodyPixelsCoveredByLabel": 0
+          },
+          {
+            "character": "robot",
+            "pose": "dash",
+            "bodyPixelsCoveredByLabel": 0
+          }
+        ]
+      },
+      {
+        "viewport": [
+          1440,
+          900
+        ],
+        "choices": 10,
+        "overflowingChoices": 0,
+        "labelWidth": 490.38946533203125,
+        "rowWidth": 493.57427978515625
+      },
+      {
+        "viewport": [
+          750,
+          340
+        ],
+        "choices": 10,
+        "overflowingChoices": 0,
+        "labelWidth": 503.1913757324219,
+        "rowWidth": 506.37615966796875
+      },
+      {
+        "viewport": [
+          390,
+          844
+        ],
+        "choices": 10,
+        "overflowingChoices": 0,
+        "labelWidth": 296.55712890625,
+        "rowWidth": 299.7418518066406
+      }
+    ]
+  },
+  "payload": [
+    {
+      "file": "app.BXXQU2WF.js",
+      "bytes": 564780,
+      "kib": 551.54,
+      "gzipBytes": 173528,
+      "gzipKib": 169.46
+    },
+    {
+      "file": "styles.cbcf0e94.css",
+      "bytes": 92215,
+      "kib": 90.05,
+      "gzipBytes": 21342,
+      "gzipKib": 20.84
+    }
+  ],
+  "docsSync": {
+    "files": [
+      "README.md",
+      "CHANGELOG.md",
+      "docs/README.md",
+      "docs/architecture.md",
+      "docs/reference/game.md",
+      "tools/qa/README.md"
+    ],
+    "claudeQualityBefore": null,
+    "claudeQualityAfter": null,
+    "notApplicable": "No repository CLAUDE.md or skills directory.",
+    "resolvedGaps": [
+      "Three free starters and seven earned costumes",
+      "Saved choice and geometry in echoes and afterimages",
+      "Responsive selector and animated label clearance",
+      "42-step selection/reload QA",
+      "Current release, test count and payload"
+    ],
+    "afterReleaseCheck": {
+      "status": "pass",
+      "errors": 0,
+      "checks": [
+        "documents",
+        "local_links"
+      ]
+    }
+  },
+  "screenshots": [
+    "assets/2026-09-19-starter-selection.png",
+    "assets/2026-09-19-rabbit-play.png",
+    "assets/2026-09-19-robot-play.png"
+  ],
+  "releaseCommand": "npm run release -- minor --no-tag",
+  "releaseTagCreated": false
+}
