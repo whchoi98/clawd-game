@@ -34,6 +34,10 @@ Start with the [project README](../README.md) for gameplay and the
 Plans are historical context; use the code and implementation references for
 current behavior.
 
+The latest [v0.6.1 deployment record](quality/2026-09-19-release-0.6.1.md)
+covers the cat character, native audio checks, live verification and documentation
+sync, with deployment data and screenshots.
+
 The dated [presentation report](quality/2026-09-13-premium-report.md),
 [mastery report](quality/2026-09-13-mastery-report.md) and
 [v0.6.0 deployment record](quality/2026-09-13-release-0.6.0.md) retain their
@@ -72,6 +76,9 @@ documentation sync and test-fixture corrections made before the initial push.
 [초기 설계](superpowers/specs/2026-09-06-clawd-echo-tower-design.md)와
 [로드맵](superpowers/plans/2026-09-06-top-chart-roadmap.md)은 당시의 의도를 기록합니다.
 계획은 과거 맥락이며, 현재 동작은 코드와 구현 참조를 기준으로 확인하세요.
+
+최신 [v0.6.1 배포 기록](quality/2026-09-19-release-0.6.1.md)에는 고양이 캐릭터,
+실제 오디오 검사, 운영 검증과 문서 동기화 결과를 데이터·화면과 함께 남겼습니다.
 
 날짜가 있는 [화면 보고서](quality/2026-09-13-premium-report.md),
 [도전 목표 보고서](quality/2026-09-13-mastery-report.md),

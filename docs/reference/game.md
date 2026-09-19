@@ -9,7 +9,7 @@
 
 CLAWD JUMP: ECHO TOWER shares a simulation across browser play, echo playback, tooling, and server replay verification.
 Story mode has four tiers of four zones; daily and endless modes generate seeded towers.
-Versions have separate responsibilities: package **0.6.0**, **SIM_VERSION 4**, **GEN_VERSION 2**, settings/progress schema **v1**.
+Versions have separate responsibilities: package **0.6.1**, **SIM_VERSION 4**, **GEN_VERSION 2**, settings/progress schema **v1**.
 Sources: [package](../../package.json), [simulation contract](../../src/sim/types.ts),
 [zone registry](../../levels/build.ts), [client contracts](../../src/client/contracts.ts).
 
@@ -103,7 +103,7 @@ npx tsx tools/qa/selftest.ts --require=chromium,webkit,firefox
 
 CLAWD JUMP: ECHO TOWER는 브라우저 플레이, 메아리 재생, 도구, 서버 리플레이 검증에 같은 시뮬레이션을 사용합니다.
 스토리는 4개 층마다 4개 구역이 있으며, 데일리와 끝없는 등반은 시드로 탑을 생성합니다.
-패키지 **0.6.0**, **SIM_VERSION 4**, **GEN_VERSION 2**, 설정·진행도 스키마 **v1**은 각각 다른 변경 범위를 담당합니다.
+패키지 **0.6.1**, **SIM_VERSION 4**, **GEN_VERSION 2**, 설정·진행도 스키마 **v1**은 각각 다른 변경 범위를 담당합니다.
 근거: [패키지](../../package.json), [시뮬레이션 계약](../../src/sim/types.ts),
 [구역 등록부](../../levels/build.ts), [클라이언트 계약](../../src/client/contracts.ts).
 
