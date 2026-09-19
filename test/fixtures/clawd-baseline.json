@@ -1,14 +1,14 @@
 {
-  "clawd:idle:t=0": "e42c3c46",
-  "clawd:idle:t=1.234": "20fae6f0",
-  "clawd:portrait": "722b746a",
-  "azure:idle:t=0": "f5041e43",
-  "azure:idle:t=1.234": "5019a709",
-  "azure:portrait": "0584fd10",
-  "ember:idle:t=0": "c3c4bf94",
-  "ember:idle:t=1.234": "43689fa6",
-  "ember:portrait": "c47daa48",
-  "void:idle:t=0": "b7d80248",
-  "void:idle:t=1.234": "edb3d1d0",
-  "void:portrait": "b806de0b"
+  "clawd:idle:t=0": "b6ff441f",
+  "clawd:idle:t=1.234": "3cc51bfc",
+  "clawd:portrait": "547f4853",
+  "azure:idle:t=0": "d51b3409",
+  "azure:idle:t=1.234": "bbb8c06c",
+  "azure:portrait": "41ebdb31",
+  "ember:idle:t=0": "b4360969",
+  "ember:idle:t=1.234": "013e63b8",
+  "ember:portrait": "876e6c84",
+  "void:idle:t=0": "a08dd21d",
+  "void:idle:t=1.234": "539b9404",
+  "void:portrait": "905e04af"
 }

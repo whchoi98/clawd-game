@@ -160,6 +160,9 @@ export interface GhostView {
   label?: string;
 }
 
+/** Feet position as fractions of a portrait box, shared with scenes that place it on a surface. */
+export const PORTRAIT_FEET = { x: 0.5, y: 0.88 } as const;
+
 export interface RendererPort {
   /** Rebuild terrain caches for a new level. */
   setLevel(sim: Sim, biome: Biome): void;
@@ -169,7 +172,7 @@ export interface RendererPort {
   onEvent(ev: SimEvent, sim: Sim): void;
   /** Title-screen backdrop (sky + parallax + idle Clawd). */
   drawTitle(t: number, dtFrame: number, biome: Biome): void;
-  /** Draw a portrait of the current skin into a small canvas (settings / result screens). */
+  /** Draw a portrait into a size-square box, with the feet at PORTRAIT_FEET (settings / result screens). */
   drawPortrait(ctx: CanvasRenderingContext2D, skin: string, size: number, t: number): void;
   resize(): void;
   /** Design-box size in world units after the current viewport expansion. */

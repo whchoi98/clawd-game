@@ -1,11 +1,10 @@
 /**
- * P5-2 — the character pass: rig expressions, idle behaviours, secondary
- * motion (antenna springs, scarf chain), costume accessories, the eight skins,
+ * The cat character: rig expressions, idle behaviours, secondary
+ * motion (ear springs, scarf chain), costume accessories, the eight skins,
  * the pickup cue and the foe anticipation helpers — against a recording canvas
- * context. The four shipped skins must draw the pre-Phase-5 frame call for
- * call (test/fixtures/clawd-baseline.json was captured from the untouched rig
- * with exactly the hashing below — an intentional rig change re-pins it by
- * printing those hashes; an accidental one fails here).
+ * context. The base palettes' idle frames and portraits match the reviewed cat
+ * rig in test/fixtures/clawd-baseline.json. Refresh that visual fixture only
+ * after checking an intentional character change in the browser.
  */
 import { describe, expect, it } from 'vitest';
 import baseline from '../fixtures/clawd-baseline.json';
@@ -25,8 +24,8 @@ import {
 import type { Stage } from '../../src/client/render/stage.js';
 
 type Ctx2D = CanvasRenderingContext2D;
-const LEGACY = ['clawd', 'azure', 'ember', 'void'] as const;
-const ALL_SKINS = [...LEGACY, 'coral', 'frost', 'gold', 'nova'] as const;
+const BASE_SKINS = ['clawd', 'azure', 'ember', 'void'] as const;
+const ALL_SKINS = [...BASE_SKINS, 'coral', 'frost', 'gold', 'nova'] as const;
 
 function rig(skin: Skin, over: Partial<RigState> = {}): RigState {
   return {
@@ -56,12 +55,11 @@ function player(over: Partial<PlayerState> = {}): PlayerState {
 }
 
 // ================================================================ regression: the shipped skins
-describe('clawd rig · the four shipped skins are untouched (P5-2)', () => {
-  it('idle frames (t = 0 and 1.234, with the glow pass) and the portrait match the pre-Phase-5 call log fixture', () => {
+describe('clawd rig · cat appearance across the four base palettes', () => {
+  it('idle frames (t = 0 and 1.234, with the glow pass) and the portrait match the cat call log fixture', () => {
     const fixture = baseline as Record<string, string>;
-    for (const id of LEGACY) {
+    for (const id of BASE_SKINS) {
       const skin = skinById(id);
-      expect(skin.accessory).toBeUndefined();
       for (const t of [0, 1.234]) {
         const ctx = makeRecordingCtx(), gctx = makeRecordingCtx();
         drawClawd(ctx as unknown as Ctx2D, gctx as unknown as Ctx2D, {
@@ -74,11 +72,11 @@ describe('clawd rig · the four shipped skins are untouched (P5-2)', () => {
       drawClawdPortrait(pctx as unknown as Ctx2D, 44, skin, 0.5);
       expect(hashLog(pctx.log), `${id} portrait`).toBe(fixture[`${id}:portrait`]);
     }
-    expect(Object.keys(fixture).length).toBe(LEGACY.length * 3);
+    expect(Object.keys(fixture).length).toBe(BASE_SKINS.length * 3);
   });
 
   it('a rig that carries the Phase 5 fields at rest (idle below IDLE_AFTER, no smile, zero springs) still draws the same frame', () => {
-    for (const id of LEGACY) {
+    for (const id of BASE_SKINS) {
       const skin = skinById(id);
       const plain = frameHash(rig(skin, { t: 1.234 }));
       expect(frameHash(rig(skin, { t: 1.234, idle: IDLE_AFTER - 0.1, smile: 0 }))).toBe(plain);
@@ -89,8 +87,10 @@ describe('clawd rig · the four shipped skins are untouched (P5-2)', () => {
 
 // ================================================================ skins & accessories
 describe('clawd rig · eight skins and every accessory (P5-2)', () => {
-  it('SKINS lists eight skins: the four shipped bare ones and four costumed ones with their accessory and Korean name', () => {
+  it('SKINS keeps eight saved ids, with a scarf for the default cat and the unlocked costumes and Korean names', () => {
     expect(Object.keys(SKINS)).toEqual([...ALL_SKINS]);
+    expect(SKINS.clawd.accessory).toBe('scarf');
+    expect(SKINS.clawd.trim).toBe('#65E4D4');
     expect(SKINS.coral.accessory).toBe('fins');
     expect(SKINS.frost.accessory).toBe('hood');
     expect(SKINS.gold.accessory).toBe('crown');
@@ -137,8 +137,8 @@ describe('clawd rig · eight skins and every accessory (P5-2)', () => {
     }
   });
 
-  it('every SkinAccessory value is drawn by the rig and the portrait: it adds calls over the bare shell, and "none" adds nothing', () => {
-    const bare = SKINS.clawd;
+  it('every SkinAccessory value is drawn by the rig and the portrait: it adds calls over the uncostumed cat, and "none" adds nothing', () => {
+    const bare: Skin = { ...SKINS.clawd, id: 'bare', accessory: 'none' };
     const bareRig = frameCalls(rig(bare, { t: 0.7 }));
     const bareHash = frameHash(rig(bare, { t: 0.7 }));
     const pctx = makeRecordingCtx();
@@ -249,7 +249,7 @@ describe('PlayerVisual · secondary motion, idle clock, smile (P5-2)', () => {
     for (let t = 0; t < seconds - 1e-9; t += dt) vis.update(dt, p);
   };
 
-  it('antenna stalks lag a burst of acceleration (tips swing back) and settle once the speed is steady', () => {
+  it('ear tips lag a burst of acceleration and settle once the speed is steady', () => {
     const vis = new PlayerVisual();
     const p = player();
     vis.reset(p);

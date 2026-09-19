@@ -42,6 +42,16 @@ flowchart TB
 | Authored content and generated output | [levels/build.ts](../levels/build.ts), [solutions.ts](../levels/solutions.ts) |
 | Build and offline assets | [build.mjs](../tools/build.mjs), [lib.mjs](../tools/lib.mjs), [sw.ts](../src/client/sw/sw.ts) |
 
+[The character rig](../src/client/render/clawd.ts) draws the cat and its eight skin
+palettes. `PlayerVisual` in [actors.ts](../src/client/render/actors.ts) keeps the
+ear springs and scarf chain in presentation state; [particles.ts](../src/client/render/particles.ts)
+reuses `drawClawdSilhouette` for dash afterimages.
+`PORTRAIT_FEET` in [contracts.ts](../src/client/contracts.ts) defines the foot
+position within a square portrait as `(0.5, 0.88)` of its size. `drawClawdPortrait`
+and [the ending UI](../src/client/ui/ui.ts) share this anchor to align the cat's
+feet with the tower summit across canvas sizes. These are browser presentation
+details and do not change simulation hitboxes or replay contracts.
+
 ### A submitted run
 
 ```mermaid
@@ -143,6 +153,16 @@ flowchart TB
 | 프로토콜·라우트·검증 | [protocol.ts](../src/shared/protocol.ts), [app.ts](../src/server/app.ts), [runs.ts](../src/server/runs.ts), [verifyPool.ts](../src/server/verifyPool.ts) |
 | 저작 콘텐츠와 생성 산출물 | [levels/build.ts](../levels/build.ts), [solutions.ts](../levels/solutions.ts) |
 | 빌드와 오프라인 에셋 | [build.mjs](../tools/build.mjs), [lib.mjs](../tools/lib.mjs), [sw.ts](../src/client/sw/sw.ts) |
+
+[캐릭터 리그](../src/client/render/clawd.ts)는 고양이와 여덟 스킨 팔레트를 그립니다.
+[actors.ts](../src/client/render/actors.ts)의 `PlayerVisual`은 귀 스프링과 스카프
+체인을 표현 상태로 보관하고, [particles.ts](../src/client/render/particles.ts)는
+`drawClawdSilhouette`을 대시 잔상에 재사용합니다.
+[contracts.ts](../src/client/contracts.ts)의 `PORTRAIT_FEET`는 정사각형 초상 안의
+발 위치를 크기 대비 `(0.5, 0.88)`로 정의합니다. `drawClawdPortrait`와
+[엔딩 UI](../src/client/ui/ui.ts)가 이 기준점을 공유해 캔버스 크기가 달라져도
+고양이의 발을 탑 정상에 맞춥니다. 이 값과 동작은 브라우저의 표현을 담당하며
+시뮬레이션 히트박스나 리플레이 계약을 바꾸지 않습니다.
 
 ### 기록 제출 흐름
 

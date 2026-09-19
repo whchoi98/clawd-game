@@ -1165,7 +1165,7 @@ const VIS_STEP = 1 / 30;
  * run-cycle phase, blink, dash-refill flash, spawn warp, afterimage trail and
  * the death tumble. Derived from PlayerState deltas so it works for ghosts too.
  *
- * Phase 5 (P5-2) adds the secondary motion — two antenna stalks on damped
+ * The cat's secondary motion uses two ear tips on damped
  * springs that lag the body's acceleration, and a CHAIN_N-point scarf chain
  * blown by the biome wind — plus the idle clock and the pickup smile. All of
  * it is derived from PlayerState deltas; nothing feeds back into the sim.
@@ -1182,7 +1182,7 @@ export class PlayerVisual {
   idleT = 0;
   /** Seconds of smile left after `smile()` (feeds RigState.smile as a 0..1 remainder). */
   smileT = 0;
-  /** Antenna tip offsets [x0, y0, x1, y1] in rig units (RigState.stalk). */
+  /** Ear tip offsets [x0, y0, x1, y1] in rig units (RigState.stalk). */
   readonly stalk = new Float32Array(4);
   /** Scarf chain points in world units, [x, y, …], CHAIN_N of them; `chain[0..1]` is the anchor. */
   readonly chain = new Float32Array(CHAIN_N * 2);
@@ -1248,7 +1248,7 @@ export class PlayerVisual {
     }
   }
 
-  /** Damped springs for the two antenna tips, back toward rest. */
+  /** Damped springs for the two ear tips, back toward rest. */
   private stepStalks(dt: number): void {
     const S = this.stalk, V = this.stalkV;
     for (let i = 0; i < 2; i++) {
@@ -1308,7 +1308,7 @@ export class PlayerVisual {
     if (this.spawnT > 0) this.spawnT -= dt;
     this.smileT = Math.max(0, this.smileT - dt);
 
-    // secondary motion (P5-2): the antenna springs are kicked by the body's velocity change, the scarf follows the anchor
+    // Ear springs react to the body's velocity change; the scarf follows the neck anchor.
     if (dt > 0) {
       const prev = this.prev;    // reset() above may have cleared it
       const teleport = !prev || Math.abs(p.x - prev.x) > TELEPORT_DIST || Math.abs(p.y - prev.y) > TELEPORT_DIST;

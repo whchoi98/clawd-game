@@ -18,6 +18,7 @@ import type {
   AudioPort, Binds, Device, HudState, InputPort, MenuAction, Progress, ResultView, Screen, Settings, TouchState,
   UIAction, UIPort, UiSound, ReplayView,
 } from '../contracts.js';
+import { PORTRAIT_FEET } from '../contracts.js';
 import type { LevelDef, RunSummary } from '../../sim/types.js';
 import type { DailyResponse, LeaderboardResponse, RejectReason } from '../../shared/protocol.js';
 import type { Biome } from '../../shared/biomes.js';
@@ -664,7 +665,7 @@ export class UI implements UIPort {
     if (!this.portrait) return;
     const size = Math.max(40, Math.round(h * 0.16));
     ctx.save();
-    ctx.translate(w * SUMMIT.x - size / 2, h * SUMMIT.y - size * 0.82);
+    ctx.translate(w * SUMMIT.x - size * PORTRAIT_FEET.x, h * SUMMIT.y - size * PORTRAIT_FEET.y);
     try { this.portrait(ctx, this.settings?.skin ?? 'clawd', size, this.endingT); } catch { /* the portrait is decoration */ }
     ctx.restore();
   }

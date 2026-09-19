@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <!--
-    Clawd, the lobster, on a deep-navy tile. Square 512×512 source for every PWA
-    icon: tools/icons.mjs renders it as-is (rounded tile) for icon-192/512, and
+    Clawd, the orange adventurer cat, on a deep-navy tile. Square 512×512 source
+    for every PWA icon: tools/icons.mjs renders it as-is for icon-192/512, and
     with #bg made full-bleed plus #art scaled down for the maskable and Apple
     variants. Keep the ids: the renderer looks them up.
   -->
@@ -10,14 +10,9 @@
       <stop offset="0" stop-color="#050A12"/>
       <stop offset="1" stop-color="#0B1E2E"/>
     </linearGradient>
-    <linearGradient id="shell" x1="0.15" y1="0" x2="0.85" y2="1">
-      <stop offset="0" stop-color="#FFB088"/>
-      <stop offset="0.45" stop-color="#E8825C"/>
-      <stop offset="1" stop-color="#A8422F"/>
-    </linearGradient>
-    <linearGradient id="claw" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FFB088"/>
-      <stop offset="0.55" stop-color="#E8825C"/>
+    <linearGradient id="fur" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#FFC09B"/>
+      <stop offset="0.65" stop-color="#E8825C"/>
       <stop offset="1" stop-color="#A8422F"/>
     </linearGradient>
   </defs>
@@ -25,50 +20,49 @@
   <rect id="bg" width="512" height="512" rx="112" fill="url(#tide)"/>
 
   <g id="art">
-    <!-- tide line behind Clawd -->
+    <!-- The tide and mascot scale together into the maskable safe zone. -->
     <path d="M40 418c40-22 72 8 112-10s64-26 104-4 68 22 104 0 64-18 112 6" fill="none" stroke="#7FE3D6" stroke-width="10" stroke-linecap="round" opacity="0.55"/>
 
-    <!-- antennae -->
-    <path d="M214 160C190 118 156 100 118 96" fill="none" stroke="#E8825C" stroke-width="12" stroke-linecap="round"/>
-    <path d="M298 160C322 118 356 100 394 96" fill="none" stroke="#E8825C" stroke-width="12" stroke-linecap="round"/>
-    <circle cx="112" cy="94" r="12" fill="#FFB088"/>
-    <circle cx="400" cy="94" r="12" fill="#FFB088"/>
+    <!-- Inward-curled tail: a clear feline silhouette beside the body. -->
+    <path d="M302 385C360 417 426 375 421 327C418 298 403 282 385 286C365 290 365 317 384 322" fill="none" stroke="#A8422F" stroke-width="42" stroke-linecap="round"/>
+    <path d="M302 385C360 417 426 375 421 327C418 298 403 282 385 286C365 290 365 317 384 322" fill="none" stroke="#E8825C" stroke-width="30" stroke-linecap="round"/>
+    <path d="M371 304c0 9 5 16 13 18" fill="none" stroke="#FFC09B" stroke-width="28" stroke-linecap="round"/>
 
-    <!-- legs -->
-    <g stroke="#C4553D" stroke-width="16" stroke-linecap="round" fill="none">
-      <path d="M156 372l-24 44"/><path d="M196 386l-12 46"/>
-      <path d="M356 372l24 44"/><path d="M316 386l12 46"/>
-    </g>
+    <!-- Compact body and cream bib, tucked behind the oversized head. -->
+    <path d="M185 300C159 324 150 386 166 412C193 436 287 436 314 412C330 386 321 324 295 300Z" fill="url(#fur)" stroke="#A8422F" stroke-width="7" stroke-linejoin="round"/>
+    <ellipse cx="240" cy="377" rx="45" ry="37" fill="#FFD9C0"/>
 
-    <!-- arms -->
-    <g stroke="#C4553D" stroke-width="24" stroke-linecap="round" fill="none">
-      <path d="M126 322L86 318"/>
-      <path d="M386 322l40-4"/>
-    </g>
+    <!-- Two soft paws; short toe marks stay quiet at smaller sizes. -->
+    <ellipse cx="190" cy="405" rx="35" ry="25" fill="#E8825C" stroke="#A8422F" stroke-width="7"/>
+    <ellipse cx="290" cy="405" rx="35" ry="25" fill="#E8825C" stroke="#A8422F" stroke-width="7"/>
+    <ellipse cx="190" cy="409" rx="27" ry="17" fill="#FFD9C0"/>
+    <ellipse cx="290" cy="409" rx="27" ry="17" fill="#FFD9C0"/>
+    <path d="M182 418v7m16-7v7m84-7v7m16-7v7" fill="none" stroke="#A8422F" stroke-width="4" stroke-linecap="round"/>
 
-    <!-- shell: superellipse -->
-    <path d="M106 270C106 164.4 124 150 256 150C388 150 406 164.4 406 270C406 375.6 388 390 256 390C124 390 106 375.6 106 270Z" fill="url(#shell)"/>
-    <ellipse cx="200" cy="196" rx="58" ry="24" transform="rotate(-18 200 196)" fill="#FFB088" opacity="0.6"/>
+    <!-- Pointed ears and rounded cheeks share one uninterrupted outline. -->
+    <path d="M126 190L112 90Q111 80 123 84L191 133Q240 118 289 133L357 84Q369 80 368 90L354 190C373 214 380 240 374 267C364 317 311 343 240 343C169 343 116 317 106 267C100 240 107 214 126 190Z" fill="url(#fur)" stroke="#A8422F" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M130 110 178 145 139 175ZM350 110 302 145 341 175Z" fill="#A8422F"/>
+    <path d="m141 130 20 15-16 15Zm198 0-20 15 16 15Z" fill="#FFC09B"/>
+    <path d="M240 136v25m-29-20 5 15m53-15-5 15" fill="none" stroke="#A8422F" stroke-width="10" stroke-linecap="round" opacity="0.75"/>
 
-    <!-- pincers -->
-    <g id="pincer-left">
-      <ellipse cx="66" cy="318" rx="48" ry="40" fill="url(#claw)"/>
-      <path d="M14 302L62 318L14 334Z" fill="#050A12"/>
-    </g>
-    <g id="pincer-right" transform="matrix(-1 0 0 1 512 0)">
-      <ellipse cx="66" cy="318" rx="48" ry="40" fill="url(#claw)"/>
-      <path d="M14 302L62 318L14 334Z" fill="#050A12"/>
-    </g>
+    <!-- Bright eyes with vertical pupils and a small shared catchlight. -->
+    <ellipse cx="192" cy="231" rx="28" ry="32" fill="#FFFFFF"/>
+    <ellipse cx="288" cy="231" rx="28" ry="32" fill="#FFFFFF"/>
+    <ellipse cx="198" cy="235" rx="14" ry="21" fill="#1A1020"/>
+    <ellipse cx="294" cy="235" rx="14" ry="21" fill="#1A1020"/>
+    <circle cx="193" cy="226" r="5" fill="#FFFFFF"/>
+    <circle cx="289" cy="226" r="5" fill="#FFFFFF"/>
 
-    <!-- eyes -->
-    <circle cx="206" cy="264" r="32" fill="#FFFFFF"/>
-    <circle cx="306" cy="264" r="32" fill="#FFFFFF"/>
-    <circle cx="212" cy="268" r="16" fill="#1A1020"/>
-    <circle cx="312" cy="268" r="16" fill="#1A1020"/>
-    <circle cx="204" cy="258" r="5" fill="#FFFFFF"/>
-    <circle cx="304" cy="258" r="5" fill="#FFFFFF"/>
+    <!-- Cream muzzle, triangular nose, smile and paired whiskers. -->
+    <path d="M240 271C222 255 192 259 188 279C181 307 215 321 240 306C265 321 299 307 292 279C288 259 258 255 240 271Z" fill="#FFD9C0"/>
+    <path d="m229 269 22 0-11 13Z" fill="#A8422F" stroke="#A8422F" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M240 280v7m0 0c-6 9-15 9-21 3m21-3c6 9 15 9 21 3" fill="none" stroke="#A8422F" stroke-width="5" stroke-linecap="round"/>
+    <path d="m170 275-51-11m51 24-48 10m188-23 51-11m-51 24 48 10" fill="none" stroke="#A8422F" stroke-width="6" stroke-linecap="round"/>
 
-    <!-- smile -->
-    <path d="M232 322q24 18 48 0" fill="none" stroke="#A8422F" stroke-width="8" stroke-linecap="round"/>
+    <!-- Mint adventure scarf: a broad collar and one wind-swept end. -->
+    <path d="M174 339C153 346 129 359 112 381L139 378L147 400C158 380 177 364 191 356Z" fill="#65E4D4" stroke="#050A12" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M163 320Q240 346 317 320L323 347Q240 380 157 347Z" fill="#65E4D4" stroke="#050A12" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M184 337q57 17 113-1" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" opacity="0.35"/>
+    <ellipse cx="170" cy="343" rx="16" ry="18" fill="#65E4D4"/>
   </g>
 </svg>

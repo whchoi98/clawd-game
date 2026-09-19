@@ -9,6 +9,7 @@
  * Purely presentational: nothing here feeds back into the simulation.
  */
 import { Stage, TAU, alpha, clamp01 } from './stage.js';
+import { drawClawdSilhouette } from './clawd.js';
 
 const CAP = 1400;
 
@@ -217,8 +218,8 @@ export class Particles {
   }
 
   /**
-   * One dash after-image: a still silhouette of the shell in the skin's colour
-   * (`facing` picks which way the pincers point), fading over a fifth of a second.
+   * One dash after-image: the cat's ears, paws and tail in the skin's colour,
+   * facing along the dash and fading over a fifth of a second.
    * The emitter owns the spacing, so the budget is not applied here.
    */
   afterImage(x: number, y: number, facing: number, col: string, glow = 0.6): void {
@@ -419,13 +420,15 @@ export class Particles {
           break;
         }
         case Kind.Blob: {
-          // a dash after-image: the shell silhouette with a hint of the pincers, stretching thinner as it fades
+          // The same feline silhouette as the player, stretching thinner as it fades.
           const f = p.rot >= 0 ? 1 : -1;
           const rx = p.r * (1 + age * 0.25), ry = p.r * 0.86 * (1 - age * 0.3);
           ctx.fillStyle = alpha(p.col, a);
-          ctx.beginPath(); ctx.ellipse(p.x, p.y - 9, rx, ry, 0, 0, TAU); ctx.fill();
-          ctx.beginPath(); ctx.ellipse(p.x + f * (rx + 3.4), p.y - 9.6, 2.4, 2, 0, 0, TAU); ctx.fill();
-          ctx.beginPath(); ctx.ellipse(p.x - f * (rx - 1.2), p.y - 8.6, 1.8, 1.5, 0, 0, TAU); ctx.fill();
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.scale(rx / p.r * 1.15, ry / p.r);
+          drawClawdSilhouette(ctx, f);
+          ctx.restore();
           if (g) {
             g.fillStyle = alpha(p.col, a * p.glow);
             g.beginPath(); g.ellipse(p.x, p.y - 9, rx * 1.4, ry * 1.5, 0, 0, TAU); g.fill();

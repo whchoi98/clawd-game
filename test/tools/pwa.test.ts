@@ -60,8 +60,8 @@ describe('public/icons', () => {
     expect(svg).toMatch(/viewBox="0 0 512 512"/);
     expect(svg).toContain('id="bg"');
     expect(svg).toContain('id="art"');
-    // Palette from the brief: shell, highlight, navy ground.
-    for (const hex of ['#E8825C', '#FFB088', '#050A12']) expect(svg).toContain(hex);
+    // Cat palette: orange fur, cream highlight, mint scarf, navy ground.
+    for (const hex of ['#E8825C', '#FFC09B', '#65E4D4', '#050A12']) expect(svg).toContain(hex);
     // No raster data smuggled in: it is drawn, not embedded.
     expect(svg).not.toMatch(/data:image/);
   });

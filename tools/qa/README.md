@@ -211,3 +211,57 @@ six of each. Screenshot: `tools/qa/out/grid-<zone>.png`. The overlay is drawn by
 ## Telemetry step
 
 The smoke starts t1, quits, and asserts that a `POST /api/events` batch carried `zone_start` and `quit` (and a forced `js_error`), with no player id, name or IP in any batch.
+
+## Character and icon QA
+
+After changing the cat rig, portrait placement or static artwork, run the focused
+rig, renderer, UI, share-card and PWA checks:
+
+```bash
+npx vitest run test/client/clawd.test.ts test/client/render.test.ts test/client/ui.test.ts test/client/share.test.ts test/tools/pwa.test.ts
+```
+
+`test/fixtures/clawd-baseline.json` pins the four base palettes' idle and portrait
+canvas call logs. Before refreshing that visual fixture, inspect all eight skins,
+live play, echoes, dash afterimages, and portraits in settings, results, shared
+cards and the ending. Check that the ending portrait's feet meet the summit at
+desktop and phone sizes; the painter and ending UI share `PORTRAIT_FEET` from
+`src/client/contracts.ts`. Keep the existing saved skin ids and unlock rules.
+
+Update `public/favicon.svg` and `public/icons/icon.svg` to match the character.
+`npm run icons` reads the latter SVG and writes the four app-icon PNGs; it does
+not generate either SVG from the rig. Install Chromium, generate the icons, then
+build and start the capture server in one terminal:
+
+```bash
+npm run qa:browser
+npm run icons
+npm run build
+env -u TABLE_NAME PORT=8099 STATIC_DIR=dist/public DAILY_SECRET=local-development node dist/server/index.js
+```
+
+Once the server is listening, capture the social previews in a second terminal:
+
+```bash
+BASE_URL=http://127.0.0.1:8099 npm run icons -- --social
+```
+
+The social command uses the built client's `?shot=` harness to write
+`public/og/og.png` and the three `public/screenshots/*.png` images. The icon tool
+also accepts `CHROME=/path/to/chrome` for a system Chromium. Review the SVGs and
+generated PNGs together. Stop the capture server, rebuild and restart it before
+final browser QA: `npm run build` copies the images from `public/` and does not
+run the icon generator.
+
+## Native WebAudio
+
+```bash
+npm run qa:audio
+```
+
+This command opts into `test/client/audio-output.browser.test.ts` with
+`CLAWD_BROWSER_TESTS=1`. It bundles the audio source in memory and uses Playwright
+Chromium's native `OfflineAudioContext` to check mute silence and audible
+unmuted categories. It needs the installed Chromium but no game server or
+`BASE_URL`. A normal `npm test` skips this suite unless the opt-in is set;
+record a skipped suite separately from a passed audio check.
