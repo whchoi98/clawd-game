@@ -422,7 +422,7 @@ export class SettingsPanel {
   /** Skin picker: a small painted portrait per skin when the renderer lent us its painter. */
   private skinRow(): HTMLElement {
     const doc = this.d.doc;
-    const { row, ctl } = this.row('캐릭터', '고양이 · 토끼 · 로봇은 처음부터 선택할 수 있다');
+    const { row, ctl } = this.row('캐릭터', '고양이 · 토끼 · 로봇 · 게는 처음부터 선택할 수 있다');
     row.classList.add('row--skins');
     const seg = el(doc, 'div', { class: 'seg seg--skins', role: 'radiogroup', 'aria-label': '캐릭터' });
     const painter = this.d.portrait();

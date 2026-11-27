@@ -2603,6 +2603,7 @@ describe('P3-6 · select cards, header totals, result medals, skin locks, HUD he
     clawd: { name: 'CLAWD', kr: '클로드' },
     rabbit: { name: 'BUNNY', kr: '토끼' },
     robot: { name: 'ROBOT', kr: '로봇' },
+    crab: { name: 'CRAB', kr: '게' },
     azure: { name: 'AMAZONI', kr: '아마조니' },
     ember: { name: 'EMBER', kr: '엠버' },
     void: { name: 'VOID', kr: '보이드' },
@@ -2711,8 +2712,8 @@ describe('P3-6 · select cards, header totals, result medals, skin locks, HUD he
     expect(ui.screen).toBe('settings');
     const buttons = [...document.querySelectorAll<HTMLButtonElement>('#pane-av .seg--skins button')];
     expect(buttons.filter((b) => b.getAttribute('aria-disabled') !== 'true').map((b) => b.dataset.value))
-      .toEqual(['clawd', 'rabbit', 'robot']);
-    for (const [id, label] of [['clawd', '클로드'], ['rabbit', '토끼'], ['robot', '로봇']]) {
+      .toEqual(['clawd', 'rabbit', 'robot', 'crab']);
+    for (const [id, label] of [['clawd', '클로드'], ['rabbit', '토끼'], ['robot', '로봇'], ['crab', '게']]) {
       const button = buttons.find((b) => b.dataset.value === id)!;
       expect(button.textContent).toContain(label);
       expect(button.classList.contains('is-locked')).toBe(false);

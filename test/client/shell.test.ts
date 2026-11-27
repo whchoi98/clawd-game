@@ -121,6 +121,7 @@ function fakeRenderer(): FakeRenderer {
       clawd: { name: 'CLAWD', kr: '클로드' },
       rabbit: { name: 'BUNNY', kr: '토끼' },
       robot: { name: 'ROBOT', kr: '로봇' },
+      crab: { name: 'CRAB', kr: '게' },
       azure: { name: 'AMAZONI', kr: '아마조니' },
     },
   };
@@ -1235,7 +1236,7 @@ describe('Scenes', () => {
     expect(save.settings.goalTargets?.[def.id]).toBe('nodeath');
   });
 
-  it.each(['clawd', 'rabbit', 'robot'])('equips and persists starter %s before the first run without awarding progress', (id) => {
+  it.each(['clawd', 'rabbit', 'robot', 'crab'])('equips and persists starter %s before the first run without awarding progress', (id) => {
     const { scenes, ui, save, storage } = makeScenes([flatRoom()]);
     scenes.bootSync();
     const before = structuredClone(save.progress);
@@ -1245,7 +1246,9 @@ describe('Scenes', () => {
     expect(save.progress.unlockedSkins).toBeUndefined();
     expect(scenes.run).toBeNull();
     save.flush();
-    expect(makeSave(storage).save.settings.skin).toBe(id);
+    const reloaded = makeSave(storage).save;
+    expect(reloaded.settings.skin).toBe(id);
+    expect(reloaded.progress).toEqual(before);
   });
 
   it('retains legacy selected and owned costumes when adding starter choices', () => {
@@ -1259,13 +1262,16 @@ describe('Scenes', () => {
     scenes.bootSync();
     const before = structuredClone(save.progress);
     expect(makeSave(storage).save.settings.skin).toBe('nova');
-    ui.emit({ type: 'equipSkin', skin: 'rabbit' });
-    expect(save.settings.skin).toBe('rabbit');
-    save.flush();
-    const reloaded = makeSave(storage).save;
-    expect(reloaded.settings.skin).toBe('rabbit');
-    expect(reloaded.progress.unlockedSkins).toEqual(['azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
-    expect(save.progress).toEqual(before);
+    for (const id of ['rabbit', 'robot', 'crab', 'clawd']) {
+      ui.emit({ type: 'equipSkin', skin: id });
+      expect(save.settings.skin).toBe(id);
+      save.flush();
+      const reloaded = makeSave(storage).save;
+      expect(reloaded.settings.skin).toBe(id);
+      expect(reloaded.progress.unlockedSkins).toEqual(['azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova']);
+      expect(reloaded.progress).toEqual(before);
+      expect(save.progress).toEqual(before);
+    }
     ui.emit({ type: 'equipSkin', skin: 'nova' });
     expect(save.settings.skin).toBe('nova');
   });

@@ -10,8 +10,8 @@
  *   shards  · every shard of the zone collected on the clear
  *   relic   · the zone's relic collected on the clear
  *
- * Skins: 'clawd', 'rabbit' and 'robot' are always there; 'azure' (AMAZONI / 아마조니) opens at
- * AZURE_STARS stars across the tower, 'ember' when the storm tier is reached
+ * Skins: 'clawd', 'rabbit', 'robot' and 'crab' are always there; 'azure'
+ * (AMAZONI / 아마조니) opens at AZURE_STARS stars across the tower, 'ember' when the storm tier is reached
  * (any stormspire zone unlocked), 'void' at the first S rank. Phase 5 (P5-2)
  * adds 'coral' at CORAL_MEDALS medals, 'frost' when the summit tier is reached
  * (inert while no summit zone exists), 'gold' when every story zone is done and
@@ -129,10 +129,10 @@ export function allZonesDone(progress: Records, levels: Levels): boolean {
 }
 
 // ---------------------------------------------------------------- skins
-export type SkinId = 'clawd' | 'rabbit' | 'robot' | 'azure' | 'ember' | 'void' | 'coral' | 'frost' | 'gold' | 'nova';
+export type SkinId = 'clawd' | 'rabbit' | 'robot' | 'crab' | 'azure' | 'ember' | 'void' | 'coral' | 'frost' | 'gold' | 'nova';
 export const DEFAULT_SKIN: SkinId = 'clawd';
 /** Characters available before any progress, without an unlock reward or saved ownership entry. */
-export const STARTER_SKINS: readonly SkinId[] = ['clawd', 'rabbit', 'robot'];
+export const STARTER_SKINS: readonly SkinId[] = ['clawd', 'rabbit', 'robot', 'crab'];
 /** Stars across the tower that open 'azure' (AMAZONI). */
 export const AZURE_STARS = 6;
 /** The tier whose reach opens 'ember'. */

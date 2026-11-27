@@ -147,6 +147,7 @@ export function skinMilestones(progress: Progress, settings: Settings, levels: r
     clawd: { current: 1, target: 1, unit: '기본' },
     rabbit: { current: 1, target: 1, unit: '기본' },
     robot: { current: 1, target: 1, unit: '기본' },
+    crab: { current: 1, target: 1, unit: '기본' },
     azure: { current: totalStars(progress, levels), target: AZURE_STARS, unit: '별' },
     ember: { current: Number(tierReached(levels, progress, EMBER_TIER)), target: 1, unit: '진입' },
     void: { current: sRanks, target: 1, unit: 'S 등급' },

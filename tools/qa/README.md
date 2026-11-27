@@ -7,14 +7,21 @@ landscape phone (750×340) and portrait phone (390×844) browser contexts.
 It checks readable locked-zone names and unlock instructions, the selected
 zone's preview, replay pause/speed/seeking/checkpoint controls, preservation of
 the suspended run, checkpoint retry recording, and native Tab focus in settings.
-The journal checks cover all 16 zones and ten appearances (three free starters),
+The journal checks cover all 16 zones and eleven appearances (four free starters),
 readable unlock conditions,
 goal selection without awarding progress, a real reload, reversible goal changes
 while paused, and a whole-run restart after a missed no-death goal. Tab and
-Shift+Tab must remain inside the journal. Each engine runs 42 steps.
-Each profile also selects the rabbit, robot and cat before starting a run,
+Shift+Tab must remain inside the journal. Each engine runs 45 steps.
+Each profile also selects the rabbit, robot, crab and cat before starting a run,
 reloads to check the saved selection and title renderer, and verifies that
 zone records and earned costumes did not change.
+After the fresh-save journeys, `starter-earned-progress` uploads a legacy
+snapshot fixture to the real `/api/transfer` endpoint and imports the one-time
+code through Settings → Data. The fixture has a zone record, a medal, totals and
+all seven recorded cat costumes. Journal selections of nova → crab → nova each
+survive a reload while zone records, daily/endless progress, totals and costume
+ownership stay intact. The fixture uses the fresh context's player id and makes
+no leaderboard submission.
 Actions go through real controls; browser evaluation only reads diagnostics.
 Same-origin errors fail the run. Captures are written to
 `tools/qa/out/premium-*.png`. Use `BASE_URL` to point at a running built server.
@@ -22,6 +29,8 @@ Same-origin errors fail the run. Captures are written to
 `tools/qa/out/webkit/`. Each virtual device receives a distinct synthetic
 CloudFront viewer address on API requests, so the real server applies its
 normal per-viewer limits independently to each profile. API responses are real.
+Stages pause when necessary to leave room under the telemetry endpoint's
+30-batch-per-minute limit during repeated reloads and menu transitions.
 
 Install browser dependencies on a supported Linux host with
 `npx playwright install --with-deps chromium webkit firefox`. The isolated
@@ -218,7 +227,7 @@ The smoke starts t1, quits, and asserts that a `POST /api/events` batch carried 
 
 ## Character and icon QA
 
-After changing the cat rig, portrait placement or static artwork, run the focused
+After changing a character rig, portrait placement or static artwork, run the focused
 rig, renderer, UI, share-card and PWA checks:
 
 ```bash
@@ -226,10 +235,13 @@ npx vitest run test/client/clawd.test.ts test/client/render.test.ts test/client/
 ```
 
 `test/fixtures/clawd-baseline.json` pins the four base palettes' idle and portrait
-canvas call logs. Before refreshing that visual fixture, inspect all ten appearances,
+canvas call logs. Before refreshing that visual fixture, inspect all eleven appearances,
 live play, echoes, dash afterimages, and portraits in settings, results, shared
-cards and the ending. Check that labels clear the rabbit's ears and robot's
-antenna during jumps and stomps, and that all ten settings choices wrap within
+cards and the ending. Check the restored crab's four walking legs, two animated
+pincers, shell and two antennae, drawn by `src/client/render/crab.ts` through the
+existing shared entrypoints in `clawd.ts`. Check that labels clear the rabbit's
+ears and the robot's and crab's antennae during jumps and stomps, and that all
+eleven settings choices wrap within
 the modal. Check that the ending portrait's feet meet the summit at
 desktop and phone sizes; the painter and ending UI share `PORTRAIT_FEET` from
 `src/client/contracts.ts`. Keep the existing saved skin ids and unlock rules.

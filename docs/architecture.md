@@ -42,19 +42,23 @@ flowchart TB
 | Authored content and generated output | [levels/build.ts](../levels/build.ts), [solutions.ts](../levels/solutions.ts) |
 | Build and offline assets | [build.mjs](../tools/build.mjs), [lib.mjs](../tools/lib.mjs), [sw.ts](../src/client/sw/sw.ts) |
 
-[The character rig](../src/client/render/clawd.ts) draws distinct cat, rabbit and
-robot shapes: three free starters and seven earned cat costumes.
+[The character rig](../src/client/render/clawd.ts) draws distinct cat, rabbit,
+robot and crab shapes: four free starters and seven earned cat costumes,
+for eleven appearances. Its shared entrypoints dispatch the restored crab to
+[crab.ts](../src/client/render/crab.ts), which draws four walking legs, two
+animated pincers, a shell and two antennae. The existing character frames and
+default `clawd` selection are preserved.
 `STARTER_SKINS` in [unlocks.ts](../src/client/unlocks.ts) makes the starters
 available without progress or unlock notifications, while preserving earned skins.
 `PlayerVisual` in [actors.ts](../src/client/render/actors.ts) keeps the
-ear springs and scarf chain in presentation state; [particles.ts](../src/client/render/particles.ts)
+ear/antenna springs and scarf chain in presentation state; [particles.ts](../src/client/render/particles.ts)
 reuses the selected `CharacterKind` in `drawClawdSilhouette` for dash afterimages.
 Echoes use that same selected shape with a tint; their labels clear the animated
 body bounds through `characterHeadroom`. Appearance is a saved setting, outside
 the replay input log.
 `PORTRAIT_FEET` in [contracts.ts](../src/client/contracts.ts) defines the foot
 position within a square portrait as `(0.5, 0.88)` of its size. `drawClawdPortrait`
-and [the ending UI](../src/client/ui/ui.ts) share this anchor to align the cat's
+and [the ending UI](../src/client/ui/ui.ts) share this anchor to align the character's
 feet with the tower summit across canvas sizes. These are browser presentation
 details and do not change simulation hitboxes or replay contracts.
 
@@ -160,11 +164,14 @@ flowchart TB
 | 저작 콘텐츠와 생성 산출물 | [levels/build.ts](../levels/build.ts), [solutions.ts](../levels/solutions.ts) |
 | 빌드와 오프라인 에셋 | [build.mjs](../tools/build.mjs), [lib.mjs](../tools/lib.mjs), [sw.ts](../src/client/sw/sw.ts) |
 
-[캐릭터 리그](../src/client/render/clawd.ts)는 형태가 다른 고양이·토끼·로봇을
-그립니다. 기본 3종과 해금하는 고양이 모습 7종을 제공합니다.
+[캐릭터 리그](../src/client/render/clawd.ts)는 형태가 다른 고양이·토끼·로봇·게를
+그립니다. 무료 기본 4종과 해금하는 고양이 모습 7종을 합쳐 총 11가지를 제공합니다.
+공용 진입점은 복원한 게의 렌더링을 [crab.ts](../src/client/render/crab.ts)에
+위임하며, 이 모듈은 걷는 다리 네 개·움직이는 집게 두 개·등껍질·더듬이 두 개를
+그립니다. 기존 캐릭터 프레임과 기본 선택인 `clawd`를 유지합니다.
 [unlocks.ts](../src/client/unlocks.ts)의 `STARTER_SKINS`는 진행도나 해금 알림 없이
 기본 캐릭터를 선택하게 하며 기존에 얻은 모습도 보존합니다.
-[actors.ts](../src/client/render/actors.ts)의 `PlayerVisual`은 귀 스프링과 스카프
+[actors.ts](../src/client/render/actors.ts)의 `PlayerVisual`은 귀·더듬이 스프링과 스카프
 체인을 표현 상태로 보관하고, [particles.ts](../src/client/render/particles.ts)는
 선택한 `CharacterKind`를 `drawClawdSilhouette`의 대시 잔상에 재사용합니다.
 메아리에도 선택한 형태와 별도 색을 적용하며, `characterHeadroom`이 애니메이션
@@ -173,7 +180,7 @@ flowchart TB
 [contracts.ts](../src/client/contracts.ts)의 `PORTRAIT_FEET`는 정사각형 초상 안의
 발 위치를 크기 대비 `(0.5, 0.88)`로 정의합니다. `drawClawdPortrait`와
 [엔딩 UI](../src/client/ui/ui.ts)가 이 기준점을 공유해 캔버스 크기가 달라져도
-고양이의 발을 탑 정상에 맞춥니다. 이 값과 동작은 브라우저의 표현을 담당하며
+캐릭터의 발을 탑 정상에 맞춥니다. 이 값과 동작은 브라우저의 표현을 담당하며
 시뮬레이션 히트박스나 리플레이 계약을 바꾸지 않습니다.
 
 ### 기록 제출 흐름

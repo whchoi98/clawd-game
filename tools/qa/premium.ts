@@ -6,9 +6,11 @@
  *
  * Fresh desktop 1440x900, landscape phone 750x340 and portrait phone 390x844
  * contexts exercise campaign/replay, suspended-run restoration, checkpoint
- * retry, starter-character persistence, mastery journal/goal persistence and native modal Tab navigation. Actions use pointer/touch
+ * retry, starter-character persistence, mastery journal/goal persistence and native modal Tab navigation. Journey actions use pointer/touch
  * and keyboard APIs only. Page evaluations read diagnostics, DOM or geometry;
- * they never drive Scenes, step a Sim, inject inputs or seed storage.
+ * they never drive Scenes, step a Sim, inject inputs or seed storage. Existing-
+ * progress coverage uploads a legacy snapshot fixture through /api/transfer,
+ * then imports its one-time code through the data pane before choosing characters.
  *
  * Screenshots: tools/qa/out/premium-<profile>-<step>.png, including a final
  * capture even after a failed journey. External font failures are warnings;
@@ -22,6 +24,9 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, firefox, webkit, type Browser, type JSHandle, type Locator, type Page, type Request } from 'playwright';
+import type { Progress } from '../../src/client/contracts.js';
+import { TransferCreateResponse } from '../../src/shared/protocol.js';
+import { EVENTS_PER_IP_PER_MINUTE } from '../../src/server/routes/events.js';
 import { GOAL_ECHOES } from '../../src/sim/echoes.generated.js';
 import { IN } from '../../src/sim/types.js';
 import type { RunSummary, SimState } from '../../src/sim/types.js';
@@ -225,7 +230,7 @@ async function readable(locator: Locator, label: string): Promise<void> {
     return { text: el.textContent?.trim() ?? '', size: parseFloat(getComputedStyle(el).fontSize), opacity, blurred,
       clippedText: el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1 };
   });
-  check(reading.text.length > 1 && !/^[?？\s]+$/.test(reading.text), `${label} is anonymous`);
+  check(/[\p{L}\p{N}]/u.test(reading.text), `${label} is anonymous`);
   check(reading.size >= MIN_LABEL_PX && reading.opacity >= 0.6 && !reading.blurred && !reading.clippedText,
     `${label} is not readable: ${JSON.stringify(reading)} (minimum ${MIN_LABEL_PX}px)`);
 }
@@ -312,6 +317,7 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
   let onboardingHint: string | undefined;
   let pinnedSave: ReturnType<typeof readSave> | undefined;
   const submissions: string[] = [];
+  const telemetryRequests: number[] = [];
   const responseStatuses = new WeakMap<Request, number>();
   const issue = (kind: Issue['kind'], text: string) => issues.push({ profile: profile.id, step: current, kind, text });
   const warning = (text: string) => warnings.push(`[${profile.id}/${current}] ${text}`);
@@ -350,8 +356,10 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
     else warning(`external resource: ${text}`);
   });
   page.on('request', (request) => {
-    if (sameOrigin(request.url()) && request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/api/runs')) {
-      submissions.push(request.url());
+    if (sameOrigin(request.url()) && request.method() === 'POST') {
+      const path = new URL(request.url()).pathname;
+      if (path.endsWith('/api/runs')) submissions.push(request.url());
+      if (path.endsWith('/api/events')) telemetryRequests.push(Date.now());
     }
   });
 
@@ -359,6 +367,17 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
     current = name;
     const start = Date.now();
     try {
+      // Repeated reloads and menu transitions are faster than normal play. Keep
+      // room for the next stage's burst under the real telemetry quota; responses
+      // still reach the server and every unexpected HTTP error still fails QA.
+      const reserve = Math.ceil(EVENTS_PER_IP_PER_MINUTE / 2);
+      while (name !== 'final') {
+        while (telemetryRequests.length && telemetryRequests[0] <= Date.now() - 61_000) telemetryRequests.shift();
+        if (telemetryRequests.length <= EVENTS_PER_IP_PER_MINUTE - reserve) break;
+        const until = telemetryRequests[telemetryRequests.length - (EVENTS_PER_IP_PER_MINUTE - reserve) - 1] + 61_000;
+        process.stdout.write(`WAIT ${profile.id}/${name}: allowing the telemetry request budget to recover\n`);
+        while (Date.now() < until) await page.waitForTimeout(Math.min(1000, until - Date.now()));
+      }
       const note = await body();
       rows.push({ profile: profile.id, step: name, ok: true, ms: Date.now() - start, note: note ?? '' });
       process.stdout.write(`PASS ${profile.id}/${name}${note ? `: ${note}` : ''}\n`);
@@ -401,11 +420,11 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
     if (!await step('starter-characters', async () => {
       const before = JSON.parse((await page.evaluate(readSave)).progress);
       const sent = submissions.length;
-      for (const id of ['rabbit', 'robot', 'clawd']) {
+      for (const id of ['rabbit', 'robot', 'crab', 'clawd']) {
         await activate(page, profile, '#title-menu [data-act="openSettings"]');
         await screen(page, 'settings');
         const choices = page.locator('#pane-av .seg--skins button');
-        check(await choices.count() === 10, 'settings must list ten appearances');
+        check(await choices.count() === 11, 'settings must list eleven appearances');
         await readable(page.locator('#pane-av .row--skins .row__label small'), 'starter character instructions');
         check(await choices.evaluateAll((buttons) => {
           const row = buttons[0].closest('.row')!.getBoundingClientRect();
@@ -414,7 +433,7 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
             return box.left >= row.left - 1 && box.right <= row.right + 1;
           });
         }), 'character choices overflow their row horizontally');
-        for (const starter of ['clawd', 'rabbit', 'robot']) {
+        for (const starter of ['clawd', 'rabbit', 'robot', 'crab']) {
           const choice = page.locator(`#pane-av .seg--skins button[data-value="${starter}"]`);
           check(await choice.isEnabled() && await choice.getAttribute('aria-disabled') !== 'true',
             `${starter} is locked before the first run`);
@@ -442,7 +461,7 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
         await shot(`starter-${id}`);
       }
       check(submissions.length === sent, 'starter selection submitted a run');
-      return 'cat, rabbit and robot available before play; selection and renderer survive reload; earned progress unchanged';
+      return 'cat, rabbit, robot and crab available before play; selection and renderer survive reload; fresh progress unchanged';
     })) return;
 
     if (!await step('journal-goal', async () => {
@@ -474,12 +493,12 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
       await activate(page, profile, '#scr-journal header [data-act="journalSkins"]');
       const skins = page.locator('#journal-body [data-journal-skin]');
       const skinIds = await skins.evaluateAll((cards) => cards.map((card) => card.getAttribute('data-journal-skin')));
-      check(skinIds.length === 10 && new Set(skinIds).size === 10, `expected ten unique skins, got ${skinIds}`);
+      check(skinIds.length === 11 && new Set(skinIds).size === 11, `expected eleven unique skins, got ${skinIds}`);
       for (const card of await skins.all()) {
         const id = await card.getAttribute('data-journal-skin');
         const equip = card.locator('button');
         await readable(card.locator('.journal-skin__name'), `${id} skin name`);
-        if (id === 'clawd' || id === 'rabbit' || id === 'robot') {
+        if (id === 'clawd' || id === 'rabbit' || id === 'robot' || id === 'crab') {
           check(await equip.isEnabled() && await equip.getAttribute('aria-disabled') === 'false', `${id} starter skin is not available`);
           check(await equip.getAttribute('aria-pressed') === String(id === 'clawd'), `${id} starter skin has the wrong equipped state`);
         } else {
@@ -507,7 +526,7 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
       await screen(page, 'title');
       await unchangedSave(page, pinnedSave, 'closing the journal');
       check(submissions.length === sent, 'journal browsing/pinning submitted a run');
-      return `16 zones, ten skins with three starters, readable locks; nodeath pinned without progress; ${count} keyboard controls`;
+      return `16 zones, eleven skins with four starters, readable locks; nodeath pinned without progress; ${count} keyboard controls`;
     })) return;
 
     if (!await step('journal-reload', async () => {
@@ -795,6 +814,76 @@ async function profileJourney(browser: Browser, profile: Profile, rows: Row[], i
       }), 'returning to the menu left a run/playback active');
       check(submissions.length === 0, 'a non-completing QA journey submitted a run');
       return `${count} controls reached with Tab and Shift+Tab; normal menu restored`;
+    })) return;
+
+    if (!await step('starter-earned-progress', async () => {
+      const saved = JSON.parse((await page.evaluate(readSave)).progress) as Progress;
+      const earned = ['azure', 'ember', 'void', 'coral', 'frost', 'gold', 'nova'];
+      const sent = submissions.length;
+      // Represent an older save whose recorded costumes outlive their original unlock rules.
+      // The real transfer API supplies the fixture; browser storage is only changed by UI actions.
+      const response = await page.request.post(`${BASE_URL}/api/transfer`, {
+        headers: { 'cloudfront-viewer-address': viewer },
+        data: {
+          player: saved.player,
+          progress: {
+            v: 1,
+            levels: {
+              t1: { done: true, bestTicks: 4800, bestShards: 5, stars: 2, relics: 0, deaths: 3, medals: ['par'], bestRank: 'A' },
+            },
+            totals: { deaths: 3, shards: 5 },
+            unlockedSkins: earned,
+          },
+        },
+      });
+      check(response.status() === 200, `legacy snapshot setup returned HTTP ${response.status()}`);
+      const { code } = TransferCreateResponse.parse(await response.json());
+      await response.dispose();
+      await activate(page, profile, '#scr-select [data-act="back"]');
+      await screen(page, 'title');
+      await activate(page, profile, '#title-menu [data-act="openSettings"]');
+      await screen(page, 'settings');
+      await activate(page, profile, '#set-tabs [data-tab="data"]');
+      await page.locator('#transfer-input').fill(code);
+      await activate(page, profile, '#pane-data [data-act="transferImport"]');
+      await page.locator('#transfer-status.is-ok').waitFor({ state: 'visible' });
+      const before = JSON.parse((await page.evaluate(readSave)).progress) as Progress;
+      check(before.levels.t1?.bestTicks === 4800 && before.levels.t1.medals?.includes('par'),
+        'legacy zone record was not imported through the data pane');
+      check(JSON.stringify(before.unlockedSkins) === JSON.stringify(earned), 'legacy costume ownership was not imported');
+      await activate(page, profile, '#scr-settings [data-act="close"]');
+      await screen(page, 'title');
+      for (const [i, id] of ['nova', 'crab', 'nova'].entries()) {
+        await activate(page, profile, '#title-menu [data-act="openJournal"]');
+        await screen(page, 'journal');
+        await activate(page, profile, '#scr-journal header [data-act="journalSkins"]');
+        for (const costume of earned) {
+          check(await page.locator(`[data-journal-key="skin:${costume}"]`).isEnabled(), `${costume} lost its recorded unlock`);
+        }
+        await activate(page, profile, `[data-journal-key="skin:${id}"]`);
+        check(await page.locator(`[data-journal-key="skin:${id}"]`).getAttribute('aria-pressed') === 'true',
+          `${id} was not equipped from the journal`);
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await page.locator('#scr-title.is-active').waitFor({ state: 'visible' });
+        if (await page.locator('#nag-rotate').isVisible()) {
+          await activate(page, profile, '#nag-rotate [data-act="dismissNag"]');
+          await page.locator('#nag-rotate').waitFor({ state: 'hidden' });
+        }
+        await screen(page, 'title');
+        const reloaded = await page.evaluate(readSave);
+        check(JSON.parse(reloaded.settings).skin === id, `${id} did not survive reload with earned progress`);
+        check(await page.evaluate((skin) => {
+          const shell = (window as unknown as { __clawd: ProbeShell }).__clawd;
+          return shell.renderer.skinId === skin && shell.run === null && shell.playback === null;
+        }, id), `${id} was not applied to the title renderer with earned progress`);
+        const progress = JSON.parse(reloaded.progress) as Progress;
+        for (const field of ['levels', 'daily', 'endless', 'totals', 'unlockedSkins'] as const) {
+          check(JSON.stringify(progress[field]) === JSON.stringify(before[field]), `${id} selection/reload changed ${field}`);
+        }
+        await shot(`starter-earned-${i}-${id}`);
+      }
+      check(submissions.length === sent, 'character selection with earned progress submitted a run');
+      return 'legacy records and seven owned costumes preserved through nova → crab → nova journal selections and reloads';
     })) return;
   } finally {
     await step('final', async () => {

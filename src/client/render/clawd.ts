@@ -1,5 +1,5 @@
 /**
- * Tower-climbing cat, rabbit and robot — drawn procedurally every frame.
+ * Tower-climbing cat, rabbit, robot and the original crab — drawn procedurally.
  *
  * A rig lets the silhouette deform continuously (squash on landing, stretch at
  * take-off, lean into acceleration, legs that actually reach for the ground)
@@ -14,7 +14,7 @@
  *   expressions   brows + mouth per pose (`expressionFor`), a 0.4 s smile after a
  *                 pickup, X eyes when hurt or dead; idle behaviours (look around,
  *                 stretch) once `idle` passes IDLE_AFTER
- *   secondary     `stalk` — ear spring offsets lagging acceleration;
+ *   secondary     `stalk` — ear / antenna spring offsets lagging acceleration;
  *                 `chain` — a CHAIN_N-point scarf simulated by PlayerVisual
  *   accessories   `Skin.accessory` drawn by the rig and the portrait alike
  * The original skin ids and palette fields stay stable for saved costumes.
@@ -22,6 +22,7 @@
  */
 import { TAU, alpha, clamp, clamp01, mixHex } from './stage.js';
 import { PORTRAIT_FEET } from '../contracts.js';
+import { CRAB_BODY, drawCrab, drawCrabSilhouette } from './crab.js';
 
 /** Visual-only costume piece; 'none' / missing draws the cat without a costume. */
 export type SkinAccessory = 'none' | 'scarf' | 'antenna' | 'crown' | 'fins' | 'hood' | 'halo' | 'goggles';
@@ -29,13 +30,13 @@ export type SkinAccessory = 'none' | 'scarf' | 'antenna' | 'crown' | 'fins' | 'h
 /** Every accessory value, for tests and tooling. */
 export const SKIN_ACCESSORIES: readonly SkinAccessory[] = ['none', 'scarf', 'antenna', 'crown', 'fins', 'hood', 'halo', 'goggles'];
 
-export type CharacterKind = 'cat' | 'rabbit' | 'robot';
+export type CharacterKind = 'cat' | 'rabbit' | 'robot' | 'crab';
 
 export interface Skin {
   id: string; name: string; kr: string;
   /** Geometry independent of the palette; older costumes default to the cat. */
   character?: CharacterKind;
-  /** Fur or metal palette; the original keys remain shared with trails and costumes. */
+  /** Fur, metal or shell palette; shared with trails and costumes. */
   shell: string; shellHi: string; shellLo: string;
   belly: string; limb: string; eye: string; pupil: string;
   glow: string;
@@ -63,6 +64,12 @@ export const SKINS: Record<string, Skin> = {
     shell: '#75BFCB', shellHi: '#DDF9F4', shellLo: '#2C637D',
     belly: '#A7F5DF', limb: '#34556F', eye: '#A9FFF1', pupil: '#102939',
     glow: '#75F5E1', accessory: 'antenna', trim: '#8EFFD9',
+  },
+  crab: {
+    id: 'crab', name: 'CRAB', kr: '게', character: 'crab',
+    shell: '#E8825C', shellHi: '#FFC09B', shellLo: '#A8422F',
+    belly: '#FFD9C0', limb: '#C4553D', eye: '#FFFFFF', pupil: '#1A1020',
+    glow: '#FFB088',
   },
   azure: {
     id: 'azure', name: 'AMAZONI', kr: '아마조니',
@@ -197,7 +204,7 @@ export interface RigState {
   idle?: number;
   /** 0..1 remainder of the pickup smile (1 right after the pickup). Missing = 0. */
   smile?: number;
-  /** Ear spring offsets [x0, y0, x1, y1] in rig units (the tips lag acceleration). Missing = velocity drag only. */
+  /** Ear / antenna spring offsets [x0, y0, x1, y1] in rig units. Missing = velocity drag only. */
   stalk?: ArrayLike<number>;
   /** Scarf chain, CHAIN_N points as [x, y, …] offsets from the feet in unrotated world units. Missing = a static drape. */
   chain?: ArrayLike<number>;
@@ -292,10 +299,11 @@ function rigTransform(s: RigState, stretch: number): { sx: number; sy: number; l
 export function characterHeadroom(s: RigState): number {
   const { sx, sy, lean } = rigTransform(s, idleStretch(s));
   const character = s.skin.character ?? 'cat';
-  let height = character === 'rabbit' ? 28 : character === 'robot' ? 27 : 24;
+  let height = character === 'rabbit' ? 28 : character === 'robot' ? 27 : character === 'crab' ? 26 : 24;
   if (s.skin.accessory === 'antenna') height = Math.max(height, 27);
+  const halfWidth = character === 'crab' ? 20 : 16;
   const rotation = lean + (s.deadSpin ?? 0);
-  return Math.abs(sy * Math.cos(rotation)) * height + Math.abs(sx * Math.sin(rotation)) * 16;
+  return Math.abs(sy * Math.cos(rotation)) * height + Math.abs(sx * Math.sin(rotation)) * halfWidth;
 }
 
 /** Rounded cheeks, with a flatter forehead between the pointed ears. */
@@ -321,6 +329,10 @@ function silhouetteOval(ctx: CanvasRenderingContext2D, x: number, y: number, rx:
 /** Lightweight character outline for dash afterimages, in feet space, using the current fill. */
 export function drawClawdSilhouette(ctx: CanvasRenderingContext2D, facing: number, character: CharacterKind = 'cat'): void {
   const face = facing >= 0 ? 1 : -1;
+  if (character === 'crab') {
+    drawCrabSilhouette(ctx, face);
+    return;
+  }
   if (character !== 'cat') {
     ctx.beginPath();
     if (character === 'rabbit') {
@@ -440,6 +452,16 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
 
   const flick = s.invuln > 0 ? (Math.sin(s.invuln * 42) > -0.2 ? 1 : 0.28) : 1;
   ctx.globalAlpha *= flick * (s.alpha ?? 1);
+
+  if (character === 'crab') {
+    drawCrab(ctx, s, {
+      bodyY: CRAB_BODY.y + bob + breathe + swimBob,
+      stretch, idleK, expression: expr, look, lookWeight: LOOK_WEIGHT,
+    });
+    ctx.restore();
+    drawGlow(gctx, s, acc, pal);
+    return;
+  }
 
   const headY = HEAD_Y + bob + breathe + swimBob;
 
@@ -805,8 +827,16 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
   ctx.restore();  // body translate
   ctx.restore();  // outer
 
-  // ---------- emissive pass ----------
+  drawGlow(gctx, s, acc, pal);
+}
+
+/** Emission follows each character's body while retaining the same dash and refill cues. */
+function drawGlow(gctx: CanvasRenderingContext2D | null, s: RigState, acc: SkinAccessory, pal: AccessoryPalette | null): void {
   if (gctx) {
+    const sk = s.skin, st = s.state, t = s.t;
+    const bodyY = sk.character === 'crab' ? CRAB_BODY.y : HEAD_Y;
+    const rx = sk.character === 'crab' ? CRAB_BODY.rx : HEAD_RX;
+    const ry = sk.character === 'crab' ? CRAB_BODY.ry : HEAD_RY;
     const strength =
       st === 'dash' ? 0.85 :
       s.dashReady && s.dashFlash > 0 ? 0.5 * s.dashFlash :
@@ -816,7 +846,7 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
       gctx.globalAlpha *= strength * (s.alpha ?? 1);
       gctx.fillStyle = sk.glow;
       gctx.beginPath();
-      gctx.ellipse(s.x, s.y + HEAD_Y, HEAD_RX * 1.5, HEAD_RY * 1.7, 0, 0, TAU);
+      gctx.ellipse(s.x, s.y + bodyY, rx * 1.5, ry * 1.7, 0, 0, TAU);
       gctx.fill();
       gctx.restore();
     }
@@ -826,8 +856,8 @@ export function drawClawd(ctx: CanvasRenderingContext2D, gctx: CanvasRenderingCo
       gctx.globalAlpha *= 0.55 * (s.alpha ?? 1);
       gctx.fillStyle = pal.trim;
       gctx.beginPath();
-      if (acc === 'halo') gctx.ellipse(s.x, s.y + HEAD_Y - HEAD_RY - 4.2 + Math.sin(t * 2) * 0.4, 5.2, 2.2, 0, 0, TAU);
-      else gctx.arc(s.x - s.vx / 320 * 3, s.y + HEAD_Y - HEAD_RY - 7.6, 2.2, 0, TAU);
+      if (acc === 'halo') gctx.ellipse(s.x, s.y + bodyY - ry - 4.2 + Math.sin(t * 2) * 0.4, 5.2, 2.2, 0, 0, TAU);
+      else gctx.arc(s.x - s.vx / 320 * 3, s.y + bodyY - ry - 7.6, 2.2, 0, TAU);
       gctx.fill();
       gctx.restore();
     }
@@ -1071,7 +1101,7 @@ function drawCollar(ctx: CanvasRenderingContext2D, pal: AccessoryPalette, face: 
 export function drawClawdPortrait(ctx: CanvasRenderingContext2D, size: number, skin: Skin, t = 0): void {
   ctx.save();
   ctx.translate(size * PORTRAIT_FEET.x, size * PORTRAIT_FEET.y);
-  const frameSize = skin.character === 'rabbit' ? 36 : 32;
+  const frameSize = skin.character === 'crab' ? 40 : skin.character === 'rabbit' ? 36 : 32;
   ctx.scale(size / frameSize, size / frameSize);
   drawClawd(ctx, null, {
     x: 0, y: 0, vx: 0, vy: 0, grounded: true, facing: 1, state: 'idle',
